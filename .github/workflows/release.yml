@@ -17,8 +17,8 @@ jobs:
   # Windows uses windows-latest for both x86_64 and arm64.
   # ------------------------------------------------------------------
   desktop:
-    name: Build $ matrix.archive 
-    runs-on: $ matrix.os 
+    name: Build ${{ matrix.archive }} 
+    runs-on: ${{ matrix.os }} 
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +45,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: $ matrix.target 
+          targets: ${{ matrix.target }} 
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -60,24 +60,24 @@ jobs:
         uses: ilammy/setup-nasm@v1
 
       - name: Build release binary
-        run: cargo build --release --target $ matrix.target 
+        run: cargo build --release --target ${{ matrix.target }} 
 
       - name: Package archive (Unix)
         if: runner.os != 'Windows'
         run: |
-          cd target/$ matrix.target /release
-          tar -czf ../../../$ matrix.archive  aether
+          cd target/${{ matrix.target }}/release
+          tar -czf ../../../${{ matrix.archive }}  aether
 
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path target/$ matrix.target /release/aether.exe -DestinationPath $ matrix.archive 
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/aether.exe -DestinationPath ${{ matrix.archive }} 
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: $ matrix.archive 
-          path: aether/$ matrix.archive 
+          name: ${{ matrix.archive }} 
+          path: aether/${{ matrix.archive }} 
           if-no-files-found: error
 
   # ------------------------------------------------------------------
@@ -88,8 +88,8 @@ jobs:
   # latest stable (>= 1.88 required by the crate).
   # ------------------------------------------------------------------
   linux:
-    name: Build $ matrix.archive 
-    runs-on: $ matrix.os 
+    name: Build ${{ matrix.archive }} 
+    runs-on: ${{ matrix.os }} 
     container:
       image: fedora:latest
     strategy:
@@ -124,21 +124,21 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Add Rust target
-        run: rustup target add $ matrix.target 
+        run: rustup target add ${{ matrix.target }} 
 
       - name: Build release binary
-        run: cargo build --release --target $ matrix.target 
+        run: cargo build --release --target ${{ matrix.target }} 
 
       - name: Package archive
         run: |
-          cd target/$ matrix.target /release
-          tar -czf ../../../$ matrix.archive  aether
+          cd target/${{ matrix.target }}/release
+          tar -czf ../../../${{ matrix.archive }}  aether
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: $ matrix.archive 
-          path: aether/$ matrix.archive 
+          name: ${{ matrix.archive }} 
+          path: aether/${{ matrix.archive }} 
           if-no-files-found: error
 
   # ------------------------------------------------------------------
@@ -201,7 +201,7 @@ jobs:
   # determines the output).
   # ------------------------------------------------------------------
   android:
-    name: Build $ matrix.archive 
+    name: Build ${{ matrix.archive }} 
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -226,7 +226,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: $ matrix.target 
+          targets: ${{ matrix.target }} 
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -247,20 +247,20 @@ jobs:
 
       - name: Build release binary
         env:
-          ANDROID_NDK_HOME: $ steps.ndk.outputs.ndk-path 
-          ANDROID_NDK_ROOT: $ steps.ndk.outputs.ndk-path 
-        run: cargo ndk -t $ matrix.abi  --platform 24 build --release
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }} 
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }} 
+        run: cargo ndk -t ${{ matrix.abi }}  --platform 24 build --release
 
       - name: Package archive
         run: |
-          cd target/$ matrix.target /release
-          tar -czf ../../../$ matrix.archive  aether
+          cd target/${{ matrix.target }}/release
+          tar -czf ../../../${{ matrix.archive }}  aether
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: $ matrix.archive 
-          path: aether/$ matrix.archive 
+          name: ${{ matrix.archive }} 
+          path: aether/${{ matrix.archive }} 
           if-no-files-found: error
 
   # ------------------------------------------------------------------
@@ -272,7 +272,7 @@ jobs:
     name: Publish release
     needs: [desktop, linux, linux-armv7, android]
     runs-on: ubuntu-latest
-    if: $ always() && startsWith(github.ref, 'refs/tags/') 
+    if: ${{ always() }} && startsWith(github.ref, 'refs/tags/') 
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
