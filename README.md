@@ -1,8 +1,7 @@
 # Aether
 
-### 🌐 اینترنت آزاد برای همه
-
-**[ راهنمای فارسی / Persian README](README.fa.md)** · **[📖 Documentation](Docs/GUIDE.en.md)**
+### اینترنت آزاد برای همه :))
+**[راهنمای فارسی](README.fa.md)** · **[English Guide](Docs/GUIDE.en.md)** · **[راهنمای کامل فارسی](Docs/GUIDE.fa.md)**
 
 Aether is a censorship circumvention client designed for heavily restricted networks. It automatically discovers reachable routes, establishes an encrypted tunnel, and exposes a local SOCKS5 proxy for your applications.
 
