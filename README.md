@@ -20,6 +20,19 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 - Local SOCKS5 proxy
 - Linux, Windows, macOS and Android (Termux)
 
+<br/>	
+
+## Quick Installation (Termux)
+If you are using Android and **Termux**, there is no need to manually download anything or install prerequisites. Simply copy and run the following command in your Termux environment to automate the entire installation process:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/CluvexStudio/Aether/refs/heads/main/aether.sh)
+```
+
+Once installed, you can run the program from any directory by simply typing: aether.
+
+<br/>
+
 ## Download
 
 Prebuilt binaries are available on the Releases page for:
