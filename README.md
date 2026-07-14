@@ -3,6 +3,8 @@
 ### اینترنت آزاد برای همه :))
 **[راهنمای فارسی](README.fa.md)** · **[English Guide](Docs/GUIDE.en.md)** · **[راهنمای کامل فارسی](Docs/GUIDE.fa.md)**
 
+Telegram: https://t.me/CluvexStudio
+
 Aether is a censorship circumvention client designed for heavily restricted networks. It automatically discovers reachable routes, establishes an encrypted tunnel, and exposes a local SOCKS5 proxy for your applications.
 
 Unlike traditional VPN clients, Aether is built for environments where Deep Packet Inspection (DPI), protocol fingerprinting, UDP throttling, and endpoint blocking are common.
@@ -109,7 +111,6 @@ Developed by **CluvexStudio**. :))
 
 MASQUE support is built on top of Cloudflare's **Quiche** library.
 
-Telegram: https://t.me/CluvexStudio
 
 ## Contributing
 
