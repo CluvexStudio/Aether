@@ -73,6 +73,31 @@ cargo build --release
 target/release/aether
 ```
 
+## داکر (Docker)
+
+شما می‌توانید Aether را در یک محیط ایزوله با استفاده از داکر بیلد و اجرا کنید.
+
+ساخت ایمیج:
+
+```bash
+docker build -t aether .
+```
+
+اجرای کانتینر (برای تنظیمات اولیه به حالت تعاملی نیاز است):
+
+```bash
+docker run -it -p 1819:1819 aether
+```
+
+همچنین می‌توانید با ارسال متغیرهای محیطی از پرسش‌های اولیه عبور کنید:
+
+```bash
+docker run -it -p 1819:1819 \
+  -e AETHER_PROTOCOL=masque \
+  -e AETHER_SCAN=balanced \
+  aether
+```
+
 ## اجرا
 
 برنامه را اجرا کنید:

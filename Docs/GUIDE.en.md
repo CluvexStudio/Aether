@@ -160,6 +160,19 @@ AETHER_PROTOCOL=wg AETHER_NOIZE=aggressive AETHER_SCAN=thorough ./target/release
 AETHER_PROTOCOL=gool AETHER_SOCKS=127.0.0.1:1080 ./target/release/aether
 ```
 
+### Running with Docker
+
+Docker provides an isolated environment and doesn't require installing Rust or any C++ compilers on your host machine.
+
+```bash
+docker build -t aether .
+docker run -it -p 1819:1819 \
+  -e AETHER_PROTOCOL=masque \
+  -e AETHER_SCAN=balanced \
+  aether
+```
+*(The `-it` flag is necessary for interactive prompts if you do not provide the environment variables beforehand.)*
+
 ## Testing whether it works
 
 As soon as it says the proxy is listening, run this:

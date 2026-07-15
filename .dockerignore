@@ -1,0 +1,9 @@
+.git
+.github
+target/
+aether/target/
+quiche/target/
+**/.DS_Store
+aether.toml
+aether-masque.toml
+*-secondary.toml

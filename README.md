@@ -71,6 +71,31 @@ Binary:
 target/release/aether
 ```
 
+## Docker
+
+You can build and run Aether in an isolated environment using Docker.
+
+Build the image:
+
+```bash
+docker build -t aether .
+```
+
+Run the container (interactive mode is required for initial setup):
+
+```bash
+docker run -it -p 1819:1819 aether
+```
+
+You can also bypass prompts by providing environment variables:
+
+```bash
+docker run -it -p 1819:1819 \
+  -e AETHER_PROTOCOL=masque \
+  -e AETHER_SCAN=balanced \
+  aether
+```
+
 ## Usage
 
 Run:
