@@ -1,6 +1,6 @@
 FROM rust:1.88 as builder
 
-WORKDIR /usr/src/aether
+WORKDIR /usr/src
 
 # Install build dependencies
 RUN apt-get update \
@@ -13,11 +13,11 @@ RUN apt-get update \
         git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the whole repository (workspace) and build the `aether` release binary
+# Copy the whole repository (workspace)
 COPY . .
 
-# Build the workspace release for the aether binary
-RUN cargo build --release -p aether
+# Build the `aether` release binary using the crate manifest in aether/Cargo.toml
+RUN cargo build --release --manifest-path aether/Cargo.toml
 
 # Final runtime image
 FROM debian:bookworm-slim
@@ -28,7 +28,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary produced in the builder stage
-COPY --from=builder /usr/src/aether/target/release/aether /usr/local/bin/aether
+COPY --from=builder /usr/src/target/release/aether /usr/local/bin/aether
 
 # Default listening port (matches default in code)
 EXPOSE 1819
