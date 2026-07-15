@@ -35,6 +35,6 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/mk990/aether:latest
-            ghcr.io/mk990/aether:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/aether:latest
+            ghcr.io/${{ github.repository_owner }}/aether:${{ github.sha }}
           file: ./Dockerfile
