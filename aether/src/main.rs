@@ -63,6 +63,7 @@ async fn main() -> Result<()> {
 
     match protocol {
         Protocol::Masque => {
+            select_masque_transport().await;
             let config_path = masque_config_path(&base_config);
             let identity = load_or_provision_masque(&config_path).await?;
             log::info!(
@@ -997,6 +998,21 @@ impl Protocol {
             Protocol::WireGuard => "WireGuard",
             Protocol::WarpInWarp => "WARP-in-WARP (gool)",
         }
+    }
+}
+
+async fn select_masque_transport() {
+    if std::env::var("AETHER_MASQUE_HTTP2").is_ok() || std::env::var("AETHER_PEER").is_ok() {
+        return;
+    }
+
+    let answer = prompt_line(
+        "\nMASQUE transport:\n  [1] HTTP/3 (QUIC)  (default; fastest handshake, best on healthy UDP networks)\n  [2] HTTP/2 (TCP)   (looks like ordinary HTTPS; use if UDP/QUIC is blocked or throttled)\nChoose [1-2] (default 1): ",
+    )
+    .await;
+
+    if matches!(answer.as_deref(), Some("2")) {
+        std::env::set_var("AETHER_MASQUE_HTTP2", "1");
     }
 }
 

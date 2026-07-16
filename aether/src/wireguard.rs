@@ -259,7 +259,7 @@ fn build_dataplane_probe(src: Ipv4Addr) -> Vec<u8> {
     pkt.push(17);
     pkt.extend_from_slice(&[0x00, 0x00]);
     pkt.extend_from_slice(&src.octets());
-    pkt.extend_from_slice(&Ipv4Addr::new(1, 1, 1, 1).octets());
+    pkt.extend_from_slice(&Ipv4Addr::new(8, 8, 8, 8).octets());
     let csum = ipv4_checksum(&pkt[0..20]);
     pkt[10..12].copy_from_slice(&csum.to_be_bytes());
     let sport: u16 = rand::thread_rng().gen_range(20000..60000);
@@ -292,6 +292,9 @@ async fn send_dataplane_probe(
     Ok(())
 }
 
+const DATAPLANE_REQUIRED_SUCCESSES: u32 = 2;
+const DATAPLANE_PROBE_GAP: Duration = Duration::from_millis(600);
+
 async fn verify_dataplane(
     sock: &UdpSocket,
     tunn: &mut Tunn,
@@ -305,17 +308,23 @@ async fn verify_dataplane(
     let mut recv_buf = vec![0u8; MAX_PACKET];
     let mut tmp_buf = vec![0u8; MAX_PACKET];
 
+    let mut successes: u32 = 0;
+    let mut last_probe_at = Instant::now();
     send_dataplane_probe(sock, tunn, client_id, &probe, &mut out_buf).await?;
-    let mut resend_at = Instant::now() + Duration::from_millis(700);
+    let mut resend_at = last_probe_at + Duration::from_millis(700);
 
     loop {
         let now = Instant::now();
         if now >= deadline {
-            log::debug!("[wg] dataplane verify timed out");
+            log::debug!(
+                "[wg] dataplane verify timed out ({}/{} confirmations)",
+                successes, DATAPLANE_REQUIRED_SUCCESSES
+            );
             return Err(AetherError::Other("dataplane timeout".into()));
         }
         if now >= resend_at {
             let _ = send_dataplane_probe(sock, tunn, client_id, &probe, &mut out_buf).await;
+            last_probe_at = now;
             resend_at = now + Duration::from_millis(700);
         }
         let wait = deadline
@@ -328,9 +337,20 @@ async fn verify_dataplane(
                 strip_client_id(&mut recv_buf[..n]);
                 match tunn.decapsulate(None, &recv_buf[..n], &mut tmp_buf) {
                     TunnResult::WriteToTunnelV4(_, _) | TunnResult::WriteToTunnelV6(_, _) => {
-                        let elapsed = start.elapsed();
-                        log::debug!("[wg] dataplane ok in {:?}", elapsed);
-                        return Ok(elapsed);
+                        successes += 1;
+                        log::debug!(
+                            "[wg] dataplane round-trip {}/{} confirmed in {:?}",
+                            successes, DATAPLANE_REQUIRED_SUCCESSES, start.elapsed()
+                        );
+                        if successes >= DATAPLANE_REQUIRED_SUCCESSES {
+                            let elapsed = start.elapsed();
+                            log::debug!("[wg] dataplane ok in {:?}", elapsed);
+                            return Ok(elapsed);
+                        }
+                        let next_at = Instant::now().max(last_probe_at + DATAPLANE_PROBE_GAP);
+                        let _ = send_dataplane_probe(sock, tunn, client_id, &probe, &mut out_buf).await;
+                        last_probe_at = next_at;
+                        resend_at = next_at + Duration::from_millis(700);
                     }
                     TunnResult::WriteToNetwork(pkt) => {
                         let mut v = pkt.to_vec();

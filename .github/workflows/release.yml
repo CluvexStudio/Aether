@@ -301,21 +301,14 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v1.1.1
+            Aether v1.2.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            What's new in v1.1.1:
+            What's new in v1.2.0:
 
-            - Real end-to-end data-plane validation for MASQUE (HTTP/3 and HTTP/2): a gateway is now only trusted once it has actually carried a probe packet round-trip, not just once the handshake and `:status 200` came back. This fixes gateways that looked "connected" but silently dropped all traffic.
-            - The local SOCKS5 proxy no longer opens until the tunnel has passed that validation, so applications can't start using a half-alive tunnel.
-            - Automatic reconnection for MASQUE: if the tunnel drops or fails validation, Aether rescans and reconnects on its own instead of exiting.
-            - Quick reconnect: Aether remembers the last gateway that worked and, on the next run, offers to reuse it after a single fast re-check instead of a full rescan. Controlled with --quick-reconnect / --no-quick-reconnect or AETHER_QUICK_RECONNECT.
-            - New command-line flag interface (aether --help) covering every option that was previously environment-variable-only or prompt-only: --bind, -4/-6/--dual, --peer/--wg-peer, --masque/--wg/--gool, --scan and mode shortcuts, --noize, --h2/--http2, --h2-peer, --fragment and friends, --keepalive, --config/--wg-config/--masque-config, --tls-groups, and more.
-            - Optional TLS ClientHello fragmentation for MASQUE's HTTP/2 transport (--fragment, --fragment-size, --fragment-delay), for networks that block the h2 handshake based on a single unfragmented ClientHello.
-            - Windows builds now ship with run-aether.bat: double-click it to run aether.exe in a terminal that stays open afterwards, so the window doesn't just vanish if the tunnel exits.
-            - Dropped the Windows arm64 build target: boringtun's dependency on ring 0.16 fails to compile on aarch64-pc-windows-msvc, and very few users run arm64 Windows. Windows x86_64 is unaffected.
-            - .gitignore now explicitly excludes all identity/credential files (aether*.toml, *-secondary.toml, *-lastconn.toml, *.pem, *.key) so a WireGuard private key or MASQUE certificate can never end up committed by accident.
+            - Fixed a false-positive in the data-plane check for MASQUE and WireGuard. The probe packet used to be sent to 1.1.1.1, which is inside Cloudflare's own network, so a gateway could pass just by routing internally without ever reaching the real internet. It now targets an external resolver, and needs two successful round-trips in a row instead of one. This was the cause behind reports of a tunnel showing as "connected" while actual traffic just hung.
+            - MASQUE now lets you pick HTTP/3 (QUIC) or HTTP/2 (TCP) up front, with a short note on when each helps: HTTP/3 for the fastest handshake on healthy networks, HTTP/2 for networks that block or throttle UDP.
 
             This release includes prebuilt binaries for:
 

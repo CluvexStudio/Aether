@@ -69,6 +69,8 @@ fn data_check_enabled() -> bool {
     std::env::var("AETHER_MASQUE_NO_DATA_CHECK").is_err()
 }
 
+const DATA_PROBE_REQUIRED_SUCCESSES: u32 = 2;
+
 pub struct Channels {
     pub outbound_tx: mpsc::Sender<Vec<u8>>,
     pub inbound_rx: mpsc::Receiver<Vec<u8>>,
@@ -160,6 +162,7 @@ pub async fn run(
     let mut ready_tx = ready_tx;
     let mut ready_fired = false;
     let mut validate_deadline: Option<Instant> = None;
+    let mut validate_successes: u32 = 0;
 
     let init_sock = bind_udp_fast(bind_addr_for(&peer)).await?;
     let local = init_sock.local_addr()?;
@@ -331,12 +334,19 @@ pub async fn run(
             drain_datagrams(&mut conn, req_stream, &internals.inbound_tx, &mut out_buf).await;
 
         if got_data && !ready_fired {
-            ready_fired = true;
-            validate_deadline = None;
-            if let Some(tx) = ready_tx.take() {
-                let _ = tx.send(());
+            validate_successes += 1;
+            log::debug!(
+                "[*] masque data-plane round-trip {}/{} confirmed",
+                validate_successes, DATA_PROBE_REQUIRED_SUCCESSES
+            );
+            if validate_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
+                ready_fired = true;
+                validate_deadline = None;
+                if let Some(tx) = ready_tx.take() {
+                    let _ = tx.send(());
+                }
+                log::info!("[+] masque tunnel validated (end-to-end data confirmed); exposing socks5");
             }
-            log::info!("[+] masque tunnel validated (end-to-end data confirmed); exposing socks5");
         }
 
         flush(&mut conn, &sockets).await?;
@@ -618,6 +628,7 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
     let mut connect_ip_ok = false;
     let mut last_probe = Instant::now();
     let mut dgram_buf = vec![0u8; 65535];
+    let mut probe_successes: u32 = 0;
 
     let start = Instant::now();
     let deadline = start + p.timeout;
@@ -722,7 +733,14 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
                     match conn.dgram_recv(&mut dgram_buf) {
                         Ok(n) => {
                             if let Ok(Some(_)) = masque::decode_ip_datagram(&dgram_buf[..n], sid) {
-                                return Ok(start.elapsed());
+                                probe_successes += 1;
+                                if probe_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
+                                    return Ok(start.elapsed());
+                                }
+                                if let Ok(framed) = masque::encode_ip_datagram(sid, &probe_packet) {
+                                    let _ = conn.dgram_send(&framed);
+                                }
+                                last_probe = Instant::now();
                             }
                         }
                         Err(quiche::Error::Done) => break,

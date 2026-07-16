@@ -256,7 +256,7 @@ pub fn build_dns_probe_packet(src: Ipv4Addr) -> Vec<u8> {
     pkt.push(17);
     pkt.extend_from_slice(&[0x00, 0x00]);
     pkt.extend_from_slice(&src.octets());
-    pkt.extend_from_slice(&Ipv4Addr::new(1, 1, 1, 1).octets());
+    pkt.extend_from_slice(&Ipv4Addr::new(8, 8, 8, 8).octets());
     let csum = ipv4_header_checksum(&pkt[0..20]);
     pkt[10..12].copy_from_slice(&csum.to_be_bytes());
 
