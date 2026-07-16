@@ -74,18 +74,12 @@ target/release/aether
 
 ## Docker
 
-You can build and run Aether in an isolated environment using Docker.
+You can run Aether in an isolated environment using Docker. The official image is available on GitHub Container Registry (GHCR).
 
-Build the image:
-
-```bash
-docker build -t aether .
-```
-
-Run the container (interactive mode is required for initial setup):
+Pull and run the pre-built image (interactive mode is required for initial setup):
 
 ```bash
-docker run -it -p 1819:1819 aether
+docker run -it -p 1819:1819 ghcr.io/cluvexstudio/aether:latest
 ```
 
 You can also bypass prompts by providing environment variables:
@@ -94,7 +88,14 @@ You can also bypass prompts by providing environment variables:
 docker run -it -p 1819:1819 \
   -e AETHER_PROTOCOL=masque \
   -e AETHER_SCAN=balanced \
-  aether
+  ghcr.io/cluvexstudio/aether:latest
+```
+
+If you prefer to build the image manually from source:
+
+```bash
+docker build -t aether .
+docker run -it -p 1819:1819 aether
 ```
 
 ## Usage

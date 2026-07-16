@@ -263,16 +263,22 @@ AETHER_QUICK_RECONNECT=1 ./target/release/aether --masque
 
 ### اجرا با داکر (Docker)
 
-داکر یه محیط ایزوله بهت می‌ده و نیازی به نصب Rust یا ابزارهای C++ روی سیستم خودت نداری.
+شما می‌توانید ایمیج رسمی Aether را مستقیماً از GitHub Container Registry (GHCR) اجرا کنید که یه محیط ایزوله بهت می‌ده و نیازی به نصب Rust یا ابزارهای C++ روی سیستم خودت نداری.
 
 ```bash
-docker build -t aether .
 docker run -it -p 1819:1819 \
   -e AETHER_PROTOCOL=masque \
   -e AETHER_SCAN=balanced \
-  aether
+  ghcr.io/cluvexstudio/aether:latest
 ```
 *(پرچم `-it` برای وقتی که متغیرهای محیطی رو از قبل ندادی و نیاز به پاسخ دادن به سؤالات تعاملی داری، ضروریه.)*
+
+در صورتی که ترجیح می‌دهید ایمیج را خودتان بیلد کنید:
+
+```bash
+docker build -t aether .
+docker run -it -p 1819:1819 aether
+```
 
 ## تست اینکه واقعاً کار می‌کنه یا نه
 

@@ -261,16 +261,22 @@ AETHER_QUICK_RECONNECT=1 ./target/release/aether --masque
 
 ### Running with Docker
 
-Docker provides an isolated environment and doesn't require installing Rust or any C++ compilers on your host machine.
+You can run the official Aether Docker image directly from the GitHub Container Registry (GHCR), which provides an isolated environment without needing to install Rust or C++ compilers.
 
 ```bash
-docker build -t aether .
 docker run -it -p 1819:1819 \
   -e AETHER_PROTOCOL=masque \
   -e AETHER_SCAN=balanced \
-  aether
+  ghcr.io/cluvexstudio/aether:latest
 ```
 *(The `-it` flag is necessary for interactive prompts if you do not provide the environment variables beforehand.)*
+
+If you prefer to build the image locally:
+
+```bash
+docker build -t aether .
+docker run -it -p 1819:1819 aether
+```
 
 ## Testing whether it works
 

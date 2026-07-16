@@ -76,18 +76,12 @@ target/release/aether
 
 ## داکر (Docker)
 
-شما می‌توانید Aether را در یک محیط ایزوله با استفاده از داکر بیلد و اجرا کنید.
+شما می‌توانید Aether را در یک محیط ایزوله با استفاده از داکر اجرا کنید. ایمیج رسمی برنامه روی GitHub Container Registry (GHCR) در دسترس است.
 
-ساخت ایمیج:
-
-```bash
-docker build -t aether .
-```
-
-اجرای کانتینر (برای تنظیمات اولیه به حالت تعاملی نیاز است):
+دریافت و اجرای ایمیج از پیش‌ساخته‌شده (برای تنظیمات اولیه به حالت تعاملی نیاز است):
 
 ```bash
-docker run -it -p 1819:1819 aether
+docker run -it -p 1819:1819 ghcr.io/cluvexstudio/aether:latest
 ```
 
 همچنین می‌توانید با ارسال متغیرهای محیطی از پرسش‌های اولیه عبور کنید:
@@ -96,7 +90,14 @@ docker run -it -p 1819:1819 aether
 docker run -it -p 1819:1819 \
   -e AETHER_PROTOCOL=masque \
   -e AETHER_SCAN=balanced \
-  aether
+  ghcr.io/cluvexstudio/aether:latest
+```
+
+در صورتی که ترجیح می‌دهید ایمیج را خودتان بیلد کنید:
+
+```bash
+docker build -t aether .
+docker run -it -p 1819:1819 aether
 ```
 
 ## اجرا
