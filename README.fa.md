@@ -165,6 +165,14 @@ curl -x socks5h://127.0.0.1:1819 https://www.cloudflare.com/cdn-cgi/trace
 
 **لطفاً کد پروژه را تمیز، قابل نگهداری و مهندسی‌شده نگه دارید. مشارکت‌های بی‌کیفیت یا مبتنی بر وایب‌کدینگ پذیرفته نخواهند شد!!!**
 
+## حمایت مالی (Donate)
+
+اگه Aether به دردت خورده و می‌خوای از توسعه‌ش حمایت کنی:
+
+- **TRX (Tron):** `TRxVSHcoADZnBfztFmFb2TQopusAwWYEVR`
+- **BTC:** `bc1qnjnvzsa5avgj7n0uy383cv5zdxfjnvvp257egm`
+- **TON:** `UQAH75bXaaRUhZMwiF0ZujOXFDDmvLSPASKoOsWF0HNasiaM`
+
 ## مجوز
 
 برای اطلاعات بیشتر، فایل `LICENSE` را مطالعه کنید.

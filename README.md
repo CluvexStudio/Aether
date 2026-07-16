@@ -162,6 +162,14 @@ MASQUE support is built on top of Cloudflare's **Quiche** library.
 
 > **Please keep the codebase clean, maintainable, and well-engineered. Low-quality or vibe-coded contributions will not be accepted.**
 
+## Donate
+
+If Aether has been useful to you, consider supporting its development:
+
+- **TRX (Tron):** `TRxVSHcoADZnBfztFmFb2TQopusAwWYEVR`
+- **BTC:** `bc1qnjnvzsa5avgj7n0uy383cv5zdxfjnvvp257egm`
+- **TON:** `UQAH75bXaaRUhZMwiF0ZujOXFDDmvLSPASKoOsWF0HNasiaM`
+
 ## License
 
 See the LICENSE file for licensing information.
