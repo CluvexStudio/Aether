@@ -44,6 +44,7 @@ WireGuard:
   --no-profile-retry       don't retry other obfuscation profiles during scan
 
 Config files:
+  -d, --data-dir <dir>     base directory for identity and session files
   --config <path>          base identity config path (default aether.toml)
   --wg-config <path>       identity config path for WireGuard
   --masque-config <path>   identity config path for MASQUE
@@ -56,6 +57,10 @@ Advanced:
 
 pub fn parse_and_apply() -> crate::error::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
+    parse_args(&args)
+}
+
+pub fn parse_args(args: &[String]) -> crate::error::Result<()> {
     let mut i = 0;
 
     while i < args.len() {
@@ -117,6 +122,7 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "--keepalive" => set("AETHER_WG_KEEPALIVE", next_value!()),
             "--no-profile-retry" => set("AETHER_WG_NO_PROFILE_RETRY", "1"),
 
+            "-d" | "--data-dir" => set("AETHER_DATA_DIR", next_value!()),
             "--config" => set("AETHER_CONFIG", next_value!()),
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
@@ -196,5 +202,17 @@ mod tests {
             "/abs/path.toml"
         );
     }
+
+    #[test]
+    fn test_cli_parse_data_dir() {
+        std::env::remove_var("AETHER_DATA_DIR");
+        parse_args(&["-d".to_string(), "/tmp/aether-data-1".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_DATA_DIR").unwrap(), "/tmp/aether-data-1");
+
+        std::env::remove_var("AETHER_DATA_DIR");
+        parse_args(&["--data-dir".to_string(), "/tmp/aether-data-2".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_DATA_DIR").unwrap(), "/tmp/aether-data-2");
+    }
 }
+
 
