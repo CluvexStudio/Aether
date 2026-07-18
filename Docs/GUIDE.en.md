@@ -215,6 +215,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 ### Forcing the endpoint and the config path
 
 - `AETHER_PEER` or `AETHER_WG_PEER` (`--peer`, `--wg-peer`) — if you want to give a fixed address yourself and bypass the scan.
+- `AETHER_DATA_DIR` (`-d`, `--data-dir`) — the base directory for storing identity configs and session cache files.
 - `AETHER_CONFIG` (`--config`) — the path of the base config file. Default `aether.toml`.
 - `AETHER_WG_CONFIG` and `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — the config path specific to each protocol.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — override the TLS key-share groups advertised in the handshake. Default mimics Chrome (`P-256:X25519:P-384`).
