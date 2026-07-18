@@ -205,6 +205,8 @@ mod tests {
 
     #[test]
     fn test_cli_parse_data_dir() {
+        let prev = std::env::var("AETHER_DATA_DIR").ok();
+
         std::env::remove_var("AETHER_DATA_DIR");
         parse_args(&["-d".to_string(), "/tmp/aether-data-1".to_string()]).unwrap();
         assert_eq!(std::env::var("AETHER_DATA_DIR").unwrap(), "/tmp/aether-data-1");
@@ -212,6 +214,11 @@ mod tests {
         std::env::remove_var("AETHER_DATA_DIR");
         parse_args(&["--data-dir".to_string(), "/tmp/aether-data-2".to_string()]).unwrap();
         assert_eq!(std::env::var("AETHER_DATA_DIR").unwrap(), "/tmp/aether-data-2");
+
+        match prev {
+            Some(val) => std::env::set_var("AETHER_DATA_DIR", val),
+            None => std::env::remove_var("AETHER_DATA_DIR"),
+        }
     }
 }
 
