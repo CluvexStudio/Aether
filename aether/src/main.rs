@@ -1044,14 +1044,45 @@ async fn select_ip_version() -> prober::IpScan {
 mod main_tests {
     use super::*;
 
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::set_var(key, val);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     #[test]
     fn test_main_config_path_resolution_with_data_dir() {
         let data_dir = "/custom/data/dir";
-        std::env::set_var("AETHER_DATA_DIR", data_dir);
+        let _g_data = EnvGuard::set("AETHER_DATA_DIR", data_dir);
+        let _g_cfg = EnvGuard::remove("AETHER_CONFIG");
+        let _g_wg = EnvGuard::remove("AETHER_WG_CONFIG");
+        let _g_masque = EnvGuard::remove("AETHER_MASQUE_CONFIG");
 
         let base = cli::resolve_config_path(
             Some(data_dir),
-            std::env::var("AETHER_CONFIG").ok().as_deref(),
+            None,
             DEFAULT_CONFIG,
         );
         let expected_base = format!("{}/aether.toml", std::path::Path::new(data_dir).display());
@@ -1067,8 +1098,6 @@ mod main_tests {
         let lastconn = lastconn_path(&masque);
         let expected_lastconn = format!("{}/aether-masque-lastconn.toml", std::path::Path::new(data_dir).display());
         assert_eq!(lastconn, expected_lastconn);
-
-        std::env::remove_var("AETHER_DATA_DIR");
     }
 }
 
