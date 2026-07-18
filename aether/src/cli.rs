@@ -51,6 +51,7 @@ Config files:
 Advanced:
   --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
 
+  -v, --version            show version and exit
   -h, --help               show this help and exit
 ";
 
@@ -71,6 +72,11 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
         }
 
         match arg {
+            "-v" | "--version" => {
+                println!("aether {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);

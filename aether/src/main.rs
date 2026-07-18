@@ -43,6 +43,8 @@ async fn main() -> Result<()> {
 
     cli::parse_and_apply()?;
 
+    log::info!("Aether v{}", env!("CARGO_PKG_VERSION"));
+
     install_netstack_panic_guard();
 
     let listen: SocketAddr = std::env::var("AETHER_SOCKS")
