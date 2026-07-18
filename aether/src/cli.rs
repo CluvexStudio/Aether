@@ -139,3 +139,62 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
 fn set(key: &str, value: &str) {
     std::env::set_var(key, value);
 }
+
+pub fn resolve_config_path(
+    data_dir: Option<&str>,
+    explicit_path: Option<&str>,
+    default_filename: &str,
+) -> String {
+    match explicit_path {
+        Some(path) => {
+            let p = std::path::Path::new(path);
+            if p.is_absolute() {
+                path.to_string()
+            } else if let Some(dir) = data_dir {
+                std::path::Path::new(dir)
+                    .join(path)
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                path.to_string()
+            }
+        }
+        None => match data_dir {
+            Some(dir) => std::path::Path::new(dir)
+                .join(default_filename)
+                .to_string_lossy()
+                .to_string(),
+            None => default_filename.to_string(),
+        },
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_config_path_no_data_dir() {
+        assert_eq!(resolve_config_path(None, None, "aether.toml"), "aether.toml");
+        assert_eq!(resolve_config_path(None, Some("custom.toml"), "aether.toml"), "custom.toml");
+        assert_eq!(resolve_config_path(None, Some("/abs/path.toml"), "aether.toml"), "/abs/path.toml");
+    }
+
+    #[test]
+    fn test_resolve_config_path_with_data_dir() {
+        assert_eq!(
+            resolve_config_path(Some("/var/lib/aether"), None, "aether.toml"),
+            format!("{}/aether.toml", std::path::Path::new("/var/lib/aether").display())
+        );
+        assert_eq!(
+            resolve_config_path(Some("/var/lib/aether"), Some("custom.toml"), "aether.toml"),
+            format!("{}/custom.toml", std::path::Path::new("/var/lib/aether").display())
+        );
+        assert_eq!(
+            resolve_config_path(Some("/var/lib/aether"), Some("/abs/path.toml"), "aether.toml"),
+            "/abs/path.toml"
+        );
+    }
+}
+
