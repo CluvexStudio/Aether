@@ -170,6 +170,40 @@ struct Strategy {
     sample_per_cidr: usize,
 }
 
+/// Number of usable CPU cores, cached for the process lifetime.
+pub fn cpu_cores() -> usize {
+    use std::sync::OnceLock;
+    static CORES: OnceLock<usize> = OnceLock::new();
+    *CORES.get_or_init(|| {
+        let n = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        log::info!("[+] detected {n} CPU core(s); scaling scan parameters accordingly");
+        n
+    })
+}
+
+/// Scale a baseline value (tuned for 8 cores) proportionally to actual core count.
+/// Minimum 1, rounds up so low-core devices still get a usable value.
+pub fn scale(baseline: usize, reference_cores: usize) -> usize {
+    ((baseline as u64 * cpu_cores() as u64 + (reference_cores as u64 - 1))
+        / reference_cores as u64)
+        .max(1) as usize
+}
+
+const REFERENCE_CORES: usize = 8;
+
+impl Strategy {
+    /// Scale concurrency and candidate pool to match the host's CPU capacity.
+    /// The hardcoded values were tuned for ~8-core machines; this proportionally
+    /// adjusts them so a 4-core router gets half and a 16-core desktop gets double.
+    fn scale_to_host(mut self) -> Self {
+        self.concurrency = scale(self.concurrency, REFERENCE_CORES).max(2);
+        self.sample_per_cidr = scale(self.sample_per_cidr, REFERENCE_CORES).max(8);
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct MasqueProbe {
     pub sni: String,
@@ -192,7 +226,7 @@ pub async fn host_has_ipv6() -> bool {
 }
 
 pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<ProbeResult> {
-    let st = mode.strategy();
+    let st = mode.strategy().scale_to_host();
     let timeout = st.per_probe_timeout;
     let mut effective_ip = probe.ip;
     if probe.ip.want_v6() && !host_has_ipv6().await {

@@ -102,6 +102,14 @@ struct WgStrategy {
     sample_per_cidr: usize,
 }
 
+impl WgStrategy {
+    fn scale_to_host(mut self) -> Self {
+        self.concurrency = crate::prober::scale(self.concurrency, 8).max(2);
+        self.sample_per_cidr = crate::prober::scale(self.sample_per_cidr, 8).max(8);
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct WgProbe {
     pub private_key: Arc<[u8; 32]>,
@@ -114,7 +122,7 @@ pub struct WgProbe {
 }
 
 pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<WgProbeResult> {
-    let st = mode.strategy();
+    let st = mode.strategy().scale_to_host();
     let timeout = st.per_probe_timeout;
     let mut effective_ip = probe.ip;
     if probe.ip.want_v6() && !crate::prober::host_has_ipv6().await {

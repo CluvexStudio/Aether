@@ -39,15 +39,24 @@ impl From<&Identity> for PersistedIdentity {
     }
 }
 
-impl From<PersistedIdentity> for Identity {
-    fn from(p: PersistedIdentity) -> Self {
+impl TryFrom<PersistedIdentity> for Identity {
+    type Error = AetherError;
+
+    fn try_from(p: PersistedIdentity) -> std::result::Result<Self, Self::Error> {
         let wg_priv = base64::engine::general_purpose::STANDARD
             .decode(&p.wg_private_key)
-            .expect("decode wg private key");
+            .map_err(|e| AetherError::Other(format!("corrupt config: wg private key: {e}")))?;
 
         let wg_peer = base64::engine::general_purpose::STANDARD
             .decode(&p.wg_peer_public_key)
-            .expect("decode wg peer public key");
+            .map_err(|e| AetherError::Other(format!("corrupt config: wg peer public key: {e}")))?;
+
+        if wg_priv.len() != 32 {
+            return Err(AetherError::Other(format!("corrupt config: wg private key length {}", wg_priv.len())));
+        }
+        if wg_peer.len() != 32 {
+            return Err(AetherError::Other(format!("corrupt config: wg peer public key length {}", wg_peer.len())));
+        }
 
         let mut wg_private_key = [0u8; 32];
         let mut wg_peer_public_key = [0u8; 32];
@@ -63,7 +72,7 @@ impl From<PersistedIdentity> for Identity {
             }
         }
 
-        Identity {
+        Ok(Identity {
             device_id: p.device_id,
             access_token: p.access_token,
             cert_pem: p.cert_pem.into_bytes(),
@@ -73,7 +82,7 @@ impl From<PersistedIdentity> for Identity {
             wg_private_key,
             wg_peer_public_key,
             client_id: client_id_arr,
-        }
+        })
     }
 }
 
@@ -84,7 +93,7 @@ pub fn load(path: &str) -> Result<Option<Identity>> {
     let text = std::fs::read_to_string(path)?;
     let persisted: PersistedIdentity =
         toml::from_str(&text).map_err(|e| AetherError::Other(format!("config parse: {e}")))?;
-    Ok(Some(persisted.into()))
+    Ok(Some(persisted.try_into()?))
 }
 
 pub fn save(path: &str, identity: &Identity) -> Result<()> {
@@ -92,6 +101,12 @@ pub fn save(path: &str, identity: &Identity) -> Result<()> {
     let text = toml::to_string_pretty(&persisted)
         .map_err(|e| AetherError::Other(format!("config encode: {e}")))?;
     std::fs::write(path, text)?;
+    // Config contains private keys — restrict to owner-only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 
