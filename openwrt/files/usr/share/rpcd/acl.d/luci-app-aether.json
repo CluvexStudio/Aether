@@ -1,0 +1,33 @@
+{
+	"luci-app-aether": {
+		"description": "Grant access to Aether tunnel configuration and control",
+		"read": {
+			"ubus": {
+				"service": [ "list" ],
+				"file": [ "exec", "read", "stat" ],
+				"uci": [ "get", "changes" ],
+				"rc": [ "list", "init" ]
+			},
+			"uci": [ "aether" ],
+			"file": {
+				"/usr/bin/aether": [ "exec" ],
+				"/etc/init.d/aether": [ "exec" ],
+				"/usr/bin/logread": [ "exec" ],
+				"/sbin/logread": [ "exec" ],
+				"/bin/logread": [ "exec" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"service": [ "list" ],
+				"file": [ "exec" ],
+				"uci": [ "set", "add", "delete", "commit", "apply", "revert" ],
+				"rc": [ "init" ]
+			},
+			"uci": [ "aether" ],
+			"file": {
+				"/etc/init.d/aether": [ "exec" ]
+			}
+		}
+	}
+}

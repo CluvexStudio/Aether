@@ -1,0 +1,91 @@
+#!/bin/sh /etc/rc.common
+# Aether - censorship circumvention tunnel service
+# Note: do NOT gate start_service on UCI "enabled".
+# aether-ctl / LuCI handle enable-on-boot; calling this script always starts.
+
+START=99
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/bin/aether
+
+start_service() {
+	config_load aether
+
+	local protocol socks_listen scan_mode ip_version obfuscation_profile
+	local http2_mode fragment_tls fragment_size fragment_delay peer
+	local keepalive reconnect_secs validate_secs quick_reconnect
+	local no_data_check config_path log_level
+
+	config_get protocol main protocol 'masque'
+	config_get socks_listen main socks_listen '0.0.0.0:1819'
+	config_get scan_mode main scan_mode 'balanced'
+	config_get ip_version main ip_version 'ipv4'
+	config_get obfuscation_profile main obfuscation_profile 'firewall'
+	config_get http2_mode main http2_mode '0'
+	config_get fragment_tls main fragment_tls '0'
+	config_get fragment_size main fragment_size '16-32'
+	config_get fragment_delay main fragment_delay '2-10'
+	config_get peer main peer ''
+	config_get keepalive main keepalive '5'
+	config_get reconnect_secs main reconnect_secs '2'
+	config_get validate_secs main validate_secs '10'
+	config_get quick_reconnect main quick_reconnect '0'
+	config_get no_data_check main no_data_check '0'
+	config_get config_path main config_path '/etc/aether'
+	config_get log_level main log_level 'info'
+
+	local cmd_args=""
+	cmd_args="$cmd_args --bind $socks_listen"
+	cmd_args="$cmd_args --config $config_path"
+
+	case "$protocol" in
+		masque)  cmd_args="$cmd_args --masque" ;;
+		wg)      cmd_args="$cmd_args --wg" ;;
+		gool)    cmd_args="$cmd_args --gool" ;;
+	esac
+
+	case "$scan_mode" in
+		turbo|balanced|thorough|stealth)
+			cmd_args="$cmd_args --scan $scan_mode" ;;
+	esac
+
+	case "$ip_version" in
+		ipv4)  cmd_args="$cmd_args -4" ;;
+		ipv6)  cmd_args="$cmd_args -6" ;;
+		both)  cmd_args="$cmd_args --dual" ;;
+	esac
+
+	[ -n "$obfuscation_profile" ] && cmd_args="$cmd_args --noize $obfuscation_profile"
+	[ "$http2_mode" = "1" ] && cmd_args="$cmd_args --h2"
+	if [ "$fragment_tls" = "1" ]; then
+		cmd_args="$cmd_args --fragment"
+		[ -n "$fragment_size" ] && cmd_args="$cmd_args --fragment-size $fragment_size"
+		[ -n "$fragment_delay" ] && cmd_args="$cmd_args --fragment-delay $fragment_delay"
+	fi
+	[ -n "$peer" ] && cmd_args="$cmd_args --peer $peer"
+	[ "$protocol" != "masque" ] && cmd_args="$cmd_args --keepalive $keepalive"
+	cmd_args="$cmd_args --reconnect-secs $reconnect_secs"
+	cmd_args="$cmd_args --validate-secs $validate_secs"
+	[ "$quick_reconnect" = "1" ] && cmd_args="$cmd_args --quick-reconnect"
+	[ "$no_data_check" = "1" ] && cmd_args="$cmd_args --no-data-check"
+
+	mkdir -p "$config_path" 2>/dev/null
+
+	logger -t aether "Starting Aether (protocol=$protocol, obfuscation=$obfuscation_profile)"
+
+	procd_open_instance
+	procd_set_param command $PROG $cmd_args
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	logger -t aether "Stopping Aether"
+}
+
+service_triggers() {
+	procd_add_reload_trigger "aether"
+}

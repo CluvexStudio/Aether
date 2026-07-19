@@ -1,0 +1,14 @@
+{
+	"admin/services/aether": {
+		"title": "Aether",
+		"description": "Censorship circumvention tunnel",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "aether"
+		},
+		"depends": {
+			"acl": [ "luci-app-aether" ]
+		}
+	}
+}

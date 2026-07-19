@@ -1,0 +1,130 @@
+#!/bin/sh
+# rpcd handler for luci-app-aether (optional/legacy)
+#
+# NOTE: On OpenWrt 25.12.5 shell handlers under /usr/libexec/rpcd may
+# register as ubus objects with ZERO methods. The LuCI view therefore
+# uses built-in service/rc/uci/file RPCs. This handler remains for
+# direct shell testing and future OpenWrt versions.
+
+. /usr/share/libubox/jshn.sh
+
+UCI="/sbin/uci"
+CFG="aether.main"
+
+cmd_list() {
+	json_init
+	json_add_array "methods"
+	for m in list get set start stop restart status version logread; do
+		json_add_string "" "$m"
+	done
+	json_close_array
+	json_dump
+}
+
+cmd_get() {
+	local cfg="aether.${1:-main}"
+	json_init
+	for key in enabled protocol socks_listen scan_mode ip_version \
+		obfuscation_profile http2_mode fragment_tls fragment_size \
+		fragment_delay peer keepalive reconnect_secs validate_secs \
+		quick_reconnect no_data_check config_path log_level; do
+		local val=$($UCI get "$cfg.$key" 2>/dev/null)
+		json_add_string "$key" "$val"
+	done
+	json_dump
+}
+
+cmd_set() {
+	[ -z "$1" ] || [ -z "$2" ] && { echo '{"success":false}'; exit 1; }
+	# Never quote values in "uci set key=value"
+	$UCI set "aether.main.$1=$2"
+	$UCI commit aether
+	json_init; json_add_boolean "success" 1; json_dump
+}
+
+cmd_start() {
+	/etc/init.d/aether start 2>/dev/null
+	json_init; json_add_string "message" "Aether started"; json_dump
+}
+
+cmd_stop() {
+	/etc/init.d/aether stop 2>/dev/null
+	json_init; json_add_string "message" "Aether stopped"; json_dump
+}
+
+cmd_restart() {
+	/etc/init.d/aether restart 2>/dev/null
+	json_init; json_add_string "message" "Aether restarted"; json_dump
+}
+
+cmd_status() {
+	local running=0 pid="" version="" uptime_s=0
+	local procd_json procd_running
+
+	procd_json=$(ubus call service list '{"name":"aether"}' 2>/dev/null)
+	procd_running=$(echo "$procd_json" | jsonfilter -e '@.aether.instances.instance1.running' 2>/dev/null)
+
+	if [ "$procd_running" = "true" ]; then
+		running=1
+		pid=$(echo "$procd_json" | jsonfilter -e '@.aether.instances.instance1.pid' 2>/dev/null)
+		uptime_s=$(cat /proc/uptime 2>/dev/null | cut -d. -f1)
+	fi
+
+	version=$(/usr/bin/aether --version 2>&1 | awk '{print $2}')
+
+	local logs endpoint transport socks_addr obfuscation identity enabled protocol
+	logs=$(logread -e aether 2>/dev/null)
+
+	endpoint=$(echo "$logs" | grep -o 'using cloudflare edge [0-9.]*:[0-9]*' | tail -1 | awk '{print $NF}')
+	[ -z "$endpoint" ] && endpoint=$(echo "$logs" | grep -o 'candidate ok [0-9.]*:[0-9]*' | tail -1 | awk '{print $3}')
+
+	transport=$(echo "$logs" | grep -o 'MASQUE transport: [^ ]*' | tail -1 | sed 's/MASQUE transport: //')
+	socks_addr=$(echo "$logs" | grep -o 'socks5 listening on [^ ]*' | tail -1 | sed 's/socks5 listening on //')
+	obfuscation=$(echo "$logs" | grep -o 'obfuscation profile: [a-z]*' | tail -1 | sed 's/obfuscation profile: //')
+	identity=$(echo "$logs" | grep -o 'device=[^ ]*' | tail -1 | sed 's/device=//')
+
+	enabled=$($UCI get aether.main.enabled 2>/dev/null || echo "0")
+	protocol=$($UCI get aether.main.protocol 2>/dev/null || echo "masque")
+
+	json_init
+	json_add_boolean "running" "$running"
+	json_add_string "pid" "$pid"
+	json_add_string "version" "$version"
+	json_add_int "uptime" "${uptime_s:-0}"
+	json_add_string "enabled" "$enabled"
+	json_add_string "protocol" "$protocol"
+	json_add_string "endpoint" "$endpoint"
+	json_add_string "transport" "$transport"
+	json_add_string "socks_addr" "$socks_addr"
+	json_add_string "obfuscation" "$obfuscation"
+	json_add_string "identity" "$identity"
+	json_dump
+}
+
+cmd_version() {
+	json_init
+	json_add_string "version" "$(/usr/bin/aether --version 2>&1)"
+	json_dump
+}
+
+cmd_logread() {
+	local lines="${1:-30}"
+	json_init
+	json_add_string "log" "$(logread -e aether | tail -n "$lines")"
+	json_dump
+}
+
+METHOD="${1:-}"
+shift 2>/dev/null
+case "$METHOD" in
+	list)     cmd_list ;;
+	get)      cmd_get "$@" ;;
+	set)      cmd_set "$@" ;;
+	start)    cmd_start ;;
+	stop)     cmd_stop ;;
+	restart)  cmd_restart ;;
+	status)   cmd_status ;;
+	version)  cmd_version ;;
+	logread)  cmd_logread "$@" ;;
+	*)        echo "unknown method"; exit 1 ;;
+esac

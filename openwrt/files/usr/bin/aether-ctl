@@ -1,0 +1,237 @@
+#!/bin/sh
+# aether-ctl — CLI management tool for Aether on OpenWrt
+# Usage: aether-ctl {start|stop|restart|status|show|set|version}
+
+UCI="/sbin/uci"
+PROG="/usr/bin/aether"
+CFG="aether.main"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
+
+log_info()  { echo -e "${GREEN}[+]${RESET} $*"; }
+log_warn()  { echo -e "${YELLOW}[!]${RESET} $*"; }
+log_err()   { echo -e "${RED}[-]${RESET} $*" >&2; }
+log_key()   { printf "  ${CYAN}%-20s${RESET} %s\n" "$1:" "$2"; }
+
+# Never quote the value in "uci set key=value" — quoting corrupts UCI.
+uci_get() { $UCI get "$CFG.$1" 2>/dev/null; }
+uci_set() { $UCI set "$CFG.$1=$2"; }
+
+is_running() {
+	pidof aether >/dev/null 2>&1
+}
+
+wait_running() {
+	local i=0
+	while [ $i -lt 20 ] && ! is_running; do
+		sleep 0.5
+		i=$((i + 1))
+	done
+	is_running
+}
+
+do_start() {
+	if is_running; then
+		log_warn "Aether is already running (PID $(pidof aether))"
+		return 0
+	fi
+	uci_set enabled 1
+	$UCI commit aether
+	/etc/init.d/aether start
+	if wait_running; then
+		log_info "Aether started (PID $(pidof aether))"
+	else
+		log_err "Aether failed to start. Check: logread -e aether"
+		/etc/init.d/aether status 2>/dev/null
+		return 1
+	fi
+}
+
+do_stop() {
+	if ! is_running; then
+		log_warn "Aether is not running"
+		uci_set enabled 0
+		$UCI commit aether
+		return 0
+	fi
+	/etc/init.d/aether stop
+	uci_set enabled 0
+	$UCI commit aether
+	log_info "Aether stopped"
+}
+
+do_restart() {
+	log_info "Restarting Aether..."
+	/etc/init.d/aether restart
+	if wait_running; then
+		log_info "Aether restarted (PID $(pidof aether))"
+	else
+		log_err "Aether failed to restart"
+		return 1
+	fi
+}
+
+do_status() {
+	echo ""
+	echo "=== Aether Status ==="
+	if is_running; then
+		log_key "State" "running"
+		log_key "PID" "$(pidof aether)"
+	else
+		log_key "State" "stopped"
+	fi
+	echo ""
+	echo "=== Configuration ==="
+	do_show
+	echo ""
+	echo "=== Binary ==="
+	log_key "Path" "$PROG"
+	if [ -x "$PROG" ]; then
+		log_key "Version" "$($PROG --version 2>&1)"
+	else
+		log_key "Status" "not installed"
+	fi
+	echo ""
+}
+
+do_show() {
+	local enabled=$(uci_get enabled)
+	local protocol=$(uci_get protocol)
+	local socks_listen=$(uci_get socks_listen)
+	local scan_mode=$(uci_get scan_mode)
+	local ip_version=$(uci_get ip_version)
+	local obfuscation_profile=$(uci_get obfuscation_profile)
+	local http2_mode=$(uci_get http2_mode)
+	local fragment_tls=$(uci_get fragment_tls)
+	local peer=$(uci_get peer)
+	local keepalive=$(uci_get keepalive)
+	local reconnect_secs=$(uci_get reconnect_secs)
+	local log_level=$(uci_get log_level)
+
+	log_key "Enabled" "$([ "$enabled" = "1" ] && echo "yes" || echo "no")"
+	log_key "Protocol" "${protocol:-masque}"
+	log_key "SOCKS Listen" "${socks_listen:-0.0.0.0:1819}"
+	log_key "Scan Mode" "${scan_mode:-balanced}"
+	log_key "IP Version" "${ip_version:-ipv4}"
+	log_key "Obfuscation" "${obfuscation_profile:-firewall}"
+	log_key "HTTP/2" "$([ "$http2_mode" = "1" ] && echo "on" || echo "off")"
+	log_key "TLS Fragment" "$([ "$fragment_tls" = "1" ] && echo "on" || echo "off")"
+	log_key "Peer" "${peer:-auto-scan}"
+	log_key "Keepalive" "${keepalive:-5}s"
+	log_key "Reconnect" "${reconnect_secs:-2}s"
+	log_key "Log Level" "${log_level:-info}"
+}
+
+do_set() {
+	local key="$1"
+	local value="$2"
+
+	if [ -z "$key" ] || [ -z "$value" ]; then
+		echo "Usage: aether-ctl set <option> <value>"
+		echo ""
+		echo "Options:"
+		echo "  enabled             yes/no"
+		echo "  protocol            masque/wg/gool"
+		echo "  socks_listen        ip:port"
+		echo "  scan_mode           turbo/balanced/thorough/stealth"
+		echo "  ip_version          ipv4/ipv6/both"
+		echo "  obfuscation_profile firewall/gfw/balanced/aggressive/light/off"
+		echo "  http2_mode          0/1"
+		echo "  fragment_tls        0/1"
+		echo "  peer                ip:port (empty for auto-scan)"
+		echo "  keepalive           seconds"
+		echo "  reconnect_secs      seconds"
+		echo "  log_level           info/debug/warn/error"
+		return 1
+	fi
+
+	case "$key" in
+		enabled)
+			case "$value" in
+				yes|1|on|true)  value=1 ;;
+				no|0|off|false) value=0 ;;
+				*) log_err "Invalid value for enabled: $value (use yes/no)"; return 1 ;;
+			esac ;;
+		protocol)
+			case "$value" in
+				masque|wg|gool) ;;
+				*) log_err "Invalid protocol: $value (use masque/wg/gool)"; return 1 ;;
+			esac ;;
+		scan_mode)
+			case "$value" in
+				turbo|balanced|thorough|stealth) ;;
+				*) log_err "Invalid scan_mode: $value"; return 1 ;;
+			esac ;;
+		ip_version)
+			case "$value" in
+				ipv4|ipv6|both) ;;
+				*) log_err "Invalid ip_version: $value"; return 1 ;;
+			esac ;;
+		http2_mode|fragment_tls)
+			case "$value" in
+				0|1|on|off|yes|no)
+					case "$value" in
+						on|yes) value=1 ;;
+						off|no) value=0 ;;
+					esac ;;
+				*) log_err "Invalid value: $value (use 0/1)"; return 1 ;;
+			esac ;;
+	esac
+
+	uci_set "$key" "$value"
+	$UCI commit aether
+	log_info "Set $key = $value"
+
+	if is_running; then
+		echo ""
+		log_warn "Aether is running. Changes take effect on next restart."
+		printf "Restart now? [y/N]: "
+		read -r answer
+		case "$answer" in
+			y|Y|yes|YES) do_restart ;;
+		esac
+	fi
+}
+
+do_version() {
+	if [ -x "$PROG" ]; then
+		$PROG --version
+	else
+		log_err "Aether not installed at $PROG"
+		return 1
+	fi
+}
+
+case "${1:-}" in
+	start)    do_start ;;
+	stop)     do_stop ;;
+	restart)  do_restart ;;
+	status)   do_status ;;
+	show)     do_show ;;
+	set)      do_set "$2" "$3" ;;
+	version)  do_version ;;
+	*)
+		echo "Aether OpenWrt Controller"
+		echo ""
+		echo "Usage: aether-ctl <command> [args]"
+		echo ""
+		echo "Commands:"
+		echo "  start           Start Aether tunnel"
+		echo "  stop            Stop Aether tunnel"
+		echo "  restart         Restart Aether tunnel"
+		echo "  status          Show running status and config"
+		echo "  show            Show current configuration"
+		echo "  set <opt> <val> Change a configuration option"
+		echo "  version         Show Aether binary version"
+		echo ""
+		echo "Examples:"
+		echo "  aether-ctl start"
+		echo "  aether-ctl set protocol wg"
+		echo "  aether-ctl set obfuscation_profile aggressive"
+		echo "  aether-ctl set enabled no"
+		;;
+esac
