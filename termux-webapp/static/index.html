@@ -122,6 +122,19 @@
             <div id="diagnosticsList" class="diagnostics-list"></div>
           </section>
 
+          <section class="panel history-panel card">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="history_title">پروفایل‌های موفق اخیر</h2>
+                <p data-i18n="history_desc">آخرین اجراها و تست‌های موفق اینجا ذخیره می‌شوند تا سریع دوباره برگردی.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="clearHistoryBtn" class="btn ghost">پاک کردن سابقه</button>
+              </div>
+            </div>
+            <div id="historyList" class="history-list"></div>
+          </section>
+
           <section class="panel action-panel card wide-panel">
             <div class="panel-head with-actions">
               <div>
@@ -347,6 +360,43 @@
               <div class="card mini-card">
                 <span class="label" data-i18n="label_log_file">Log file</span>
                 <strong id="logPathView">--</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel backups-panel card wide-panel">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="backup_title">نسخه‌های پشتیبان کانفیگ</h2>
+                <p data-i18n="backup_desc">هر بار ذخیره یا ایمپورت، یک نسخه‌ی پشتیبان محلی ساخته می‌شود.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="createBackupBtn" class="btn ghost">بکاپ دستی</button>
+                <button id="clearBackupsBtn" class="btn ghost">حذف همه</button>
+              </div>
+            </div>
+            <div id="backupList" class="backup-list"></div>
+          </section>
+
+          <section class="panel qr-panel card wide-panel">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="qr_title">انتقال کانفیگ با QR</h2>
+                <p data-i18n="qr_desc">کانفیگ فعلی را به‌صورت QR و متن فشرده برای دستگاه دیگر آماده کن.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="generateQrBtn" class="btn ghost">ساخت QR</button>
+                <button id="copyQrPayloadBtn" class="btn ghost">کپی متن</button>
+              </div>
+            </div>
+            <div class="qr-layout">
+              <div class="qr-preview-wrap card mini-card">
+                <img id="qrPreview" class="qr-preview hidden" alt="QR Config" />
+                <div id="qrPlaceholder" class="qr-placeholder">QR</div>
+              </div>
+              <div class="field wide qr-payload-wrap">
+                <label for="qrPayload" data-i18n="qr_payload_label">متن فشرده‌ی کانفیگ</label>
+                <textarea id="qrPayload" rows="8" placeholder="QR payload will appear here"></textarea>
               </div>
             </div>
           </section>

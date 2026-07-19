@@ -48,12 +48,23 @@ const state = {
   viewMode: "simple",
   lastPresets: [],
   docs: [],
+  histories: [],
+  backups: [],
   liteMode: false,
   backendReady: false,
   proxyHealth: null,
   deferredPrompt: null,
   actionText: "",
   actionTitle: "",
+  rawLogs: "",
+};
+
+const STORAGE_KEYS = {
+  lang: "aether-web-lang",
+  view: "aether-web-view",
+  liteConfig: "aether-web-lite-config",
+  history: "aether-web-history",
+  backups: "aether-web-backups",
 };
 
 const FALLBACK_PRESETS = [
@@ -177,6 +188,31 @@ const translations = {
     btn_export: "اکسپورت کانفیگ",
     btn_import: "ایمپورت کانفیگ",
     btn_install_pwa: "نصب به‌عنوان اپ",
+    btn_generate_qr: "ساخت QR",
+    btn_copy_qr: "کپی متن QR",
+    btn_backup_now: "بکاپ دستی",
+    btn_clear_backups: "حذف همه",
+    btn_clear_history: "پاک کردن سابقه",
+    btn_restore: "بازیابی",
+    btn_apply: "اعمال",
+    btn_delete: "حذف",
+    history_title: "پروفایل‌های موفق اخیر",
+    history_desc: "آخرین اجراها و تست‌های موفق اینجا ذخیره می‌شوند تا سریع دوباره برگردی.",
+    backup_title: "نسخه‌های پشتیبان کانفیگ",
+    backup_desc: "هر بار ذخیره یا ایمپورت، یک نسخه‌ی پشتیبان محلی ساخته می‌شود.",
+    qr_title: "انتقال کانفیگ با QR",
+    qr_desc: "کانفیگ فعلی را به‌صورت QR و متن فشرده برای دستگاه دیگر آماده کن.",
+    qr_payload_label: "متن فشرده‌ی کانفیگ",
+    history_empty: "هنوز هیچ اجرای موفقی ثبت نشده است.",
+    backup_empty: "هنوز هیچ بکاپی ساخته نشده است.",
+    qr_placeholder: "QR",
+    backup_created: "نسخه‌ی پشتیبان ذخیره شد.",
+    history_cleared: "سابقه پاک شد.",
+    backups_cleared: "بکاپ‌ها حذف شدند.",
+    backup_restored: "بکاپ بازیابی شد.",
+    backup_deleted: "بکاپ حذف شد.",
+    history_applied: "پروفایل دوباره اعمال شد.",
+    qr_generated: "QR کانفیگ ساخته شد.",
     installed_text: "نصب شده",
     not_installed: "نصب نشده",
     mode_termux: "Termux / Live",
@@ -311,6 +347,31 @@ const translations = {
     btn_export: "Export config",
     btn_import: "Import config",
     btn_install_pwa: "Install App",
+    btn_generate_qr: "Generate QR",
+    btn_copy_qr: "Copy QR payload",
+    btn_backup_now: "Backup now",
+    btn_clear_backups: "Delete all",
+    btn_clear_history: "Clear history",
+    btn_restore: "Restore",
+    btn_apply: "Apply",
+    btn_delete: "Delete",
+    history_title: "Recent successful profiles",
+    history_desc: "Your latest successful starts and proxy tests are kept here for quick reuse.",
+    backup_title: "Config backup versions",
+    backup_desc: "Every save or import creates a local config backup.",
+    qr_title: "Transfer config with QR",
+    qr_desc: "Prepare the current config as a QR code and compact text for another device.",
+    qr_payload_label: "Compressed config payload",
+    history_empty: "No successful runs have been saved yet.",
+    backup_empty: "No backups have been created yet.",
+    qr_placeholder: "QR",
+    backup_created: "Backup saved.",
+    history_cleared: "History cleared.",
+    backups_cleared: "Backups deleted.",
+    backup_restored: "Backup restored.",
+    backup_deleted: "Backup deleted.",
+    history_applied: "Profile applied again.",
+    qr_generated: "Config QR generated.",
     installed_text: "installed",
     not_installed: "not installed",
     mode_termux: "Termux / Live",
@@ -379,13 +440,13 @@ const translations = {
 };
 
 function preferredLanguage() {
-  const saved = localStorage.getItem("aether-web-lang");
+  const saved = localStorage.getItem(STORAGE_KEYS.lang);
   if (saved === "fa" || saved === "en") return saved;
   return (navigator.language || "").toLowerCase().startsWith("fa") ? "fa" : "en";
 }
 
 function preferredViewMode() {
-  return localStorage.getItem("aether-web-view") === "advanced" ? "advanced" : "simple";
+  return localStorage.getItem(STORAGE_KEYS.view) === "advanced" ? "advanced" : "simple";
 }
 
 function t(key) {
@@ -478,7 +539,7 @@ async function api(path, options = {}) {
 
 function setLanguage(lang) {
   state.lang = lang === "en" ? "en" : "fa";
-  localStorage.setItem("aether-web-lang", state.lang);
+  localStorage.setItem(STORAGE_KEYS.lang, state.lang);
   applyTranslations();
   renderPresets(state.lastPresets);
   renderDiagnostics();
@@ -491,10 +552,68 @@ function setLanguage(lang) {
 
 function setViewMode(mode, announce = false) {
   state.viewMode = mode === "advanced" ? "advanced" : "simple";
-  localStorage.setItem("aether-web-view", state.viewMode);
+  localStorage.setItem(STORAGE_KEYS.view, state.viewMode);
   document.body.classList.toggle("simple-mode", state.viewMode === "simple");
   $("viewModeBtn").textContent = state.viewMode === "simple" ? t("btn_view_advanced") : t("btn_view_simple");
   if (announce) showToast(state.viewMode === "simple" ? t("view_simple_toast") : t("view_advanced_toast"));
+}
+
+function storageGetJson(key, fallback = []) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : cloneValue(fallback);
+  } catch {
+    return cloneValue(fallback);
+  }
+}
+
+function storageSetJson(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function humanNow() {
+  return new Date().toLocaleString(state.lang === "fa" ? "fa-IR" : "en-US");
+}
+
+function protocolSummary(config) {
+  const protocol = config.protocol === "wg" ? "WireGuard" : config.protocol === "gool" ? "GOOL" : "MASQUE";
+  const transport = config.protocol === "masque" ? ` / ${config.masque.transport}` : "";
+  const noise = config.noise_profile ? ` / ${config.noise_profile}` : "";
+  return `${protocol}${transport}${noise}`;
+}
+
+function saveBackup(reason = "save", config = gatherConfig()) {
+  const backups = storageGetJson(STORAGE_KEYS.backups, []);
+  backups.unshift({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    label: reason,
+    summary: protocolSummary(config),
+    config,
+  });
+  state.backups = backups.slice(0, 12);
+  storageSetJson(STORAGE_KEYS.backups, state.backups);
+}
+
+function loadBackups() {
+  state.backups = storageGetJson(STORAGE_KEYS.backups, []);
+}
+
+function loadHistory() {
+  state.histories = storageGetJson(STORAGE_KEYS.history, []);
+}
+
+function pushHistory(kind, config = gatherConfig()) {
+  const histories = storageGetJson(STORAGE_KEYS.history, []);
+  histories.unshift({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    kind,
+    createdAt: new Date().toISOString(),
+    summary: protocolSummary(config),
+    config,
+  });
+  state.histories = histories.slice(0, 10);
+  storageSetJson(STORAGE_KEYS.history, state.histories);
 }
 
 function applyTranslations() {
@@ -521,6 +640,11 @@ function applyTranslations() {
   $("copyDiagBtn").textContent = t("btn_copy_diag");
   $("exportConfigBtn").textContent = t("btn_export");
   $("importConfigBtn").textContent = t("btn_import");
+  $("generateQrBtn").textContent = t("btn_generate_qr");
+  $("copyQrPayloadBtn").textContent = t("btn_copy_qr");
+  $("createBackupBtn").textContent = t("btn_backup_now");
+  $("clearBackupsBtn").textContent = t("btn_clear_backups");
+  $("clearHistoryBtn").textContent = t("btn_clear_history");
   $("installPwaBtn").textContent = t("btn_install_pwa");
   $("uninstallBtn").textContent = t("btn_uninstall");
   $("refreshLogsBtn").textContent = t("btn_refresh_logs");
@@ -532,6 +656,8 @@ function applyTranslations() {
   $("guideTlsBody").innerHTML = t("tls_body_html");
   $("guideBrowserList").innerHTML = t("browser_list_html");
   $("guideLanBody").innerHTML = t("lan_body_html");
+  $("qrPlaceholder").textContent = t("qr_placeholder");
+  $("qrPayload").placeholder = t("qr_payload_label");
 }
 
 function enableTab(name) {
@@ -672,6 +798,79 @@ function renderDocs(docs) {
     link.textContent = doc.name;
     container.appendChild(link);
   });
+}
+
+function renderHistory() {
+  const list = $("historyList");
+  list.innerHTML = "";
+  if (!state.histories.length) {
+    list.innerHTML = `<div class="history-card"><p>${escapeHtml(t("history_empty"))}</p></div>`;
+    return;
+  }
+  state.histories.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "history-card";
+    const kindLabel = item.kind === "test" ? t("btn_test") : t("btn_start");
+    card.innerHTML = `
+      <strong>${escapeHtml(item.summary)}</strong>
+      <p>${escapeHtml(kindLabel)}</p>
+      <div class="history-meta"><span>${escapeHtml(new Date(item.createdAt).toLocaleString(state.lang === "fa" ? "fa-IR" : "en-US"))}</span></div>
+      <div class="history-actions">
+        <button class="btn ghost compact history-apply" data-id="${escapeHtml(item.id)}">${escapeHtml(t("btn_apply"))}</button>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function renderBackups() {
+  const list = $("backupList");
+  list.innerHTML = "";
+  if (!state.backups.length) {
+    list.innerHTML = `<div class="backup-card"><p>${escapeHtml(t("backup_empty"))}</p></div>`;
+    return;
+  }
+  state.backups.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "backup-card";
+    card.innerHTML = `
+      <strong>${escapeHtml(item.summary || item.label || "Backup")}</strong>
+      <p>${escapeHtml(item.label || "save")}</p>
+      <div class="backup-meta"><span>${escapeHtml(new Date(item.createdAt).toLocaleString(state.lang === "fa" ? "fa-IR" : "en-US"))}</span></div>
+      <div class="backup-actions">
+        <button class="btn ghost compact backup-restore" data-id="${escapeHtml(item.id)}">${escapeHtml(t("btn_restore"))}</button>
+        <button class="btn ghost compact backup-delete" data-id="${escapeHtml(item.id)}">${escapeHtml(t("btn_delete"))}</button>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function encodePayloadUtf8(text) {
+  return btoa(unescape(encodeURIComponent(text)));
+}
+
+function buildQrPayload(config = gatherConfig()) {
+  const minimal = {
+    bind_address: config.bind_address,
+    protocol: config.protocol,
+    scan_mode: config.scan_mode,
+    ip_mode: config.ip_mode,
+    quick_reconnect: config.quick_reconnect,
+    noise_profile: config.noise_profile,
+    masque: config.masque,
+    wireguard: config.wireguard,
+  };
+  return encodePayloadUtf8(JSON.stringify(minimal));
+}
+
+function renderQrPayload() {
+  const payload = buildQrPayload(gatherConfig());
+  $("qrPayload").value = payload;
+  const url = `https://quickchart.io/qr?text=${encodeURIComponent(payload)}&size=320`;
+  $("qrPreview").src = url;
+  $("qrPreview").classList.remove("hidden");
+  $("qrPlaceholder").classList.add("hidden");
 }
 
 function renderStatus() {
@@ -817,8 +1016,11 @@ function renderAll() {
   renderStatus();
   renderActionOutput();
   renderDiagnostics();
+  renderHistory();
+  renderBackups();
   renderLogs(state.rawLogs || "");
   updatePreviewFromForm();
+  renderQrPayload();
 }
 
 function applyPreset(preset) {
@@ -831,8 +1033,9 @@ function applyPreset(preset) {
 
 async function saveConfig(showMessage = true) {
   state.config = gatherConfig();
+  saveBackup("save", state.config);
   if (state.liteMode) {
-    localStorage.setItem("aether-web-lite-config", JSON.stringify(state.config));
+    localStorage.setItem(STORAGE_KEYS.liteConfig, JSON.stringify(state.config));
     if (showMessage) showToast(t("save_success"));
     renderAll();
     return state.config;
@@ -891,6 +1094,7 @@ function buildPreviewFromConfig(config) {
 function updatePreviewFromForm() {
   state.config = gatherConfig();
   $("commandPreview").textContent = buildPreviewFromConfig(state.config) || "--";
+  renderQrPayload();
 }
 
 function bindFormUpdates() {
@@ -999,14 +1203,22 @@ function bindButtons() {
   $("installBtn").addEventListener("click", () => handleAction($("installBtn"), () => api("/api/install", { method: "POST", body: JSON.stringify({}) }), t("install_success")));
   $("startBtn").addEventListener("click", () => handleAction($("startBtn"), async () => {
     const config = await saveConfig(false);
-    return api("/api/start", { method: "POST", body: JSON.stringify({ config }) });
+    const result = await api("/api/start", { method: "POST", body: JSON.stringify({ config }) });
+    pushHistory("start", config);
+    renderHistory();
+    return result;
   }, t("start_success")));
   $("stopBtn").addEventListener("click", () => handleAction($("stopBtn"), () => api("/api/stop", { method: "POST", body: JSON.stringify({}) }), t("stop_success")));
   $("restartBtn").addEventListener("click", () => handleAction($("restartBtn"), async () => {
     const config = await saveConfig(false);
     return api("/api/restart", { method: "POST", body: JSON.stringify({ config }) });
   }, t("restart_success")));
-  $("testBtn").addEventListener("click", () => handleAction($("testBtn"), () => api("/api/test", { method: "POST", body: JSON.stringify({}) }), t("test_success")));
+  $("testBtn").addEventListener("click", () => handleAction($("testBtn"), async () => {
+    const result = await api("/api/test", { method: "POST", body: JSON.stringify({}) });
+    pushHistory("test", gatherConfig());
+    renderHistory();
+    return result;
+  }, t("test_success")));
   $("saveBtn").addEventListener("click", () => handleAction($("saveBtn"), () => saveConfig(), t("save_success")));
   $("updateBtn").addEventListener("click", () => handleAction($("updateBtn"), () => api("/api/update", { method: "POST", body: JSON.stringify({}) }), t("core_update_success")));
   $("updatePanelBtn").addEventListener("click", () => handleAction($("updatePanelBtn"), () => api("/api/update-panel", { method: "POST", body: JSON.stringify({}) }), t("panel_update_success")));
@@ -1027,11 +1239,36 @@ function bindButtons() {
 
   $("exportConfigBtn").addEventListener("click", exportConfig);
   $("importConfigBtn").addEventListener("click", () => $("importConfigFile").click());
+  $("generateQrBtn").addEventListener("click", () => {
+    renderQrPayload();
+    showToast(t("qr_generated"));
+  });
+  $("copyQrPayloadBtn").addEventListener("click", () => copyText($("qrPayload").value).catch((e) => showToast(e.message, "error")));
+  $("createBackupBtn").addEventListener("click", () => {
+    saveBackup("manual", gatherConfig());
+    renderBackups();
+    showToast(t("backup_created"));
+  });
+  $("clearBackupsBtn").addEventListener("click", () => {
+    state.backups = [];
+    storageSetJson(STORAGE_KEYS.backups, []);
+    renderBackups();
+    showToast(t("backups_cleared"));
+  });
+  $("clearHistoryBtn").addEventListener("click", () => {
+    state.histories = [];
+    storageSetJson(STORAGE_KEYS.history, []);
+    renderHistory();
+    showToast(t("history_cleared"));
+  });
   $("importConfigFile").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      importConfigFromText(await file.text());
+      const text = await file.text();
+      importConfigFromText(text);
+      saveBackup("import", gatherConfig());
+      renderBackups();
     } catch (error) {
       showToast(error.message || t("op_failed"), "error");
     }
@@ -1046,6 +1283,37 @@ function bindButtons() {
     await state.deferredPrompt.userChoice;
     state.deferredPrompt = null;
     $("installPwaBtn").classList.add("hidden");
+  });
+
+  $("historyList").addEventListener("click", (event) => {
+    const button = event.target.closest(".history-apply");
+    if (!button) return;
+    const item = state.histories.find((entry) => entry.id === button.dataset.id);
+    if (!item) return;
+    fillConfig(item.config);
+    updatePreviewFromForm();
+    enableTab("settings");
+    showToast(t("history_applied"));
+  });
+
+  $("backupList").addEventListener("click", (event) => {
+    const restoreBtn = event.target.closest(".backup-restore");
+    const deleteBtn = event.target.closest(".backup-delete");
+    if (restoreBtn) {
+      const item = state.backups.find((entry) => entry.id === restoreBtn.dataset.id);
+      if (!item) return;
+      fillConfig(item.config);
+      updatePreviewFromForm();
+      showToast(t("backup_restored"));
+      enableTab("settings");
+      return;
+    }
+    if (deleteBtn) {
+      state.backups = state.backups.filter((entry) => entry.id !== deleteBtn.dataset.id);
+      storageSetJson(STORAGE_KEYS.backups, state.backups);
+      renderBackups();
+      showToast(t("backup_deleted"));
+    }
   });
 
   document.querySelectorAll(".tab-btn").forEach((btn) => btn.addEventListener("click", () => enableTab(btn.dataset.tab)));
@@ -1067,7 +1335,7 @@ async function initializeBackend() {
     setSplash(t("splash_lite"));
     state.backendReady = false;
     state.liteMode = true;
-    const saved = localStorage.getItem("aether-web-lite-config");
+    const saved = localStorage.getItem(STORAGE_KEYS.liteConfig);
     state.config = saved ? deepMerge(DEFAULT_CONFIG, JSON.parse(saved)) : cloneValue(DEFAULT_CONFIG);
     state.lastPresets = FALLBACK_PRESETS;
     state.docs = [];
@@ -1124,6 +1392,8 @@ async function init() {
   await registerPwa();
   applyTranslations();
   setViewMode(state.viewMode);
+  loadHistory();
+  loadBackups();
   setActionOutput(t("no_action_yet"));
   renderLogs("");
   enableTab("overview");
