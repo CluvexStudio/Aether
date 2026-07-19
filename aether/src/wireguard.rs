@@ -138,9 +138,10 @@ impl WgTunnel {
         });
 
         let send_task = tokio::spawn(async move {
+            let mut out_buf = vec![0u8; MAX_PACKET]; // ponytail: reuse single buffer, not alloc-per-packet
+
             while let Some(ip_packet) = outbound_rx.recv().await {
                 let mut tunn = tunn_w.lock().await;
-                let mut out_buf = vec![0u8; MAX_PACKET];
 
                 match tunn.encapsulate(&ip_packet, &mut out_buf) {
                     TunnResult::Done => {}
@@ -178,10 +179,10 @@ impl WgTunnel {
 
         let timer_task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(TIMER_TICK);
+            let mut tmp = vec![0u8; MAX_PACKET]; // ponytail: reuse single buffer, not alloc-per-tick
             loop {
                 interval.tick().await;
                 let mut tunn = tunn_t.lock().await;
-                let mut tmp = vec![0u8; MAX_PACKET];
                 if let TunnResult::WriteToNetwork(pkt) = tunn.update_timers(&mut tmp) {
                     let mut pkt_vec = pkt.to_vec();
                     inject_client_id(&mut pkt_vec, &client_id);

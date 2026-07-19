@@ -25,19 +25,20 @@ enum Target {
 pub async fn serve(listen: SocketAddr, stack: StackHandle) -> Result<()> {
     let listener = TcpListener::bind(listen).await?;
     log::info!("socks5 listening on {listen}");
+    let bind_ip = listen.ip();
 
     loop {
         let (sock, peer) = listener.accept().await?;
         let stack = stack.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(sock, stack).await {
+            if let Err(e) = handle_client(sock, stack, bind_ip).await {
                 log::debug!("socks client {peer} ended: {e}");
             }
         });
     }
 }
 
-async fn handle_client(mut sock: TcpStream, stack: StackHandle) -> Result<()> {
+async fn handle_client(mut sock: TcpStream, stack: StackHandle, bind_ip: IpAddr) -> Result<()> {
     handshake(&mut sock).await?;
 
     let mut head = [0u8; 4];
@@ -52,7 +53,7 @@ async fn handle_client(mut sock: TcpStream, stack: StackHandle) -> Result<()> {
 
     match cmd {
         CMD_CONNECT => handle_connect(sock, stack, target, port).await,
-        CMD_UDP_ASSOCIATE => handle_udp_associate(sock, stack).await,
+        CMD_UDP_ASSOCIATE => handle_udp_associate(sock, stack, bind_ip).await,
         _ => {
             reply(&mut sock, REP_NOT_SUPPORTED).await?;
             Err(AetherError::Other("unsupported socks command".into()))
@@ -279,8 +280,8 @@ async fn handle_connect(
     Ok(())
 }
 
-async fn handle_udp_associate(mut sock: TcpStream, stack: StackHandle) -> Result<()> {
-    let relay = UdpSocket::bind("127.0.0.1:0").await?;
+async fn handle_udp_associate(mut sock: TcpStream, stack: StackHandle, bind_ip: IpAddr) -> Result<()> {
+    let relay = UdpSocket::bind(SocketAddr::new(bind_ip, 0)).await?;
     let relay_addr = relay.local_addr()?;
     reply_bound(&mut sock, relay_addr).await?;
 

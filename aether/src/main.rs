@@ -405,7 +405,9 @@ async fn run_masque(
     }
 
     let (mode_str, ip) = if forced.is_some() || quick_peer.is_some() {
-        (String::new(), prober::IpScan::V4)
+        // Still capture scan mode for use on reconnect if quick_peer/forced peer dies later.
+        let mode_str = std::env::var("AETHER_SCAN").unwrap_or_default();
+        (mode_str, prober::IpScan::V4)
     } else {
         let mode_str = select_scan_mode_str().await;
         let ip = select_ip_version().await;
