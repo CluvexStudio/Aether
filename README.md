@@ -19,13 +19,14 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 - Automatic reconnection, and quick-reconnect to your last known-good gateway to skip rescanning
 - Local SOCKS5 proxy
 - Command-line flags, environment variables, or interactive prompts — your choice
-- Linux, Windows, macOS and Android (Termux)
+- Linux, Windows, macOS, Android (Termux), and OpenWrt routers
 
 ## Download
 
 Prebuilt binaries are available on the Releases page for:
 
-- Linux
+- Linux (x86_64, ARM64, ARMv7)
+- Linux musl (ARMv7 — static, for OpenWrt/Alpine)
 - Windows
 - macOS
 - Android (Termux)
@@ -43,6 +44,45 @@ aether
 ```
 
 To update later, run `./aether.sh update`. To remove it, run `./aether.sh uninstall`.
+
+### OpenWrt — install and run as a service
+
+Download the statically-linked musl binary from [Releases](https://github.com/CluvexStudio/Aether/releases) (`aether-linux-armv7-musl.tar.gz` for ARMv7 routers like Google Wifi / IPQ4019):
+
+```bash
+# On the router (SSH in first: ssh root@192.168.1.1)
+cd /tmp
+wget https://github.com/CluvexStudio/Aether/releases/latest/download/aether-linux-armv7-musl.tar.gz
+tar xzf aether-linux-armv7-musl.tar.gz
+mv aether /usr/bin/aether
+chmod +x /usr/bin/aether
+```
+
+Create a procd init script so it starts automatically and restarts on crash:
+
+```bash
+cat > /etc/init.d/aether << 'INITEOF'
+#!/bin/sh /etc/rc.common
+
+START=91
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /usr/bin/aether --masque --scan balanced --noize firewall --bind 0.0.0.0:1819 --quick-reconnect -4
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param respawn 3600 5 0
+    procd_close_instance
+}
+INITEOF
+
+chmod 755 /etc/init.d/aether
+service aether enable
+service aether start
+```
+
+The proxy will be available at `<router-ip>:1819` for all devices on your network. See [Docs/GUIDE.en.md](Docs/GUIDE.en.md#openwrt) for the full guide including firewall rules, LAN proxy setup, and troubleshooting.
 
 ## Build
 
