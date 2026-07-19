@@ -158,20 +158,22 @@ fn derive_sibling_path(base: &str, suffix: &str) -> String {
     }
 }
 
-async fn apply_license_if_set(identity: &account::Identity) -> Result<()> {
+async fn apply_license_if_set(identity: &account::Identity) {
     if let Ok(key) = std::env::var("AETHER_KEY") {
         if !key.is_empty() {
             log::info!("[*] applying WARP+ license key to device {}", identity.device_id);
-            account::update_license(&identity.device_id, &identity.access_token, &key).await?;
+            // ponytail: warn-only on failure so the tunnel still works on free tier
+            if let Err(e) = account::update_license(&identity.device_id, &identity.access_token, &key).await {
+                log::warn!("[-] WARP+ license failed: {e} — continuing on free tier");
+            }
         }
     }
-    Ok(())
 }
 
 async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing warp identity from {config_path}");
-        apply_license_if_set(&identity).await?;
+        apply_license_if_set(&identity).await;
         return Ok(identity);
     }
 
@@ -179,18 +181,20 @@ async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> 
     let identity = account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await?;
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new warp identity to {config_path}");
-    apply_license_if_set(&identity).await?;
+    apply_license_if_set(&identity).await;
     Ok(identity)
 }
 
 async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing masque identity from {config_path}");
-        apply_license_if_set(&identity).await?;
-        if identity.has_masque_credentials() {
+        apply_license_if_set(&identity).await;
+        if identity.has_valid_masque_credentials() {
             return Ok(identity);
         }
-        log::info!("[+] masque identity missing credentials; enrolling masque key");
+        log::info!("[+] masque credentials missing or expired; re-enrolling masque key");
+        // Clear stale creds so ensure_masque_enrolled generates fresh ones
+        let identity = account::Identity { cert_pem: Vec::new(), key_pem: Vec::new(), ..identity };
         let (cert_pem, key_pem) = account::ensure_masque_enrolled(&identity).await?;
         let identity = account::Identity { cert_pem, key_pem, ..identity };
         config::save(config_path, &identity)?;
@@ -199,11 +203,14 @@ async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity
 
     log::info!("[+] no masque identity found; provisioning dedicated masque account");
     let identity = account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await?;
-    apply_license_if_set(&identity).await?;
+    apply_license_if_set(&identity).await;
     let (cert_pem, key_pem) = account::ensure_masque_enrolled(&identity).await?;
     let identity = account::Identity { cert_pem, key_pem, ..identity };
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new masque identity to {config_path}");
+    // ponytail: brief delay after enrollment so Cloudflare edge propagates the new SPKI
+    log::info!("[*] waiting for edge propagation...");
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
     Ok(identity)
 }
 
@@ -310,6 +317,16 @@ fn masque_reconnect_delay() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+/// Generate a fresh MASQUE cert/key pair and re-enroll with Cloudflare.
+/// Same device_id — no new slot consumed, just a fresh SPKI hash.
+async fn renew_masque_cert(identity: &mut account::Identity) -> Result<()> {
+    let keypair = account::generate_masque_keypair()?;
+    account::enroll_key(&identity.device_id, &identity.access_token, &keypair.spki_der, None).await?;
+    identity.cert_pem = keypair.cert_pem;
+    identity.key_pem = keypair.key_pem;
+    Ok(())
+}
+
 async fn hunt_masque_peer(
     identity: &account::Identity,
     mode_str: &str,
@@ -394,7 +411,7 @@ async fn want_quick_reconnect(cached: &lastconn::LastConnection) -> bool {
 }
 
 async fn run_masque(
-    identity: account::Identity,
+    mut identity: account::Identity,
     ech: Option<Vec<u8>>,
     listen: SocketAddr,
     lastconn_path: String,
@@ -428,7 +445,23 @@ async fn run_masque(
         (mode_str, ip)
     };
 
+    let mut first_run = true;
+
     loop {
+        // ponytail: re-enroll MASQUE key on reconnect so Cloudflare edge accepts the fresh SPKI.
+        // First run uses the cert from provisioning; subsequent runs generate a new keypair.
+        if !first_run {
+            log::info!("[*] re-enrolling MASQUE key for reconnection");
+            match renew_masque_cert(&mut identity).await {
+                Ok(()) => {
+                    log::info!("[+] MASQUE key re-enrolled; waiting for edge propagation...");
+                    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                }
+                Err(e) => log::warn!("[-] MASQUE re-enrollment failed: {e}; trying with existing cert"),
+            }
+        }
+        first_run = false;
+
         let peer = if let Some(p) = quick_peer.take() {
             p
         } else {

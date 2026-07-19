@@ -128,7 +128,9 @@ pub fn generate_masque_keypair() -> Result<MasqueKeyPair> {
         .map_err(|e| AetherError::Tls(e.to_string()))?;
 
     let not_before = Asn1Time::days_from_now(0).map_err(|e| AetherError::Tls(e.to_string()))?;
-    let not_after = Asn1Time::days_from_now(1).map_err(|e| AetherError::Tls(e.to_string()))?;
+    // ponytail: 365-day validity avoids expired-cert reconnect loops after 24h;
+    // upgrade to cert-expiry check + auto-renew if Cloudflare tightens validity
+    let not_after = Asn1Time::days_from_now(365).map_err(|e| AetherError::Tls(e.to_string()))?;
     builder
         .set_not_before(&not_before)
         .map_err(|e| AetherError::Tls(e.to_string()))?;
@@ -391,5 +393,23 @@ impl Identity {
 
     pub fn has_masque_credentials(&self) -> bool {
         !self.cert_pem.is_empty() && !self.key_pem.is_empty()
+    }
+
+    /// Returns true if masque credentials exist AND the cert is not expired.
+    pub fn has_valid_masque_credentials(&self) -> bool {
+        if !self.has_masque_credentials() {
+            return false;
+        }
+        // ponytail: parse cert to check expiry; if parsing fails, treat as expired
+        // so we re-enroll rather than loop with a broken cert
+        match boring::x509::X509::from_pem(&self.cert_pem) {
+            Ok(cert) => {
+                match Asn1Time::days_from_now(0) {
+                    Ok(now) => cert.not_after() >= now,
+                    Err(_) => false,
+                }
+            }
+            Err(_) => false,
+        }
     }
 }
