@@ -5,6 +5,7 @@ Usage: aether [OPTIONS]
 
 Connection:
   --bind <addr>            local SOCKS5 listen address (default 127.0.0.1:1819)
+  --key <license>, -K      apply a WARP+ / 1.1.1.1 premium license key
   --quick-reconnect        auto-accept reconnecting with the last known working gateway
   --no-quick-reconnect     always scan fresh, ignore any saved last-connection gateway
   -4                       scan/connect over IPv4 only (default)
@@ -86,6 +87,7 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             }
 
             "--bind" => set("AETHER_SOCKS", next_value!()),
+            "--key" | "-K" => set("AETHER_KEY", next_value!()),
             "--quick-reconnect" => set("AETHER_QUICK_RECONNECT", "1"),
             "--no-quick-reconnect" => set("AETHER_QUICK_RECONNECT", "0"),
 
