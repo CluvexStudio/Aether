@@ -454,6 +454,59 @@ def detect_urls(host: str, port: int) -> List[str]:
     return unique
 
 
+def read_installed_version_tag(binary_path: Path) -> str | None:
+    version_file = binary_path.parent.parent / "etc" / f"{binary_path.name}.version"
+    if not version_file.exists():
+        return None
+    try:
+        tag = version_file.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        return None
+    return tag or None
+
+
+def normalize_version_output(output: str) -> str | None:
+    text = (output or "").strip()
+    if not text:
+        return None
+
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if not first_line:
+        return None
+
+    lowered = text.lower()
+    if "unknown option" in lowered or "usage:" in lowered:
+        return None
+
+    if len(first_line) > 120:
+        first_line = first_line[:117] + "..."
+    return first_line
+
+
+def probe_binary_version(binary_path: Path) -> str:
+    for flag in ("--version", "-v"):
+        try:
+            proc = subprocess.run(
+                [str(binary_path), flag],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception:
+            continue
+
+        normalized = normalize_version_output(proc.stdout or "")
+        if normalized:
+            return normalized
+
+    if tag := read_installed_version_tag(binary_path):
+        return f"installed ({tag})"
+
+    return "installed (version flag unsupported)"
+
+
 def binary_info(cfg: Dict[str, Any]) -> Dict[str, Any]:
     binary_path = Path(cfg["advanced"]["binary_path"]).expanduser()
     info: Dict[str, Any] = {
@@ -462,19 +515,7 @@ def binary_info(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "version": None,
     }
     if binary_path.exists():
-        try:
-            proc = subprocess.run(
-                [str(binary_path), "--version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            output = (proc.stdout or "").strip()
-            info["version"] = output
-        except Exception as exc:
-            info["version"] = f"error: {exc}"
+        info["version"] = probe_binary_version(binary_path)
     return info
 
 

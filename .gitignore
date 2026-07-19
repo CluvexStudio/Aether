@@ -2,6 +2,7 @@ target/
 **/target/
 *.zip
 *.tar.gz
+dist/
 *.pyc
 __pycache__/
 .DS_Store
