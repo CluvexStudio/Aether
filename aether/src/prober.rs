@@ -214,7 +214,10 @@ impl Strategy {
     /// adjusts them so a 4-core router gets half and a 16-core desktop gets double.
     fn scale_to_host(mut self) -> Self {
         self.concurrency = scale(self.concurrency, REFERENCE_CORES).max(2);
-        self.sample_per_cidr = scale(self.sample_per_cidr, REFERENCE_CORES).max(8);
+        // 0 is a sentinel meaning "full subnet / use fallback default" — don't scale it
+        if self.sample_per_cidr > 0 {
+            self.sample_per_cidr = scale(self.sample_per_cidr, REFERENCE_CORES).max(8);
+        }
         self
     }
 }

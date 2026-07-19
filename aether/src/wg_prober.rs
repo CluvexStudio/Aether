@@ -120,7 +120,9 @@ struct WgStrategy {
 impl WgStrategy {
     fn scale_to_host(mut self) -> Self {
         self.concurrency = crate::prober::scale(self.concurrency, 8).max(2);
-        self.sample_per_cidr = crate::prober::scale(self.sample_per_cidr, 8).max(8);
+        if self.sample_per_cidr > 0 {
+            self.sample_per_cidr = crate::prober::scale(self.sample_per_cidr, 8).max(8);
+        }
         self
     }
 }
