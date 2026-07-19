@@ -14,18 +14,21 @@ use crate::error::{AetherError, Result};
 /// Scale TCP/UDP buffers to available system memory.
 /// Desktop (16GB+): 512KB TCP, 128KB UDP.  Router (128-512MB): proportionally smaller.
 fn scaled_tcp_buf() -> usize {
-    let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if pages <= 0 || page_size <= 0 {
-        return 512 * 1024; // fallback to original
+    #[cfg(unix)]
+    {
+        let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if pages > 0 && page_size > 0 {
+            let total_mb = (pages as u64 * page_size as u64) / (1024 * 1024);
+            return match total_mb {
+                0..=256 => 64 * 1024,      // 128-256 MB: 64KB
+                257..=1024 => 128 * 1024,   // 256MB-1GB: 128KB
+                1025..=4096 => 256 * 1024,  // 1-4 GB: 256KB
+                _ => 512 * 1024,            // 4GB+: 512KB (original)
+            };
+        }
     }
-    let total_mb = (pages as u64 * page_size as u64) / (1024 * 1024);
-    match total_mb {
-        0..=256 => 64 * 1024,      // 128-256 MB: 64KB
-        257..=1024 => 128 * 1024,   // 256MB-1GB: 128KB
-        1025..=4096 => 256 * 1024,  // 1-4 GB: 256KB
-        _ => 512 * 1024,            // 4GB+: 512KB (original)
-    }
+    512 * 1024 // fallback for non-unix or sysconf failure
 }
 
 fn scaled_udp_buf() -> usize {
