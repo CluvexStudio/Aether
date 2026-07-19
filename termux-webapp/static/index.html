@@ -10,9 +10,20 @@
     <div class="bg-grid"></div>
     <header class="hero container">
       <div>
-        <p class="eyebrow">Aether / Termux / Local Dashboard</p>
-        <h1>داشبورد وب Aether برای Termux</h1>
-        <p class="lead">
+        <div class="hero-topbar">
+          <div>
+            <p class="eyebrow" data-i18n="hero_eyebrow">Aether / Termux / Local Dashboard</p>
+            <h1 data-i18n="hero_title">داشبورد وب Aether برای Termux</h1>
+          </div>
+          <label class="lang-switcher">
+            <span data-i18n="lang_label">زبان</span>
+            <select id="langSwitcher">
+              <option value="fa">فارسی</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+        </div>
+        <p class="lead" data-i18n="hero_lead">
           بدون نیاز به حفظ کردن همه فلگ‌ها، از داخل مرورگر Aether را نصب، اجرا، متوقف و پایش کن.
         </p>
         <div class="hero-actions">
@@ -20,6 +31,10 @@
           <button id="startBtn" class="btn success">اجرای Aether</button>
           <button id="stopBtn" class="btn danger">توقف</button>
           <button id="testBtn" class="btn ghost">تست پراکسی</button>
+        </div>
+        <div class="vpn-banner card">
+          <strong data-i18n="vpn_title">نکته مهم درباره VPN</strong>
+          <p data-i18n="vpn_body">برای اجرای واقعی Aether بهتر است VPN سیستم خاموش باشد. برای دانلود یا آپدیت، اگر لازم شد می‌توانی موقتاً VPN را روشن کنی.</p>
         </div>
       </div>
       <div class="status-card card">
@@ -29,19 +44,19 @@
         </div>
         <div class="status-grid">
           <div>
-            <span class="label">Proxy</span>
+            <span class="label" data-i18n="label_proxy">Proxy</span>
             <strong id="proxyAddr">127.0.0.1:1819</strong>
           </div>
           <div>
-            <span class="label">PID</span>
+            <span class="label" data-i18n="label_pid">PID</span>
             <strong id="pidValue">--</strong>
           </div>
           <div>
-            <span class="label">Uptime</span>
+            <span class="label" data-i18n="label_uptime">Uptime</span>
             <strong id="uptimeValue">--</strong>
           </div>
           <div>
-            <span class="label">Panel</span>
+            <span class="label" data-i18n="label_panel">Panel</span>
             <strong id="serverUrls">--</strong>
           </div>
         </div>
@@ -51,8 +66,8 @@
     <main class="container main-grid">
       <section class="panel presets-panel card">
         <div class="panel-head">
-          <h2>پریست‌های آماده</h2>
-          <p>برای شروع سریع، یکی از این پروفایل‌ها را انتخاب کن.</p>
+          <h2 data-i18n="presets_title">پریست‌های آماده</h2>
+          <p data-i18n="presets_desc">برای شروع سریع، یکی از این پروفایل‌ها را انتخاب کن.</p>
         </div>
         <div id="presets" class="preset-grid"></div>
       </section>
@@ -60,8 +75,8 @@
       <section class="panel config-panel card">
         <div class="panel-head with-actions">
           <div>
-            <h2>تنظیمات اجرا</h2>
-            <p>تنظیمات ذخیره می‌شوند و برای دفعات بعدی باقی می‌مانند.</p>
+            <h2 data-i18n="config_title">تنظیمات اجرا</h2>
+            <p data-i18n="config_desc">تنظیمات ذخیره می‌شوند و برای دفعات بعدی باقی می‌مانند.</p>
           </div>
           <div class="inline-actions">
             <button id="saveBtn" class="btn primary">ذخیره تنظیمات</button>
@@ -74,12 +89,12 @@
 
         <form id="configForm" class="form-grid">
           <div class="field">
-            <label for="bindAddress">Bind address</label>
+            <label for="bindAddress" data-i18n="field_bind">Bind address</label>
             <input id="bindAddress" name="bind_address" type="text" placeholder="127.0.0.1:1819" />
           </div>
 
           <div class="field">
-            <label for="protocol">Protocol</label>
+            <label for="protocol" data-i18n="field_protocol">Protocol</label>
             <select id="protocol" name="protocol">
               <option value="masque">MASQUE</option>
               <option value="wg">WireGuard</option>
@@ -88,7 +103,7 @@
           </div>
 
           <div class="field">
-            <label for="scanMode">Scan mode</label>
+            <label for="scanMode" data-i18n="field_scan_mode">Scan mode</label>
             <select id="scanMode" name="scan_mode">
               <option value="turbo">turbo</option>
               <option value="balanced">balanced</option>
@@ -99,7 +114,7 @@
           </div>
 
           <div class="field">
-            <label for="ipMode">IP mode</label>
+            <label for="ipMode" data-i18n="field_ip_mode">IP mode</label>
             <select id="ipMode" name="ip_mode">
               <option value="v4">IPv4</option>
               <option value="v6">IPv6</option>
@@ -108,7 +123,7 @@
           </div>
 
           <div class="field">
-            <label for="quickReconnect">Quick reconnect</label>
+            <label for="quickReconnect" data-i18n="field_quick_reconnect">Quick reconnect</label>
             <select id="quickReconnect" name="quick_reconnect">
               <option value="ask">ask</option>
               <option value="on">on</option>
@@ -117,24 +132,24 @@
           </div>
 
           <div class="field">
-            <label for="noiseProfile">Noise profile</label>
+            <label for="noiseProfile" data-i18n="field_noise">Noise profile</label>
             <select id="noiseProfile" name="noise_profile"></select>
           </div>
 
           <div class="field wide checkbox-field">
             <label>
               <input id="verbose" name="verbose" type="checkbox" />
-              Verbose logs
+              <span data-i18n="field_verbose">Verbose logs</span>
             </label>
           </div>
 
           <div class="field wide">
-            <label for="peer">Peer override</label>
+            <label for="peer" data-i18n="field_peer">Peer override</label>
             <input id="peer" name="peer" type="text" placeholder="162.159.x.x:443" />
           </div>
 
           <div class="field wide">
-            <label for="wgPeer">WG peer override</label>
+            <label for="wgPeer" data-i18n="field_wg_peer">WG peer override</label>
             <input id="wgPeer" name="wg_peer" type="text" placeholder="162.159.x.x:2408" />
           </div>
 
@@ -251,17 +266,17 @@
 
       <section class="panel preview-panel card">
         <div class="panel-head">
-          <h2>دستور نهایی</h2>
-          <p>همان چیزی که داشبورد برای اجرای Aether استفاده می‌کند.</p>
+          <h2 data-i18n="preview_title">دستور نهایی</h2>
+          <p data-i18n="preview_desc">همان چیزی که داشبورد برای اجرای Aether استفاده می‌کند.</p>
         </div>
         <pre id="commandPreview" class="codeblock">--</pre>
         <div class="mini-grid">
           <div class="card mini-card">
-            <span class="label">Aether binary</span>
+            <span class="label" data-i18n="label_binary">Aether binary</span>
             <strong id="binaryPathView">--</strong>
           </div>
           <div class="card mini-card">
-            <span class="label">Log file</span>
+            <span class="label" data-i18n="label_log_file">Log file</span>
             <strong id="logPathView">--</strong>
           </div>
         </div>
@@ -270,8 +285,8 @@
       <section class="panel logs-panel card">
         <div class="panel-head with-actions">
           <div>
-            <h2>خروجی آخرین عملیات</h2>
-            <p>نتیجه‌ی نصب، آپدیت، تست پراکسی، و خطاهای خلاصه‌شده اینجا نمایش داده می‌شود.</p>
+            <h2 data-i18n="action_title">خروجی آخرین عملیات</h2>
+            <p data-i18n="action_desc">نتیجه‌ی نصب، آپدیت، تست پراکسی، و خطاهای خلاصه‌شده اینجا نمایش داده می‌شود.</p>
           </div>
           <div class="inline-actions">
             <button id="clearActionOutputBtn" class="btn ghost">پاک کردن</button>
@@ -283,13 +298,13 @@
       <section class="panel logs-panel card">
         <div class="panel-head with-actions">
           <div>
-            <h2>لاگ زنده</h2>
-            <p>خروجی مستقیم خود Aether. هر چند ثانیه رفرش می‌شود.</p>
+            <h2 data-i18n="logs_title">لاگ زنده</h2>
+            <p data-i18n="logs_desc">خروجی مستقیم خود Aether. هر چند ثانیه رفرش می‌شود.</p>
           </div>
           <div class="inline-actions">
             <label class="toggle">
               <input id="autoRefreshLogs" type="checkbox" checked />
-              <span>Auto refresh</span>
+              <span data-i18n="auto_refresh">Auto refresh</span>
             </label>
             <button id="refreshLogsBtn" class="btn ghost">Refresh logs</button>
           </div>
@@ -299,13 +314,13 @@
 
       <section class="panel guide-panel card">
         <div class="panel-head">
-          <h2>راهنمای سریع</h2>
-          <p>چک‌لیست شروع، تنظیم پراکسی، و عیب‌یابی.</p>
+          <h2 data-i18n="guide_title">راهنمای سریع</h2>
+          <p data-i18n="guide_desc">چک‌لیست شروع، تنظیم پراکسی، و عیب‌یابی.</p>
         </div>
         <div class="accordion-list">
           <details open>
-            <summary>شروع در ۳۰ ثانیه</summary>
-            <ol>
+            <summary data-i18n="guide_quick_title">شروع در ۳۰ ثانیه</summary>
+            <ol id="guideQuickList">
               <li>روی <strong>Install Aether</strong> بزن.</li>
               <li>پریست <strong>ایران / حالت پیشنهادی</strong> را انتخاب کن.</li>
               <li>روی <strong>Save settings</strong> و بعد <strong>Start Aether</strong> بزن.</li>
@@ -314,21 +329,21 @@
             </ol>
           </details>
           <details>
-            <summary>اگر UDP یا QUIC بسته بود</summary>
-            <p>
+            <summary data-i18n="guide_udp_title">اگر UDP یا QUIC بسته بود</summary>
+            <p id="guideUdpBody">
               پریست <strong>UDP بسته است</strong> را انتخاب کن. این حالت از MASQUE روی h2/TCP استفاده می‌کند.
             </p>
           </details>
           <details>
-            <summary>اگر TLS ClientHello بسته می‌شود</summary>
-            <p>
+            <summary data-i18n="guide_tls_title">اگر TLS ClientHello بسته می‌شود</summary>
+            <p id="guideTlsBody">
               پریست <strong>DPI سخت‌گیر</strong> را امتحان کن یا در بخش MASQUE گزینه
               <strong>Fragment TLS ClientHello</strong> را برای h2 روشن کن.
             </p>
           </details>
           <details>
-            <summary>تنظیم پراکسی مرورگر</summary>
-            <ul>
+            <summary data-i18n="guide_browser_title">تنظیم پراکسی مرورگر</summary>
+            <ul id="guideBrowserList">
               <li>Host: <code>127.0.0.1</code></li>
               <li>Port: <code>1819</code></li>
               <li>Type: <code>SOCKS5</code></li>
@@ -336,8 +351,8 @@
             </ul>
           </details>
           <details>
-            <summary>دسترسی از لپ‌تاپ یا دستگاه دیگر</summary>
-            <p>
+            <summary data-i18n="guide_lan_title">دسترسی از لپ‌تاپ یا دستگاه دیگر</summary>
+            <p id="guideLanBody">
               داشبورد را با <code>aether-web --host 0.0.0.0 --port 8787</code> اجرا کن و فقط روی شبکه محلی مطمئن از آن استفاده کن.
             </p>
           </details>

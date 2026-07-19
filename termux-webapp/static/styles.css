@@ -55,6 +55,48 @@ body {
   align-items: start;
 }
 
+.hero-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.lang-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(120, 177, 255, 0.14);
+  color: var(--muted);
+}
+
+.lang-switcher select {
+  width: auto;
+  min-width: 110px;
+  padding: 8px 10px;
+}
+
+.vpn-banner {
+  margin-top: 18px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, rgba(255, 200, 97, 0.12), rgba(91, 180, 255, 0.08));
+  border-color: rgba(255, 200, 97, 0.18);
+}
+
+.vpn-banner strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.vpn-banner p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
 .eyebrow {
   margin: 0 0 10px;
   color: var(--primary);
@@ -417,6 +459,32 @@ code {
   padding: 2px 6px;
 }
 
+body.lang-en {
+  direction: ltr;
+}
+
+body.lang-en .hero,
+body.lang-en .main-grid,
+body.lang-en .panel,
+body.lang-en .status-card,
+body.lang-en .accordion-list,
+body.lang-en .field,
+body.lang-en .panel-head,
+body.lang-en .status-grid,
+body.lang-en .mini-grid {
+  text-align: left;
+}
+
+body.lang-en .hero-actions,
+body.lang-en .inline-actions,
+body.lang-en .docs-links {
+  justify-content: flex-start;
+}
+
+body.lang-en .lang-switcher {
+  margin-left: auto;
+}
+
 @media (max-width: 1080px) {
   .hero,
   .main-grid {
@@ -446,6 +514,15 @@ code {
 
   .hero {
     padding-top: 22px;
+  }
+
+  .hero-topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .lang-switcher {
+    width: fit-content;
   }
 
   .panel,

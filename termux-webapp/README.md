@@ -19,6 +19,8 @@ It is designed for users who prefer a visual panel instead of manually typing co
 - Live log viewer
 - One-click proxy test using `curl` through `socks5h://127.0.0.1:1819`
 - Built-in Persian-first help and troubleshooting
+- Persian / English language switch directly inside the web UI
+- Built-in VPN usage hint for real Aether sessions
 
 ## Install in Termux
 

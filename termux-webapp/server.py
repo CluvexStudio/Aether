@@ -76,8 +76,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 PRESETS: List[Dict[str, Any]] = [
     {
         "id": "iran-recommended",
-        "label": "ایران / حالت پیشنهادی",
-        "description": "MASQUE روی h3 با نویز firewall و اسکن balanced؛ شروع امن و سریع برای بیشتر شبکه‌ها.",
+        "label_fa": "ایران / حالت پیشنهادی",
+        "label_en": "Iran / Recommended",
+        "description_fa": "MASQUE روی h3 با نویز firewall و اسکن balanced؛ شروع امن و سریع برای بیشتر شبکه‌ها.",
+        "description_en": "MASQUE over h3 with firewall noise and balanced scan; a safe first choice for most networks.",
         "config": {
             "protocol": "masque",
             "scan_mode": "balanced",
@@ -92,8 +94,10 @@ PRESETS: List[Dict[str, Any]] = [
     },
     {
         "id": "udp-blocked",
-        "label": "UDP بسته است",
-        "description": "MASQUE روی h2/TCP؛ مناسب وقتی HTTP/3 یا QUIC وصل نمی‌شود.",
+        "label_fa": "UDP بسته است",
+        "label_en": "UDP Blocked",
+        "description_fa": "MASQUE روی h2/TCP؛ مناسب وقتی HTTP/3 یا QUIC وصل نمی‌شود.",
+        "description_en": "MASQUE over h2/TCP; use this when HTTP/3 or QUIC does not connect.",
         "config": {
             "protocol": "masque",
             "scan_mode": "balanced",
@@ -108,8 +112,10 @@ PRESETS: List[Dict[str, Any]] = [
     },
     {
         "id": "strict-dpi",
-        "label": "DPI سخت‌گیر",
-        "description": "MASQUE روی h2 با fragmentation و نویز gfw برای شبکه‌های خیلی سخت‌گیر.",
+        "label_fa": "DPI سخت‌گیر",
+        "label_en": "Strict DPI",
+        "description_fa": "MASQUE روی h2 با fragmentation و نویز gfw برای شبکه‌های خیلی سخت‌گیر.",
+        "description_en": "MASQUE over h2 with fragmentation and gfw noise for very strict filtering.",
         "config": {
             "protocol": "masque",
             "scan_mode": "ironclad",
@@ -126,8 +132,10 @@ PRESETS: List[Dict[str, Any]] = [
     },
     {
         "id": "wg-fast",
-        "label": "WireGuard سریع",
-        "description": "برای شبکه‌های کمتر سخت‌گیر یا وقتی سرعت مهم‌تر از استتار است.",
+        "label_fa": "WireGuard سریع",
+        "label_en": "Fast WireGuard",
+        "description_fa": "برای شبکه‌های کمتر سخت‌گیر یا وقتی سرعت مهم‌تر از استتار است.",
+        "description_en": "For less restrictive networks or when speed matters more than stealth.",
         "config": {
             "protocol": "wg",
             "scan_mode": "balanced",
@@ -142,8 +150,10 @@ PRESETS: List[Dict[str, Any]] = [
     },
     {
         "id": "gool-stability",
-        "label": "GOOL پایدار",
-        "description": "تونل دولایه برای وقتی که WireGuard معمولی وصل می‌شود اما ناپایدار است.",
+        "label_fa": "GOOL پایدار",
+        "label_en": "Stable GOOL",
+        "description_fa": "تونل دولایه برای وقتی که WireGuard معمولی وصل می‌شود اما ناپایدار است.",
+        "description_en": "A nested tunnel for cases where plain WireGuard connects but is unstable.",
         "config": {
             "protocol": "gool",
             "scan_mode": "thorough",
