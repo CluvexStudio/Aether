@@ -257,6 +257,52 @@ pub async fn enroll_key(
     parse_account(resp).await
 }
 
+pub async fn update_license(device_id: &str, token: &str, license_key: &str) -> Result<()> {
+    let url = format!(
+        "{}/{}/reg/{}/account",
+        consts::API_URL,
+        consts::API_VERSION,
+        device_id
+    );
+
+    let body = serde_json::json!({ "license": license_key });
+
+    let resp = http_client()?
+        .put(url)
+        .headers(base_headers())
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AetherError::Api(e.to_string()))?;
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| AetherError::Api(e.to_string()))?;
+
+    if !status.is_success() {
+        return Err(AetherError::Api(format!(
+            "license update failed (status {status}): {text}"
+        )));
+    }
+
+    // Check if WARP+ activated
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+        if v.get("warp_plus").and_then(|w| w.as_bool()) == Some(true) {
+            log::info!("[+] WARP+ license activated successfully");
+        } else {
+            log::warn!("[-] license applied but warp_plus not confirmed in response");
+        }
+        if let Some(quota) = v.get("premium_data").and_then(|p| p.as_u64()) {
+            log::info!("[+] premium data quota: {} bytes", quota);
+        }
+    }
+
+    Ok(())
+}
+
 async fn parse_account(resp: reqwest::Response) -> Result<AccountData> {
     let status = resp.status();
     let text = resp.text().await.map_err(|e| AetherError::Api(e.to_string()))?;
