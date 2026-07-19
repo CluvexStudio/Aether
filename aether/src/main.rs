@@ -165,9 +165,20 @@ fn derive_sibling_path(base: &str, suffix: &str) -> String {
     }
 }
 
+async fn apply_license_if_set(identity: &account::Identity) -> Result<()> {
+    if let Ok(key) = std::env::var("AETHER_KEY") {
+        if !key.is_empty() {
+            log::info!("[*] applying WARP+ license key to device {}", identity.device_id);
+            account::update_license(&identity.device_id, &identity.access_token, &key).await?;
+        }
+    }
+    Ok(())
+}
+
 async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing warp identity from {config_path}");
+        apply_license_if_set(&identity).await?;
         return Ok(identity);
     }
 
@@ -175,12 +186,14 @@ async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> 
     let identity = account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await?;
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new warp identity to {config_path}");
+    apply_license_if_set(&identity).await?;
     Ok(identity)
 }
 
 async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing masque identity from {config_path}");
+        apply_license_if_set(&identity).await?;
         if identity.has_masque_credentials() {
             return Ok(identity);
         }
@@ -193,6 +206,7 @@ async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity
 
     log::info!("[+] no masque identity found; provisioning dedicated masque account");
     let identity = account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await?;
+    apply_license_if_set(&identity).await?;
     let (cert_pem, key_pem) = account::ensure_masque_enrolled(&identity).await?;
     let identity = account::Identity { cert_pem, key_pem, ..identity };
     config::save(config_path, &identity)?;

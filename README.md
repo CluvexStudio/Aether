@@ -114,6 +114,24 @@ Or skip the prompts with flags:
 ./target/release/aether --masque -4 --scan turbo --noize firewall
 ```
 
+### WARP+ / 1.1.1.1 Premium
+
+If you have a WARP+ or 1.1.1.1 premium subscription, apply your license key with `--key` (or `-K`):
+
+```bash
+aether --masque --key YOUR-LICENSE-KEY
+```
+
+Or via environment variable:
+
+```bash
+AETHER_KEY=YOUR-LICENSE-KEY aether --masque
+```
+
+The license is applied after device registration and works with all protocols (MASQUE, WireGuard, WARP-in-WARP). You can find your license key in the 1.1.1.1 app under **Settings → Account → Key**.
+
+> **Note:** WARP-in-WARP (`--gool`) registers two separate devices (outer + inner tunnel), so it uses **2 of your 5 device slots** on the license.
+
 On Windows, double-click `run-aether.bat` (included in the release zip) instead — it opens a terminal, runs `aether.exe`, and keeps the window open afterwards so you can read any errors.
 
 Every prompt has a flag and an environment variable equivalent. Run `./target/release/aether --help` for the full list, or see the guides linked below.

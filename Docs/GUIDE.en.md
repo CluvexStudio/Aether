@@ -214,6 +214,10 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 
 - `AETHER_QUICK_RECONNECT` (`--quick-reconnect` / `--no-quick-reconnect`) — set to `1` to always reuse the last known-good gateway without asking, or `0` to always scan fresh without asking. Unset means Aether asks you at startup if a cached gateway exists.
 
+### WARP+ / 1.1.1.1 Premium license
+
+- `AETHER_KEY` (`--key`, `-K`) — your WARP+ or 1.1.1.1 premium license key. Applied after device registration. Works with all protocols. **Note:** WARP-in-WARP (`gool`) registers two devices and uses 2 of your 5 license slots.
+
 ### Forcing the endpoint and the config path
 
 - `AETHER_PEER` or `AETHER_WG_PEER` (`--peer`, `--wg-peer`) — if you want to give a fixed address yourself and bypass the scan.
