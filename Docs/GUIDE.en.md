@@ -302,3 +302,183 @@ If you got an answer and saw something like `warp=on` or connection details insi
 ## Summary
 
 If you want it in one sentence: start from MASQUE with the default profile, if UDP is blocked turn on h2 (and fragment the ClientHello if h2 itself gets blocked), and if it is still strict, make the noise profile heavier or move to WireGuard and gool. Aether takes care of the rest — including refusing gateways that don't actually pass data, and reconnecting on its own if the tunnel drops.
+
+## OpenWrt
+
+This section covers installing Aether on an OpenWrt router so every device on your network goes through the tunnel automatically, without configuring each device individually.
+
+### Tested hardware
+
+- Google Wifi (IPQ4019, Cortex-A7 × 4, 512MB RAM) — OpenWrt 23.05+
+- Any ARMv7 router with ≥128MB RAM running OpenWrt
+
+### Requirements
+
+- OpenWrt 23.05 or later (SSH access enabled)
+- At least 7MB free storage for the binary
+- The `aether-linux-armv7-musl.tar.gz` release (statically linked, no dependencies)
+
+### Step 1 — Install the binary
+
+SSH into your router and download the release:
+
+```bash
+ssh root@192.168.1.1
+
+cd /tmp
+wget https://github.com/CluvexStudio/Aether/releases/latest/download/aether-linux-armv7-musl.tar.gz
+tar xzf aether-linux-armv7-musl.tar.gz
+mv aether /usr/bin/aether
+chmod +x /usr/bin/aether
+```
+
+Verify it runs:
+
+```bash
+aether --help
+```
+
+If your router has limited flash storage, you can keep the binary on `/tmp` (RAM disk) instead, but it will not survive a reboot — you would need to re-download after each reboot, or mount external storage.
+
+### Step 2 — First run (one-time registration)
+
+Aether needs to register with Cloudflare WARP on its first run. Do this interactively:
+
+```bash
+cd /tmp
+aether --masque --scan turbo --noize firewall -4
+```
+
+Wait for it to scan, find a gateway, and say `socks5 listening on 127.0.0.1:1819`. Press Ctrl+C to stop it. This creates the config files (`aether.toml`, `aether-masque.toml`) in `/tmp`. Copy them somewhere persistent:
+
+```bash
+mkdir -p /etc/aether
+cp /tmp/aether*.toml /etc/aether/
+chmod 600 /etc/aether/*.toml
+```
+
+### Step 3 — Create a procd service
+
+Create the init script:
+
+```bash
+cat > /etc/init.d/aether << 'EOF'
+#!/bin/sh /etc/rc.common
+
+START=91
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /usr/bin/aether \
+        --masque \
+        --scan balanced \
+        --noize firewall \
+        --bind 0.0.0.0:1819 \
+        --quick-reconnect \
+        --config /etc/aether/aether.toml \
+        -4
+    procd_set_param env AETHER_QUICK_RECONNECT=1
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param respawn 3600 5 0
+    procd_close_instance
+}
+EOF
+
+chmod 755 /etc/init.d/aether
+```
+
+Key settings explained:
+
+- `--bind 0.0.0.0:1819` — listen on all interfaces so LAN devices can connect
+- `--quick-reconnect` — skip the interactive prompt, reuse the last gateway
+- `--config /etc/aether/aether.toml` — use the persistent config
+- `-4` — IPv4 only (most routers don't have IPv6 upstream)
+- `respawn 3600 5 0` — restart on crash, up to 5 times per hour
+
+Enable and start:
+
+```bash
+service aether enable   # start on boot
+service aether start    # start now
+```
+
+Check it is running:
+
+```bash
+service aether status
+logread | grep aether | tail -20
+```
+
+### Step 4 — Firewall (optional, recommended)
+
+If you want to restrict who can use the proxy, add a firewall rule to only allow LAN access:
+
+```bash
+# Allow LAN → router on port 1819
+uci add firewall rule
+uci set firewall.@rule[-1].name='Allow-Aether-LAN'
+uci set firewall.@rule[-1].src='lan'
+uci set firewall.@rule[-1].dest_port='1819'
+uci set firewall.@rule[-1].proto='tcp'
+uci set firewall.@rule[-1].target='ACCEPT'
+uci commit firewall
+/etc/init.d/firewall restart
+```
+
+### Step 5 — Configure LAN devices
+
+On each device, set the SOCKS5 proxy to `<router-ip>:1819`. For example:
+
+- **Browser (Firefox)**: Settings → Network Settings → Manual proxy → SOCKS Host: `192.168.1.1`, Port: `1819`, SOCKS v5, check "Proxy DNS"
+- **System-wide (Linux)**: `export ALL_PROXY=socks5h://192.168.1.1:1819`
+- **System-wide (macOS)**: System Settings → Network → your interface → Proxies → SOCKS Proxy: `192.168.1.1:1819`
+- **Android**: most apps don't support SOCKS natively; use a SOCKS client app like *Socksdroid* or configure per-app in apps that support it
+
+#### Using with PassWall / PassWall2
+
+If you have PassWall2 installed on your OpenWrt router, you can route all LAN traffic through Aether transparently:
+
+1. In PassWall2, go to **Node List** → **Add** → set type to **Socks**, address `127.0.0.1`, port `1819`
+2. Go to **Basic Settings** → enable the main switch → select your Aether node as the **TCP Node**
+3. Apply and save
+
+This makes all LAN traffic go through Aether without configuring individual devices.
+
+### Managing the service
+
+```bash
+service aether start     # start
+service aether stop      # stop
+service aether restart   # restart (e.g. after updating the binary)
+service aether status    # check if running
+service aether disable   # don't start on boot
+logread -f | grep aether # follow live logs
+```
+
+### Updating
+
+```bash
+service aether stop
+cd /tmp
+wget https://github.com/CluvexStudio/Aether/releases/latest/download/aether-linux-armv7-musl.tar.gz
+tar xzf aether-linux-armv7-musl.tar.gz
+mv aether /usr/bin/aether
+chmod +x /usr/bin/aether
+service aether start
+```
+
+### Choosing the right protocol and mode for a router
+
+- **MASQUE** is the default and recommended. On a 4-core ARM router, the scanner automatically scales concurrency to match your CPU — you will see fewer concurrent probes than on a desktop, but they will complete without stalling.
+- **WireGuard** uses less CPU per packet and is a good choice if your network does not block it.
+- Use `--scan turbo` if you want the fastest connection time, or `--scan balanced` (the default) for a better-quality gateway.
+- If your router has very little RAM (128MB), avoid `thorough` scan mode which enumerates full /24 subnets.
+
+### Troubleshooting
+
+- **"No clean endpoint"**: your network might be blocking the WARP IP ranges. Try `--h2` (uses TCP instead of UDP), or `--h2 --fragment` if the TLS handshake itself is blocked.
+- **High CPU during scan**: normal on small routers. The scan finishes and CPU drops back to near-zero during normal tunnel operation.
+- **Binary won't run**: make sure you downloaded the `musl` build, not the regular `gnueabihf` one. Run `file /usr/bin/aether` — it should say `statically linked`.
+- **Config lost after reboot**: if you kept configs in `/tmp`, they are gone (tmpfs). Move them to `/etc/aether/` as shown above.
