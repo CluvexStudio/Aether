@@ -572,6 +572,7 @@ def run_proxy_health_test(data_dir: Path) -> Dict[str, Any]:
         f"socks5h://{proxy}",
         "https://www.cloudflare.com/cdn-cgi/trace",
     ]
+    started = time.perf_counter()
     try:
         proc = subprocess.run(
             cmd,
@@ -582,14 +583,18 @@ def run_proxy_health_test(data_dir: Path) -> Dict[str, Any]:
             check=False,
         )
     except Exception as exc:
-        return {"ok": False, "message": str(exc), "command": shell_join(cmd)}
+        return {"ok": False, "message": str(exc), "command": shell_join(cmd), "latency_ms": None}
 
     output = proc.stdout or ""
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    excerpt = " | ".join(line.strip() for line in output.splitlines()[:4] if line.strip())
     return {
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
         "command": shell_join(cmd),
         "output": output,
+        "latency_ms": latency_ms,
+        "trace_excerpt": excerpt,
         "message": "proxy healthy" if proc.returncode == 0 else "proxy test failed",
     }
 

@@ -53,6 +53,7 @@ const state = {
   liteMode: false,
   backendReady: false,
   proxyHealth: null,
+  proxyHealthDetail: null,
   deferredPrompt: null,
   actionText: "",
   actionTitle: "",
@@ -190,6 +191,9 @@ const translations = {
     btn_install_pwa: "نصب به‌عنوان اپ",
     btn_generate_qr: "ساخت QR",
     btn_copy_qr: "کپی متن QR",
+    btn_copy_link: "کپی لینک",
+    btn_scan_qr: "اسکن QR",
+    btn_apply_payload: "اعمال متن",
     btn_backup_now: "بکاپ دستی",
     btn_clear_backups: "حذف همه",
     btn_clear_history: "پاک کردن سابقه",
@@ -213,6 +217,9 @@ const translations = {
     backup_deleted: "بکاپ حذف شد.",
     history_applied: "پروفایل دوباره اعمال شد.",
     qr_generated: "QR کانفیگ ساخته شد.",
+    qr_link_copied: "لینک اشتراک کانفیگ کپی شد.",
+    qr_applied: "کانفیگ از روی payload اعمال شد.",
+    qr_scan_failed: "اسکن QR روی این دستگاه یا مرورگر پشتیبانی نشد یا چیزی پیدا نشد.",
     installed_text: "نصب شده",
     not_installed: "نصب نشده",
     mode_termux: "Termux / Live",
@@ -272,6 +279,9 @@ const translations = {
     diag_version_ok_body: "{{version}}",
     diag_lite_title: "پنل در حالت Lite اجرا شده",
     diag_lite_body: "تو می‌توانی پریست‌ها، export/import و پیش‌نمایش دستور را بدون Termux استفاده کنی؛ ولی Start/Install واقعی نیاز به بک‌اند دارد.",
+    diag_health_title: "آخرین وضعیت سلامت پراکسی",
+    diag_health_ok_body: "آخرین تست سلامت موفق بود. زمان پاسخ حدود {{ms}}ms است.",
+    diag_health_fail_body: "آخرین تست سلامت ناموفق بود. بهتر است تست پراکسی را دوباره اجرا کنی یا تنظیمات h2 / fragmentation را امتحان کنی.",
     action_ok_prefix: "✅",
     action_err_prefix: "❌",
     splash_loading: "در حال آماده‌سازی پنل...",
@@ -349,6 +359,9 @@ const translations = {
     btn_install_pwa: "Install App",
     btn_generate_qr: "Generate QR",
     btn_copy_qr: "Copy QR payload",
+    btn_copy_link: "Copy link",
+    btn_scan_qr: "Scan QR",
+    btn_apply_payload: "Apply payload",
     btn_backup_now: "Backup now",
     btn_clear_backups: "Delete all",
     btn_clear_history: "Clear history",
@@ -372,6 +385,9 @@ const translations = {
     backup_deleted: "Backup deleted.",
     history_applied: "Profile applied again.",
     qr_generated: "Config QR generated.",
+    qr_link_copied: "Share link copied.",
+    qr_applied: "Config was applied from payload.",
+    qr_scan_failed: "QR scanning is not supported on this device/browser or no code was detected.",
     installed_text: "installed",
     not_installed: "not installed",
     mode_termux: "Termux / Live",
@@ -431,6 +447,9 @@ const translations = {
     diag_version_ok_body: "{{version}}",
     diag_lite_title: "The dashboard is running in Lite mode",
     diag_lite_body: "You can still use presets, export/import, and command preview without Termux, but Start/Install actions need a backend.",
+    diag_health_title: "Latest proxy health result",
+    diag_health_ok_body: "The last health probe succeeded. Response time was about {{ms}}ms.",
+    diag_health_fail_body: "The last health probe failed. Run Proxy Test again or try h2 / fragmentation if needed.",
     action_ok_prefix: "✅",
     action_err_prefix: "❌",
     splash_loading: "Preparing dashboard...",
@@ -642,6 +661,9 @@ function applyTranslations() {
   $("importConfigBtn").textContent = t("btn_import");
   $("generateQrBtn").textContent = t("btn_generate_qr");
   $("copyQrPayloadBtn").textContent = t("btn_copy_qr");
+  $("copyShareLinkBtn").textContent = t("btn_copy_link");
+  $("scanQrBtn").textContent = t("btn_scan_qr");
+  $("applyQrPayloadBtn").textContent = t("btn_apply_payload");
   $("createBackupBtn").textContent = t("btn_backup_now");
   $("clearBackupsBtn").textContent = t("btn_clear_backups");
   $("clearHistoryBtn").textContent = t("btn_clear_history");
@@ -850,6 +872,10 @@ function encodePayloadUtf8(text) {
   return btoa(unescape(encodeURIComponent(text)));
 }
 
+function decodePayloadUtf8(payload) {
+  return decodeURIComponent(escape(atob(payload.trim())));
+}
+
 function buildQrPayload(config = gatherConfig()) {
   const minimal = {
     bind_address: config.bind_address,
@@ -864,6 +890,24 @@ function buildQrPayload(config = gatherConfig()) {
   return encodePayloadUtf8(JSON.stringify(minimal));
 }
 
+function payloadToConfig(payload) {
+  const parsed = JSON.parse(decodePayloadUtf8(payload));
+  return deepMerge(DEFAULT_CONFIG, parsed);
+}
+
+function buildShareLink(payload = buildQrPayload(gatherConfig())) {
+  return `${window.location.origin}${window.location.pathname}#cfg=${encodeURIComponent(payload)}`;
+}
+
+function applyPayload(payload) {
+  const config = payloadToConfig(payload);
+  fillConfig(config);
+  updatePreviewFromForm();
+  saveBackup("qr", gatherConfig());
+  renderBackups();
+  showToast(t("qr_applied"));
+}
+
 function renderQrPayload() {
   const payload = buildQrPayload(gatherConfig());
   $("qrPayload").value = payload;
@@ -871,6 +915,31 @@ function renderQrPayload() {
   $("qrPreview").src = url;
   $("qrPreview").classList.remove("hidden");
   $("qrPlaceholder").classList.add("hidden");
+  state.shareLink = buildShareLink(payload);
+}
+
+async function scanQrFromFile(file) {
+  if (!("BarcodeDetector" in window)) throw new Error(t("qr_scan_failed"));
+  const detector = new BarcodeDetector({ formats: ["qr_code"] });
+  const bitmap = await createImageBitmap(file);
+  const results = await detector.detect(bitmap);
+  if (!results.length || !results[0].rawValue) throw new Error(t("qr_scan_failed"));
+  return results[0].rawValue;
+}
+
+function importPayloadFromHash() {
+  const hash = window.location.hash || "";
+  const match = hash.match(/#cfg=([^&]+)/);
+  if (!match) return false;
+  try {
+    const payload = decodeURIComponent(match[1]);
+    applyPayload(payload);
+    history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    return true;
+  } catch {
+    showToast(t("qr_scan_failed"), "error");
+    return false;
+  }
 }
 
 function renderStatus() {
@@ -992,6 +1061,7 @@ function buildDiagnostics() {
     items.push({ level: "warn", title: t("diag_stopped_title"), body: t("diag_stopped_body") });
   }
 
+  items.push({ level: state.proxyHealth ? "success" : "warn", title: t("diag_health_title"), body: state.proxyHealth ? interpolate(t("diag_health_ok_body"), { ms: String(state.proxyHealthDetail?.latency_ms ?? "--") }) : t("diag_health_fail_body") });
   items.push({ level: "warn", title: t("diag_vpn_title"), body: t("diag_vpn_body") });
   if (protocol === "masque" && transport === "h3") items.push({ level: "info", title: t("diag_h3_title"), body: t("diag_h3_body") });
   if (protocol === "masque" && transport === "h2") items.push({ level: "info", title: t("diag_h2_title"), body: t("diag_h2_body") });
@@ -1133,8 +1203,10 @@ async function refreshHealth() {
   try {
     const data = await api("/api/health");
     state.proxyHealth = !!data.ok;
+    state.proxyHealthDetail = data;
   } catch {
     state.proxyHealth = false;
+    state.proxyHealthDetail = null;
   }
   renderStatus();
   renderDiagnostics();
@@ -1244,6 +1316,18 @@ function bindButtons() {
     showToast(t("qr_generated"));
   });
   $("copyQrPayloadBtn").addEventListener("click", () => copyText($("qrPayload").value).catch((e) => showToast(e.message, "error")));
+  $("copyShareLinkBtn").addEventListener("click", () => {
+    renderQrPayload();
+    copyText(state.shareLink || buildShareLink()).then(() => showToast(t("qr_link_copied"))).catch((e) => showToast(e.message, "error"));
+  });
+  $("applyQrPayloadBtn").addEventListener("click", () => {
+    try {
+      applyPayload($("qrPayload").value);
+    } catch (error) {
+      showToast(error.message || t("qr_scan_failed"), "error");
+    }
+  });
+  $("scanQrBtn").addEventListener("click", () => $("qrImportFile").click());
   $("createBackupBtn").addEventListener("click", () => {
     saveBackup("manual", gatherConfig());
     renderBackups();
@@ -1271,6 +1355,19 @@ function bindButtons() {
       renderBackups();
     } catch (error) {
       showToast(error.message || t("op_failed"), "error");
+    }
+    event.target.value = "";
+  });
+
+  $("qrImportFile").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const payload = await scanQrFromFile(file);
+      $("qrPayload").value = payload;
+      applyPayload(payload);
+    } catch (error) {
+      showToast(error.message || t("qr_scan_failed"), "error");
     }
     event.target.value = "";
   });
@@ -1399,6 +1496,7 @@ async function init() {
   enableTab("overview");
 
   await initializeBackend();
+  importPayloadFromHash();
   renderAll();
   startPolling();
   if (!state.liteMode) {

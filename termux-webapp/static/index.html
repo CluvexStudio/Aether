@@ -387,8 +387,12 @@
               <div class="inline-actions">
                 <button id="generateQrBtn" class="btn ghost">ساخت QR</button>
                 <button id="copyQrPayloadBtn" class="btn ghost">کپی متن</button>
+                <button id="copyShareLinkBtn" class="btn ghost">کپی لینک</button>
+                <button id="scanQrBtn" class="btn ghost">اسکن QR</button>
+                <button id="applyQrPayloadBtn" class="btn ghost">اعمال متن</button>
               </div>
             </div>
+            <input id="qrImportFile" type="file" accept="image/*" capture="environment" class="hidden" />
             <div class="qr-layout">
               <div class="qr-preview-wrap card mini-card">
                 <img id="qrPreview" class="qr-preview hidden" alt="QR Config" />
