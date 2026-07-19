@@ -22,6 +22,7 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 - Local SOCKS5 proxy
 - Command-line flags, environment variables, or interactive prompts — your choice
 - Linux, Windows, macOS and Android (Termux)
+- Optional Termux local web dashboard for browser-based control and monitoring
 
 ## Download
 
@@ -45,6 +46,18 @@ aether
 ```
 
 To update later, run `./aether.sh update`. To remove it, run `./aether.sh uninstall`.
+
+### Termux Web Dashboard (optional)
+
+If you prefer a local browser UI instead of running commands manually, download `aether-termux-webapp.tar.gz` from Releases, extract it in Termux, then run:
+
+```bash
+cd termux-webapp
+chmod +x install.sh
+./install.sh
+```
+
+After installation, `aether-web` opens an interactive menu with options to start the dashboard, install/update the Aether core, update the dashboard itself from the current repo/fork, and open the browser automatically. The web panel itself listens on `127.0.0.1:8787`, while Aether continues to expose its SOCKS5 proxy on `127.0.0.1:1819`.
 
 ## Build
 
