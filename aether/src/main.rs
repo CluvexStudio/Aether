@@ -189,15 +189,17 @@ async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing masque identity from {config_path}");
         apply_license_if_set(&identity).await;
-        if identity.has_valid_masque_credentials() {
-            return Ok(identity);
-        }
-        log::info!("[+] masque credentials missing or expired; re-enrolling masque key");
-        // Clear stale creds so ensure_masque_enrolled generates fresh ones
-        let identity = account::Identity { cert_pem: Vec::new(), key_pem: Vec::new(), ..identity };
+        // ponytail: always re-enroll MASQUE key on startup — Cloudflare edge invalidates
+        // the SPKI hash after a disconnect, so the cert on disk is locally valid but
+        // rejected by the edge. Fresh enrollment + propagation delay fixes this.
+        log::info!("[+] re-enrolling masque key (edge may have invalidated cached SPKI)");
+        let mut identity = account::Identity { cert_pem: Vec::new(), key_pem: Vec::new(), ..identity };
         let (cert_pem, key_pem) = account::ensure_masque_enrolled(&identity).await?;
-        let identity = account::Identity { cert_pem, key_pem, ..identity };
+        identity.cert_pem = cert_pem;
+        identity.key_pem = key_pem;
         config::save(config_path, &identity)?;
+        log::info!("[*] waiting for edge propagation...");
+        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
         return Ok(identity);
     }
 
