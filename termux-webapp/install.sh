@@ -91,15 +91,24 @@ print((data.get("parent") or {}).get("full_name") or repo)
 PY
 }
 
+detect_default_lang() {
+  case "${LANG:-}" in
+    fa*|FA*|*_IR*|*fa_IR*) echo "fa" ;;
+    *) echo "en" ;;
+  esac
+}
+
 write_settings() {
   local web_repo="$1"
   local web_ref="$2"
   local core_repo="$3"
+  local web_lang="${4:-$(detect_default_lang)}"
   mkdir -p "${DATA_DIR}"
   cat > "${SETTINGS_FILE}" <<EOF
 AETHER_WEB_REPO=${web_repo}
 AETHER_WEB_REF=${web_ref}
 AETHER_CORE_REPO=${core_repo}
+AETHER_WEB_LANG=${web_lang}
 AETHER_PANEL_PORT=8787
 EOF
 }
@@ -169,13 +178,14 @@ main() {
   ensure_termux
   ensure_dependencies
 
-  local web_repo web_ref core_repo
+  local web_repo web_ref core_repo web_lang
   web_repo="$(detect_web_repo)"
   web_ref="$(detect_web_ref)"
   core_repo="$(detect_core_repo "${web_repo}")"
+  web_lang="$(detect_default_lang)"
 
   install_files
-  write_settings "${web_repo}" "${web_ref}" "${core_repo}"
+  write_settings "${web_repo}" "${web_ref}" "${core_repo}" "${web_lang}"
   print_finish "${web_repo}" "${web_ref}" "${core_repo}"
 
   if [[ -t 0 && "${AETHER_WEB_NO_MENU:-0}" != "1" ]]; then

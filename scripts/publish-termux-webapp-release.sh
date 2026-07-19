@@ -14,6 +14,8 @@ cd "${ROOT_DIR}"
 
 ARCHIVE="${WORK_DIR}/aether-termux-webapp.tar.gz"
 CHECKSUM="${WORK_DIR}/aether-termux-webapp.tar.gz.sha256"
+BOOTSTRAP="${WORK_DIR}/aether-web-install.sh"
+BOOTSTRAP_SUM="${WORK_DIR}/aether-web-install.sh.sha256"
 NOTES_FILE="${WORK_DIR}/release-notes.md"
 
 cat > "${NOTES_FILE}" <<'EOF'
@@ -29,22 +31,27 @@ Local browser dashboard for running Aether on Termux.
 - one-click proxy test
 - Persian and English guides
 
-### Install in Termux
+### Install in Termux (one-file bootstrap)
+```bash
+chmod +x aether-web-install.sh
+./aether-web-install.sh
+```
+
+### Manual install
 ```bash
 tar -xzf aether-termux-webapp.tar.gz
 cd termux-webapp
 chmod +x install.sh
 ./install.sh
-aether-web
 ```
 
 Open: `http://127.0.0.1:8787`
 EOF
 
 if gh release view "${TAG}" --repo "${RELEASE_REPO}" >/dev/null 2>&1; then
-  gh release upload "${TAG}" "${ARCHIVE}" "${CHECKSUM}" --repo "${RELEASE_REPO}" --clobber
+  gh release upload "${TAG}" "${ARCHIVE}" "${CHECKSUM}" "${BOOTSTRAP}" "${BOOTSTRAP_SUM}" --repo "${RELEASE_REPO}" --clobber
 else
-  gh release create "${TAG}" "${ARCHIVE}" "${CHECKSUM}" \
+  gh release create "${TAG}" "${ARCHIVE}" "${CHECKSUM}" "${BOOTSTRAP}" "${BOOTSTRAP_SUM}" \
     --repo "${RELEASE_REPO}" \
     --title "${TITLE}" \
     --notes-file "${NOTES_FILE}"

@@ -22,7 +22,16 @@ It is designed for users who prefer a visual panel instead of manually typing co
 
 ## Install in Termux
 
-Extract the release asset, then run:
+You have two ways.
+
+### Fast single-file bootstrap
+
+```bash
+chmod +x aether-web-install.sh
+./aether-web-install.sh
+```
+
+### Manual install from the full archive
 
 ```bash
 cd termux-webapp
@@ -30,7 +39,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-After installation:
+After installation, the program opens a **Persian/English** interactive menu. To reopen it later:
 
 ```bash
 aether-web

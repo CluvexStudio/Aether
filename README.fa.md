@@ -51,7 +51,16 @@ aether
 
 ### داشبورد وب Termux (اختیاری)
 
-اگر به‌جای اجرای دستی دستورها یک رابط مرورگری محلی می‌خواهی، فایل `aether-termux-webapp.tar.gz` را از بخش Releases دانلود کن، در ترموکس استخراجش کن و بعد این‌ها را بزن:
+اگر به‌جای اجرای دستی دستورها یک رابط مرورگری محلی می‌خواهی، می‌توانی فایل تک‌اسکریپتی `aether-web-install.sh` یا آرشیو `aether-termux-webapp.tar.gz` را از بخش Releases بگیری.
+
+روش ساده‌تر در ترموکس:
+
+```bash
+chmod +x aether-web-install.sh
+./aether-web-install.sh
+```
+
+روش دستی:
 
 ```bash
 cd termux-webapp

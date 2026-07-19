@@ -49,7 +49,16 @@ To update later, run `./aether.sh update`. To remove it, run `./aether.sh uninst
 
 ### Termux Web Dashboard (optional)
 
-If you prefer a local browser UI instead of running commands manually, download `aether-termux-webapp.tar.gz` from Releases, extract it in Termux, then run:
+If you prefer a local browser UI instead of running commands manually, you can download either the single-file bootstrap installer `aether-web-install.sh` or the full archive `aether-termux-webapp.tar.gz` from Releases.
+
+Simple Termux install:
+
+```bash
+chmod +x aether-web-install.sh
+./aether-web-install.sh
+```
+
+Manual install:
 
 ```bash
 cd termux-webapp

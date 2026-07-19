@@ -30,6 +30,13 @@ ensure_data_dir() {
   mkdir -p "${DATA_DIR}"
 }
 
+detect_default_lang() {
+  case "${LANG:-}" in
+    fa*|FA*|*_IR*|*fa_IR*) echo "fa" ;;
+    *) echo "en" ;;
+  esac
+}
+
 load_settings() {
   ensure_data_dir
   if [[ -f "${SETTINGS_FILE}" ]]; then
@@ -40,6 +47,23 @@ load_settings() {
   export AETHER_WEB_REF="${AETHER_WEB_REF:-main}"
   export AETHER_CORE_REPO="${AETHER_CORE_REPO:-${AETHER_WEB_REPO}}"
   export AETHER_PANEL_PORT="${AETHER_PANEL_PORT:-${PANEL_DEFAULT_PORT}}"
+  export AETHER_WEB_LANG="${AETHER_WEB_LANG:-$(detect_default_lang)}"
+}
+
+write_settings() {
+  local web_repo="$1"
+  local web_ref="$2"
+  local core_repo="$3"
+  local web_lang="${4:-$(detect_default_lang)}"
+  local panel_port="${5:-${PANEL_DEFAULT_PORT}}"
+  mkdir -p "${DATA_DIR}"
+  cat > "${SETTINGS_FILE}" <<EOF
+AETHER_WEB_REPO=${web_repo}
+AETHER_WEB_REF=${web_ref}
+AETHER_CORE_REPO=${core_repo}
+AETHER_WEB_LANG=${web_lang}
+AETHER_PANEL_PORT=${panel_port}
+EOF
 }
 
 load_runtime() {
