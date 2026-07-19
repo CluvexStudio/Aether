@@ -31,6 +31,7 @@ DEFAULT_DATA_DIR = Path(os.environ.get("AETHER_WEB_DATA", Path.home() / ".config
 _DEFAULT_PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
 DEFAULT_BINARY = Path(os.environ.get("AETHER_BINARY", str(Path(_DEFAULT_PREFIX) / "bin" / "aether")))
 INSTALLER = BASE_DIR / "bin" / "aether-installer.sh"
+PANEL_UPDATER = Path(os.environ.get("AETHER_WEB_PANEL_UPDATER", str(BASE_DIR / "bin" / "aether-web-selfupdate.sh")))
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "bind_address": "127.0.0.1:1819",
@@ -549,6 +550,42 @@ def run_installer(action: str, data_dir: Path, extra: str = "") -> Dict[str, Any
     }
 
 
+def trigger_panel_update(data_dir: Path) -> Dict[str, Any]:
+    if not PANEL_UPDATER.exists():
+        return {"ok": False, "message": f"panel updater not found: {PANEL_UPDATER}"}
+
+    log_path = data_dir / "panel-update.log"
+    env = os.environ.copy()
+    env.setdefault("AETHER_WEB_DATA", str(data_dir))
+
+    quoted_updater = shlex.quote(str(PANEL_UPDATER))
+    quoted_log = shlex.quote(str(log_path))
+    shell_cmd = f"sleep 1; {quoted_updater} >> {quoted_log} 2>&1"
+
+    try:
+        subprocess.Popen(
+            ["/bin/sh", "-lc", shell_cmd],
+            cwd=str(BASE_DIR),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
+
+    return {
+        "ok": True,
+        "message": "Panel update scheduled. The dashboard may restart for a few seconds.",
+        "output": (
+            "Panel self-update has been scheduled.\n"
+            "If the page temporarily disconnects, wait a few seconds and open the panel again.\n"
+            f"Update log: {log_path}"
+        ),
+        "log_file": str(log_path),
+    }
+
+
 def start_process(cfg: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
     state = refresh_state(data_dir)
     if state.get("running") and state.get("pid"):
@@ -839,6 +876,11 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/api/update":
             result = run_installer("update", self.app.data_dir)
+            self._json(result, 200 if result.get("ok") else 400)
+            return
+
+        if path == "/api/update-panel":
+            result = trigger_panel_update(self.app.data_dir)
             self._json(result, 200 if result.get("ok") else 400)
             return
 

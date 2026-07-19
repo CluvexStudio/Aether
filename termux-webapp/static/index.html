@@ -16,10 +16,10 @@
           بدون نیاز به حفظ کردن همه فلگ‌ها، از داخل مرورگر Aether را نصب، اجرا، متوقف و پایش کن.
         </p>
         <div class="hero-actions">
-          <button id="installBtn" class="btn primary">Install Aether</button>
-          <button id="startBtn" class="btn success">Start Aether</button>
-          <button id="stopBtn" class="btn danger">Stop</button>
-          <button id="testBtn" class="btn ghost">Proxy Test</button>
+          <button id="installBtn" class="btn primary">نصب Aether</button>
+          <button id="startBtn" class="btn success">اجرای Aether</button>
+          <button id="stopBtn" class="btn danger">توقف</button>
+          <button id="testBtn" class="btn ghost">تست پراکسی</button>
         </div>
       </div>
       <div class="status-card card">
@@ -64,10 +64,11 @@
             <p>تنظیمات ذخیره می‌شوند و برای دفعات بعدی باقی می‌مانند.</p>
           </div>
           <div class="inline-actions">
-            <button id="saveBtn" class="btn primary">Save settings</button>
-            <button id="restartBtn" class="btn ghost">Restart</button>
-            <button id="updateBtn" class="btn ghost">Update</button>
-            <button id="uninstallBtn" class="btn ghost">Uninstall</button>
+            <button id="saveBtn" class="btn primary">ذخیره تنظیمات</button>
+            <button id="restartBtn" class="btn ghost">ری‌استارت</button>
+            <button id="updateBtn" class="btn ghost">آپدیت هسته</button>
+            <button id="updatePanelBtn" class="btn ghost">آپدیت پنل</button>
+            <button id="uninstallBtn" class="btn ghost">حذف</button>
           </div>
         </div>
 
@@ -264,6 +265,19 @@
             <strong id="logPathView">--</strong>
           </div>
         </div>
+      </section>
+
+      <section class="panel logs-panel card">
+        <div class="panel-head with-actions">
+          <div>
+            <h2>خروجی آخرین عملیات</h2>
+            <p>نتیجه‌ی نصب، آپدیت، تست پراکسی، و خطاهای خلاصه‌شده اینجا نمایش داده می‌شود.</p>
+          </div>
+          <div class="inline-actions">
+            <button id="clearActionOutputBtn" class="btn ghost">پاک کردن</button>
+          </div>
+        </div>
+        <pre id="actionOutputBox" class="logbox">هنوز عملیاتی اجرا نشده است.</pre>
       </section>
 
       <section class="panel logs-panel card">

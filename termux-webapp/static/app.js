@@ -22,6 +22,30 @@ function showToast(message, kind = "info") {
   showToast._timer = setTimeout(() => el.classList.add("hidden"), 4000);
 }
 
+function summarizeText(text, fallback = "خطا") {
+  const raw = String(text || "").trim();
+  if (!raw) return fallback;
+
+  const lines = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const lowered = line.toLowerCase();
+    if (lowered.startsWith("usage:")) continue;
+    if (line.length <= 180) return line;
+    return `${line.slice(0, 177)}...`;
+  }
+
+  return lines[0] || fallback;
+}
+
+function setActionOutput(title, text = "") {
+  const content = String(text || "").trim();
+  $("actionOutputBox").textContent = content ? `${title}\n\n${content}` : title;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -29,7 +53,11 @@ async function api(path, options = {}) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false) {
-    throw new Error(data.message || data.output || `Request failed: ${response.status}`);
+    const fullOutput = data.output || data.message || `Request failed: ${response.status}`;
+    const err = new Error(summarizeText(fullOutput, `Request failed: ${response.status}`));
+    err.fullOutput = fullOutput;
+    err.payload = data;
+    throw err;
   }
   return data;
 }
@@ -263,12 +291,15 @@ async function handleAction(button, work, successMessage) {
     const result = await work();
     if (successMessage) showToast(successMessage);
     if (result?.output) {
-      $("logsBox").textContent = result.output;
+      setActionOutput(`✅ ${successMessage || "Operation completed"}`, result.output);
+    } else if (result?.message) {
+      setActionOutput(`✅ ${successMessage || "Operation completed"}`, result.message);
     }
     await refreshStatus();
     await refreshLogs();
     return result;
   } catch (error) {
+    setActionOutput(`❌ ${error.message || "خطا"}`, error.fullOutput || error.message || "Unknown error");
     showToast(error.message || "خطا", "error");
     throw error;
   } finally {
@@ -357,7 +388,8 @@ async function init() {
 
   $("saveBtn").addEventListener("click", () => handleAction($("saveBtn"), () => saveConfig(), "تنظیمات ذخیره شد."));
   $("installBtn").addEventListener("click", () => handleAction($("installBtn"), () => api("/api/install", { method: "POST", body: JSON.stringify({}) }), "Aether نصب شد یا لاگ نصب نمایش داده شد."));
-  $("updateBtn").addEventListener("click", () => handleAction($("updateBtn"), () => api("/api/update", { method: "POST", body: JSON.stringify({}) }), "درخواست آپدیت انجام شد."));
+  $("updateBtn").addEventListener("click", () => handleAction($("updateBtn"), () => api("/api/update", { method: "POST", body: JSON.stringify({}) }), "آپدیت هسته Aether انجام شد یا آغاز شد."));
+  $("updatePanelBtn").addEventListener("click", () => handleAction($("updatePanelBtn"), () => api("/api/update-panel", { method: "POST", body: JSON.stringify({}) }), "آپدیت پنل شروع شد؛ اگر پنل برای چند ثانیه قطع شد طبیعی است."));
   $("uninstallBtn").addEventListener("click", async () => {
     if (!confirm("Aether uninstall شود؟")) return;
     await handleAction($("uninstallBtn"), () => api("/api/uninstall", { method: "POST", body: JSON.stringify({}) }), "Aether حذف شد.");
@@ -371,14 +403,16 @@ async function init() {
     const config = await saveConfig(false);
     return api("/api/restart", { method: "POST", body: JSON.stringify({ config }) });
   }, "Aether ری‌استارت شد."));
-  $("testBtn").addEventListener("click", () => handleAction($("testBtn"), () => api("/api/test", { method: "POST", body: JSON.stringify({}) }), "تست انجام شد. خروجی پایین نمایش داده شد."));
+  $("testBtn").addEventListener("click", () => handleAction($("testBtn"), () => api("/api/test", { method: "POST", body: JSON.stringify({}) }), "تست پراکسی انجام شد."));
   $("refreshLogsBtn").addEventListener("click", () => refreshLogs(true));
+  $("clearActionOutputBtn").addEventListener("click", () => setActionOutput("هنوز عملیاتی اجرا نشده است."));
 
   state.statusTimer = setInterval(() => refreshStatus().catch((error) => showToast(error.message, "error")), 3000);
   state.logsTimer = setInterval(() => refreshLogs().catch((error) => showToast(error.message, "error")), 2500);
 }
 
 init().catch((error) => {
+  setActionOutput("❌ خطا در بارگذاری داشبورد", error.fullOutput || error.message || String(error));
   $("logsBox").textContent = error.message || String(error);
   showToast(error.message || "خطا در بارگذاری داشبورد", "error");
 });
