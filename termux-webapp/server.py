@@ -560,6 +560,40 @@ def run_installer(action: str, data_dir: Path, extra: str = "") -> Dict[str, Any
     }
 
 
+def run_proxy_health_test(data_dir: Path) -> Dict[str, Any]:
+    cfg = load_config(data_dir)
+    proxy = str(cfg.get("bind_address") or "127.0.0.1:1819")
+    cmd = [
+        "curl",
+        "-sS",
+        "-m",
+        "8",
+        "-x",
+        f"socks5h://{proxy}",
+        "https://www.cloudflare.com/cdn-cgi/trace",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=14,
+            check=False,
+        )
+    except Exception as exc:
+        return {"ok": False, "message": str(exc), "command": shell_join(cmd)}
+
+    output = proc.stdout or ""
+    return {
+        "ok": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "command": shell_join(cmd),
+        "output": output,
+        "message": "proxy healthy" if proc.returncode == 0 else "proxy test failed",
+    }
+
+
 def trigger_panel_update(data_dir: Path) -> Dict[str, Any]:
     if not PANEL_UPDATER.exists():
         return {"ok": False, "message": f"panel updater not found: {PANEL_UPDATER}"}
@@ -777,7 +811,13 @@ class ApiHandler(BaseHTTPRequestHandler):
         if not path.exists() or not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "File not found")
             return
-        data = path.read_bytes()
+
+        gz_path = path.with_suffix(path.suffix + ".gz")
+        accept_encoding = self.headers.get("Accept-Encoding", "")
+        use_gzip = "gzip" in accept_encoding.lower() and gz_path.exists()
+        actual_path = gz_path if use_gzip else path
+        data = actual_path.read_bytes()
+
         if content_type is None:
             if path.suffix == ".html":
                 content_type = "text/html; charset=utf-8"
@@ -787,13 +827,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                 content_type = "application/javascript; charset=utf-8"
             elif path.suffix == ".md":
                 content_type = "text/markdown; charset=utf-8"
-            elif path.suffix == ".json":
+            elif path.suffix == ".json" or path.suffix == ".webmanifest":
                 content_type = "application/json; charset=utf-8"
+            elif path.suffix == ".svg":
+                content_type = "image/svg+xml"
             else:
                 content_type = "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -820,6 +865,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             tail = int((query.get("tail") or ["250"])[0])
             text = tail_file(self.app.data_dir / "aether.log", tail)
             self._json({"ok": True, "log": text, "tail": tail})
+            return
+
+        if path == "/api/health":
+            result = run_proxy_health_test(self.app.data_dir)
+            self._json(result, 200 if result.get("ok") else 503)
             return
 
         if path == "/api/docs":

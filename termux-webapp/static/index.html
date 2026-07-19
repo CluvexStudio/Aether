@@ -2,34 +2,54 @@
 <html lang="fa" dir="rtl">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07111f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Aether Web" />
     <title>Aether Termux Web</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="bg-grid"></div>
+
+    <div id="splashScreen" class="splash-screen">
+      <div class="splash-orb"></div>
+      <div class="splash-content">
+        <div class="splash-logo">A</div>
+        <p class="splash-eyebrow">Aether / Termux / PWA</p>
+        <h1>Aether Web</h1>
+        <p id="splashStatus">در حال آماده‌سازی پنل...</p>
+      </div>
+    </div>
+
     <header class="hero container">
-      <div>
+      <div class="hero-copy card">
         <div class="hero-topbar">
           <div>
-            <p class="eyebrow" data-i18n="hero_eyebrow">Aether / Termux / Local Dashboard</p>
+            <p class="eyebrow" data-i18n="hero_eyebrow">Aether / Termux / داشبورد محلی</p>
             <h1 data-i18n="hero_title">داشبورد وب Aether برای Termux</h1>
           </div>
-          <label class="lang-switcher">
-            <span data-i18n="lang_label">زبان</span>
-            <select id="langSwitcher">
-              <option value="fa">فارسی</option>
-              <option value="en">English</option>
-            </select>
-          </label>
+          <div class="hero-controls">
+            <label class="lang-switcher">
+              <span data-i18n="lang_label">زبان</span>
+              <select id="langSwitcher">
+                <option value="fa">فارسی</option>
+                <option value="en">English</option>
+              </select>
+            </label>
+            <button id="viewModeBtn" class="btn ghost compact">حالت پیشرفته</button>
+            <button id="installPwaBtn" class="btn ghost compact hidden">Install App</button>
+          </div>
         </div>
-        <p class="lead" data-i18n="hero_lead">
-          بدون نیاز به حفظ کردن همه فلگ‌ها، از داخل مرورگر Aether را نصب، اجرا، متوقف و پایش کن.
-        </p>
+        <p class="lead" data-i18n="hero_lead">بدون نیاز به حفظ کردن فلگ‌ها، از داخل مرورگر Aether را نصب، اجرا و پایش کن.</p>
         <div class="hero-actions">
           <button id="installBtn" class="btn primary">نصب Aether</button>
           <button id="startBtn" class="btn success">اجرای Aether</button>
           <button id="stopBtn" class="btn danger">توقف</button>
+          <button id="restartBtn" class="btn ghost">ری‌استارت</button>
           <button id="testBtn" class="btn ghost">تست پراکسی</button>
         </div>
         <div class="vpn-banner card">
@@ -37,10 +57,14 @@
           <p data-i18n="vpn_body">برای اجرای واقعی Aether بهتر است VPN سیستم خاموش باشد. برای دانلود یا آپدیت، اگر لازم شد می‌توانی موقتاً VPN را روشن کنی.</p>
         </div>
       </div>
-      <div class="status-card card">
+
+      <aside class="status-card card">
         <div class="status-header">
-          <span id="runningBadge" class="badge idle">Idle</span>
-          <span id="binaryVersion" class="muted">Version: --</span>
+          <div class="status-badges">
+            <span id="runningBadge" class="badge idle">آماده</span>
+            <span id="healthBadge" class="badge idle small">Proxy: --</span>
+          </div>
+          <span id="binaryVersion" class="muted">نسخه: --</span>
         </div>
         <div class="status-grid">
           <div>
@@ -60,324 +84,333 @@
             <strong id="serverUrls">--</strong>
           </div>
         </div>
-      </div>
+        <div class="status-footer">
+          <span class="label" data-i18n="label_mode">Mode</span>
+          <strong id="backendModeText">Termux</strong>
+        </div>
+      </aside>
     </header>
 
-    <main class="container main-grid">
-      <section class="panel presets-panel card">
-        <div class="panel-head">
-          <h2 data-i18n="presets_title">پریست‌های آماده</h2>
-          <p data-i18n="presets_desc">برای شروع سریع، یکی از این پروفایل‌ها را انتخاب کن.</p>
+    <main class="container app-shell">
+      <nav class="tabs card">
+        <button class="tab-btn active" data-tab="overview" data-i18n="tab_overview">نمای کلی</button>
+        <button class="tab-btn" data-tab="settings" data-i18n="tab_settings">تنظیمات</button>
+        <button class="tab-btn" data-tab="logs" data-i18n="tab_logs">لاگ‌ها</button>
+        <button class="tab-btn" data-tab="help" data-i18n="tab_help">راهنما</button>
+      </nav>
+
+      <section id="tab-overview" class="tab-panel active">
+        <div class="main-grid">
+          <section class="panel presets-panel card">
+            <div class="panel-head">
+              <h2 data-i18n="presets_title">پریست‌های آماده</h2>
+              <p data-i18n="presets_desc">برای شروع سریع، یکی از این پروفایل‌ها را انتخاب کن.</p>
+            </div>
+            <div id="presets" class="preset-grid"></div>
+          </section>
+
+          <section class="panel diagnostics-panel card">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="diag_title">تشخیص سریع</h2>
+                <p data-i18n="diag_desc">این بخش با توجه به وضعیت فعلی، پیشنهادهای سریع می‌دهد.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="copyDiagBtn" class="btn ghost">کپی تشخیص</button>
+              </div>
+            </div>
+            <div id="diagnosticsList" class="diagnostics-list"></div>
+          </section>
+
+          <section class="panel action-panel card wide-panel">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="action_title">خروجی آخرین عملیات</h2>
+                <p data-i18n="action_desc">نتیجه‌ی نصب، آپدیت، تست پراکسی و خطاهای خلاصه‌شده اینجا نمایش داده می‌شود.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="clearActionOutputBtn" class="btn ghost">پاک کردن</button>
+              </div>
+            </div>
+            <pre id="actionOutputBox" class="logbox">هنوز عملیاتی اجرا نشده است.</pre>
+          </section>
         </div>
-        <div id="presets" class="preset-grid"></div>
       </section>
 
-      <section class="panel config-panel card">
-        <div class="panel-head with-actions">
-          <div>
-            <h2 data-i18n="config_title">تنظیمات اجرا</h2>
-            <p data-i18n="config_desc">تنظیمات ذخیره می‌شوند و برای دفعات بعدی باقی می‌مانند.</p>
-          </div>
-          <div class="inline-actions">
-            <button id="saveBtn" class="btn primary">ذخیره تنظیمات</button>
-            <button id="restartBtn" class="btn ghost">ری‌استارت</button>
-            <button id="updateBtn" class="btn ghost">آپدیت هسته</button>
-            <button id="updatePanelBtn" class="btn ghost">آپدیت پنل</button>
-            <button id="viewModeBtn" class="btn ghost">حالت ساده</button>
-            <button id="uninstallBtn" class="btn ghost">حذف</button>
-          </div>
-        </div>
+      <section id="tab-settings" class="tab-panel">
+        <div class="main-grid">
+          <section class="panel config-panel card wide-panel">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="config_title">تنظیمات اجرا</h2>
+                <p data-i18n="config_desc">تنظیمات ذخیره می‌شوند و برای دفعات بعدی باقی می‌مانند.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="saveBtn" class="btn primary">ذخیره تنظیمات</button>
+                <button id="updateBtn" class="btn ghost">آپدیت هسته</button>
+                <button id="updatePanelBtn" class="btn ghost">آپدیت پنل</button>
+                <button id="exportConfigBtn" class="btn ghost">Export</button>
+                <button id="importConfigBtn" class="btn ghost">Import</button>
+                <button id="uninstallBtn" class="btn ghost">حذف</button>
+              </div>
+            </div>
 
-        <form id="configForm" class="form-grid">
-          <div class="field">
-            <label for="bindAddress" data-i18n="field_bind">Bind address</label>
-            <input id="bindAddress" name="bind_address" type="text" placeholder="127.0.0.1:1819" />
-          </div>
+            <input id="importConfigFile" type="file" accept="application/json,.json" class="hidden" />
 
-          <div class="field">
-            <label for="protocol" data-i18n="field_protocol">Protocol</label>
-            <select id="protocol" name="protocol">
-              <option value="masque">MASQUE</option>
-              <option value="wg">WireGuard</option>
-              <option value="gool">GOOL</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label for="scanMode" data-i18n="field_scan_mode">Scan mode</label>
-            <select id="scanMode" name="scan_mode">
-              <option value="turbo">turbo</option>
-              <option value="balanced">balanced</option>
-              <option value="thorough">thorough</option>
-              <option value="stealth">stealth</option>
-              <option value="ironclad">ironclad</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label for="ipMode" data-i18n="field_ip_mode">IP mode</label>
-            <select id="ipMode" name="ip_mode">
-              <option value="v4">IPv4</option>
-              <option value="v6">IPv6</option>
-              <option value="both">Both</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label for="quickReconnect" data-i18n="field_quick_reconnect">Quick reconnect</label>
-            <select id="quickReconnect" name="quick_reconnect">
-              <option value="ask">ask</option>
-              <option value="on">on</option>
-              <option value="off">off</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label for="noiseProfile" data-i18n="field_noise">Noise profile</label>
-            <select id="noiseProfile" name="noise_profile"></select>
-          </div>
-
-          <div class="field wide checkbox-field">
-            <label>
-              <input id="verbose" name="verbose" type="checkbox" />
-              <span data-i18n="field_verbose">Verbose logs</span>
-            </label>
-          </div>
-
-          <div class="field wide advanced-only">
-            <label for="peer" data-i18n="field_peer">Peer override</label>
-            <input id="peer" name="peer" type="text" placeholder="162.159.x.x:443" />
-          </div>
-
-          <div class="field wide advanced-only">
-            <label for="wgPeer" data-i18n="field_wg_peer">WG peer override</label>
-            <input id="wgPeer" name="wg_peer" type="text" placeholder="162.159.x.x:2408" />
-          </div>
-
-          <div id="masqueFields" class="subsection wide">
-            <h3>MASQUE</h3>
-            <div class="subgrid">
+            <form id="configForm" class="form-grid">
               <div class="field">
-                <label for="masqueTransport">Transport</label>
-                <select id="masqueTransport">
-                  <option value="h3">h3 / QUIC</option>
-                  <option value="h2">h2 / TCP</option>
+                <label for="bindAddress" data-i18n="field_bind">Bind address</label>
+                <input id="bindAddress" name="bind_address" type="text" placeholder="127.0.0.1:1819" />
+              </div>
+              <div class="field">
+                <label for="protocol" data-i18n="field_protocol">Protocol</label>
+                <select id="protocol" name="protocol">
+                  <option value="masque">MASQUE</option>
+                  <option value="wg">WireGuard</option>
+                  <option value="gool">GOOL</option>
                 </select>
               </div>
-              <div class="field advanced-only">
-                <label for="h2Peer">H2 peer override</label>
-                <input id="h2Peer" type="text" placeholder="optional" />
-              </div>
-              <div class="field advanced-only">
-                <label for="ech">ECH</label>
-                <input id="ech" type="text" placeholder="auto یا base64" />
-              </div>
-              <div class="field advanced-only">
-                <label for="validateSecs">Validate secs</label>
-                <input id="validateSecs" type="text" placeholder="10" />
-              </div>
-              <div class="field advanced-only">
-                <label for="masqueReconnectSecs">Reconnect secs</label>
-                <input id="masqueReconnectSecs" type="text" placeholder="2" />
-              </div>
-              <div class="field checkbox-field advanced-only">
-                <label>
-                  <input id="masqueNoDataCheck" type="checkbox" />
-                  No data check
-                </label>
-              </div>
-              <div class="field checkbox-field wide">
-                <label>
-                  <input id="fragment" type="checkbox" />
-                  Fragment TLS ClientHello on h2
-                </label>
+              <div class="field">
+                <label for="scanMode" data-i18n="field_scan_mode">Scan mode</label>
+                <select id="scanMode" name="scan_mode">
+                  <option value="turbo">turbo</option>
+                  <option value="balanced">balanced</option>
+                  <option value="thorough">thorough</option>
+                  <option value="stealth">stealth</option>
+                  <option value="ironclad">ironclad</option>
+                </select>
               </div>
               <div class="field">
-                <label for="fragmentSize">Fragment size</label>
-                <input id="fragmentSize" type="text" placeholder="16-32" />
+                <label for="ipMode" data-i18n="field_ip_mode">IP mode</label>
+                <select id="ipMode" name="ip_mode">
+                  <option value="v4">IPv4</option>
+                  <option value="v6">IPv6</option>
+                  <option value="both">Both</option>
+                </select>
               </div>
               <div class="field">
-                <label for="fragmentDelay">Fragment delay</label>
-                <input id="fragmentDelay" type="text" placeholder="2-10" />
+                <label for="quickReconnect" data-i18n="field_quick_reconnect">Quick reconnect</label>
+                <select id="quickReconnect" name="quick_reconnect">
+                  <option value="ask">ask</option>
+                  <option value="on">on</option>
+                  <option value="off">off</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="noiseProfile" data-i18n="field_noise">Noise profile</label>
+                <select id="noiseProfile" name="noise_profile"></select>
+              </div>
+
+              <div class="field wide checkbox-field">
+                <label>
+                  <input id="verbose" name="verbose" type="checkbox" />
+                  <span data-i18n="field_verbose">Verbose logs</span>
+                </label>
+              </div>
+
+              <div class="field wide advanced-only">
+                <label for="peer" data-i18n="field_peer">Peer override</label>
+                <input id="peer" name="peer" type="text" placeholder="162.159.x.x:443" />
+              </div>
+              <div class="field wide advanced-only">
+                <label for="wgPeer" data-i18n="field_wg_peer">WG peer override</label>
+                <input id="wgPeer" name="wg_peer" type="text" placeholder="162.159.x.x:2408" />
+              </div>
+
+              <div id="masqueFields" class="subsection wide">
+                <h3>MASQUE</h3>
+                <div class="subgrid">
+                  <div class="field">
+                    <label for="masqueTransport">Transport</label>
+                    <select id="masqueTransport">
+                      <option value="h3">h3 / QUIC</option>
+                      <option value="h2">h2 / TCP</option>
+                    </select>
+                  </div>
+                  <div class="field advanced-only">
+                    <label for="h2Peer">H2 peer override</label>
+                    <input id="h2Peer" type="text" placeholder="optional" />
+                  </div>
+                  <div class="field advanced-only">
+                    <label for="ech">ECH</label>
+                    <input id="ech" type="text" placeholder="auto یا base64" />
+                  </div>
+                  <div class="field advanced-only">
+                    <label for="validateSecs">Validate secs</label>
+                    <input id="validateSecs" type="text" placeholder="10" />
+                  </div>
+                  <div class="field advanced-only">
+                    <label for="masqueReconnectSecs">Reconnect secs</label>
+                    <input id="masqueReconnectSecs" type="text" placeholder="2" />
+                  </div>
+                  <div class="field checkbox-field advanced-only">
+                    <label>
+                      <input id="masqueNoDataCheck" type="checkbox" />
+                      <span>No data check</span>
+                    </label>
+                  </div>
+                  <div class="field checkbox-field wide">
+                    <label>
+                      <input id="fragment" type="checkbox" />
+                      <span>Fragment TLS ClientHello on h2</span>
+                    </label>
+                  </div>
+                  <div class="field">
+                    <label for="fragmentSize">Fragment size</label>
+                    <input id="fragmentSize" type="text" placeholder="16-32" />
+                  </div>
+                  <div class="field">
+                    <label for="fragmentDelay">Fragment delay</label>
+                    <input id="fragmentDelay" type="text" placeholder="2-10" />
+                  </div>
+                </div>
+              </div>
+
+              <div id="wgFields" class="subsection wide">
+                <h3>WireGuard / GOOL</h3>
+                <div class="subgrid">
+                  <div class="field">
+                    <label for="keepalive">Keepalive</label>
+                    <input id="keepalive" type="text" placeholder="5" />
+                  </div>
+                  <div class="field advanced-only">
+                    <label for="wgReconnectSecs">Reconnect secs</label>
+                    <input id="wgReconnectSecs" type="text" placeholder="2" />
+                  </div>
+                  <div class="field checkbox-field advanced-only">
+                    <label>
+                      <input id="wgNoDataCheck" type="checkbox" />
+                      <span>No data check</span>
+                    </label>
+                  </div>
+                  <div class="field checkbox-field advanced-only">
+                    <label>
+                      <input id="noProfileRetry" type="checkbox" />
+                      <span>No profile retry</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="subsection wide advanced-only">
+                <h3>Advanced</h3>
+                <div class="subgrid">
+                  <div class="field wide">
+                    <label for="binaryPath">Aether binary path</label>
+                    <input id="binaryPath" type="text" placeholder="/data/data/com.termux/files/usr/bin/aether" />
+                  </div>
+                  <div class="field">
+                    <label for="baseConfig">Base config path</label>
+                    <input id="baseConfig" type="text" placeholder="optional" />
+                  </div>
+                  <div class="field">
+                    <label for="wgConfig">WG config path</label>
+                    <input id="wgConfig" type="text" placeholder="optional" />
+                  </div>
+                  <div class="field">
+                    <label for="masqueConfig">MASQUE config path</label>
+                    <input id="masqueConfig" type="text" placeholder="optional" />
+                  </div>
+                  <div class="field wide">
+                    <label for="tlsGroups">TLS groups</label>
+                    <input id="tlsGroups" type="text" placeholder="P-256:X25519:P-384" />
+                  </div>
+                  <div class="field wide">
+                    <label for="extraArgs">Extra args</label>
+                    <input id="extraArgs" type="text" placeholder="مثلاً --fragment --h2" />
+                  </div>
+                  <div class="field wide">
+                    <label for="envBlock">Extra env (KEY=VALUE per line)</label>
+                    <textarea id="envBlock" rows="5" placeholder="AETHER_ECH=auto&#10;RUST_LOG=info,aether=debug"></textarea>
+                  </div>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel preview-panel card wide-panel">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="preview_title">دستور نهایی</h2>
+                <p data-i18n="preview_desc">همان چیزی که داشبورد برای اجرای Aether استفاده می‌کند.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="copyCommandBtn" class="btn ghost">کپی دستور</button>
               </div>
             </div>
-          </div>
-
-          <div id="wgFields" class="subsection wide">
-            <h3>WireGuard / GOOL</h3>
-            <div class="subgrid">
-              <div class="field">
-                <label for="keepalive">Keepalive</label>
-                <input id="keepalive" type="text" placeholder="5" />
+            <pre id="commandPreview" class="codeblock">--</pre>
+            <div class="mini-grid">
+              <div class="card mini-card">
+                <span class="label" data-i18n="label_binary">Aether binary</span>
+                <strong id="binaryPathView">--</strong>
               </div>
-              <div class="field advanced-only">
-                <label for="wgReconnectSecs">Reconnect secs</label>
-                <input id="wgReconnectSecs" type="text" placeholder="2" />
-              </div>
-              <div class="field checkbox-field advanced-only">
-                <label>
-                  <input id="wgNoDataCheck" type="checkbox" />
-                  No data check
-                </label>
-              </div>
-              <div class="field checkbox-field advanced-only">
-                <label>
-                  <input id="noProfileRetry" type="checkbox" />
-                  No profile retry
-                </label>
+              <div class="card mini-card">
+                <span class="label" data-i18n="label_log_file">Log file</span>
+                <strong id="logPathView">--</strong>
               </div>
             </div>
-          </div>
+          </section>
+        </div>
+      </section>
 
-          <div class="subsection wide advanced-only">
-            <h3>Advanced</h3>
-            <div class="subgrid">
-              <div class="field wide">
-                <label for="binaryPath">Aether binary path</label>
-                <input id="binaryPath" type="text" placeholder="/data/data/com.termux/files/usr/bin/aether" />
+      <section id="tab-logs" class="tab-panel">
+        <div class="main-grid">
+          <section class="panel logs-panel card wide-panel">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="logs_title">لاگ زنده</h2>
+                <p data-i18n="logs_desc">خروجی مستقیم خود Aether. هر چند ثانیه رفرش می‌شود.</p>
               </div>
-              <div class="field">
-                <label for="baseConfig">Base config path</label>
-                <input id="baseConfig" type="text" placeholder="optional" />
-              </div>
-              <div class="field">
-                <label for="wgConfig">WG config path</label>
-                <input id="wgConfig" type="text" placeholder="optional" />
-              </div>
-              <div class="field">
-                <label for="masqueConfig">MASQUE config path</label>
-                <input id="masqueConfig" type="text" placeholder="optional" />
-              </div>
-              <div class="field wide">
-                <label for="tlsGroups">TLS groups</label>
-                <input id="tlsGroups" type="text" placeholder="P-256:X25519:P-384" />
-              </div>
-              <div class="field wide">
-                <label for="extraArgs">Extra args</label>
-                <input id="extraArgs" type="text" placeholder="مثلاً --fragment --h2" />
-              </div>
-              <div class="field wide">
-                <label for="envBlock">Extra env (KEY=VALUE per line)</label>
-                <textarea id="envBlock" rows="5" placeholder="AETHER_ECH=auto&#10;RUST_LOG=info,aether=debug"></textarea>
+              <div class="inline-actions">
+                <label class="toggle">
+                  <input id="autoRefreshLogs" type="checkbox" checked />
+                  <span data-i18n="auto_refresh">Auto refresh</span>
+                </label>
+                <button id="copyLogsBtn" class="btn ghost">کپی لاگ</button>
+                <button id="refreshLogsBtn" class="btn ghost">Refresh logs</button>
               </div>
             </div>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel preview-panel card">
-        <div class="panel-head with-actions">
-          <div>
-            <h2 data-i18n="preview_title">دستور نهایی</h2>
-            <p data-i18n="preview_desc">همان چیزی که داشبورد برای اجرای Aether استفاده می‌کند.</p>
-          </div>
-          <div class="inline-actions">
-            <button id="copyCommandBtn" class="btn ghost">کپی دستور</button>
-          </div>
-        </div>
-        <pre id="commandPreview" class="codeblock">--</pre>
-        <div class="mini-grid">
-          <div class="card mini-card">
-            <span class="label" data-i18n="label_binary">Aether binary</span>
-            <strong id="binaryPathView">--</strong>
-          </div>
-          <div class="card mini-card">
-            <span class="label" data-i18n="label_log_file">Log file</span>
-            <strong id="logPathView">--</strong>
-          </div>
+            <div id="logsBox" class="logbox rich-log">Loading logs...</div>
+          </section>
         </div>
       </section>
 
-      <section class="panel logs-panel card">
-        <div class="panel-head with-actions">
-          <div>
-            <h2 data-i18n="action_title">خروجی آخرین عملیات</h2>
-            <p data-i18n="action_desc">نتیجه‌ی نصب، آپدیت، تست پراکسی، و خطاهای خلاصه‌شده اینجا نمایش داده می‌شود.</p>
-          </div>
-          <div class="inline-actions">
-            <button id="clearActionOutputBtn" class="btn ghost">پاک کردن</button>
-          </div>
+      <section id="tab-help" class="tab-panel">
+        <div class="main-grid">
+          <section class="panel guide-panel card wide-panel">
+            <div class="panel-head">
+              <h2 data-i18n="guide_title">راهنمای سریع</h2>
+              <p data-i18n="guide_desc">چک‌لیست شروع، تنظیم پراکسی، و عیب‌یابی.</p>
+            </div>
+            <div class="accordion-list">
+              <details open>
+                <summary data-i18n="guide_quick_title">شروع در ۳۰ ثانیه</summary>
+                <ol id="guideQuickList"></ol>
+              </details>
+              <details>
+                <summary data-i18n="guide_udp_title">اگر UDP یا QUIC بسته بود</summary>
+                <p id="guideUdpBody"></p>
+              </details>
+              <details>
+                <summary data-i18n="guide_tls_title">اگر TLS ClientHello بسته می‌شود</summary>
+                <p id="guideTlsBody"></p>
+              </details>
+              <details>
+                <summary data-i18n="guide_browser_title">تنظیم پراکسی مرورگر</summary>
+                <ul id="guideBrowserList"></ul>
+              </details>
+              <details>
+                <summary data-i18n="guide_lan_title">دسترسی از لپ‌تاپ یا دستگاه دیگر</summary>
+                <p id="guideLanBody"></p>
+              </details>
+            </div>
+            <div class="lite-note card">
+              <strong data-i18n="lite_title">حالت بدون Termux / Lite Mode</strong>
+              <p data-i18n="lite_body">اگر پنل بدون بک‌اند Termux باز شود، همچنان می‌توانی پریست‌ها را ببینی، کانفیگ را ویرایش و export/import کنی، ولی اجرای واقعی هسته Aether نیاز به Termux یا یک بک‌اند سازگار دارد.</p>
+            </div>
+            <div id="docsLinks" class="docs-links"></div>
+          </section>
         </div>
-        <pre id="actionOutputBox" class="logbox">هنوز عملیاتی اجرا نشده است.</pre>
-      </section>
-
-      <section class="panel logs-panel card">
-        <div class="panel-head with-actions">
-          <div>
-            <h2 data-i18n="logs_title">لاگ زنده</h2>
-            <p data-i18n="logs_desc">خروجی مستقیم خود Aether. هر چند ثانیه رفرش می‌شود.</p>
-          </div>
-          <div class="inline-actions">
-            <label class="toggle">
-              <input id="autoRefreshLogs" type="checkbox" checked />
-              <span data-i18n="auto_refresh">Auto refresh</span>
-            </label>
-            <button id="copyLogsBtn" class="btn ghost">کپی لاگ</button>
-            <button id="refreshLogsBtn" class="btn ghost">Refresh logs</button>
-          </div>
-        </div>
-        <pre id="logsBox" class="logbox">Loading logs...</pre>
-      </section>
-
-      <section class="panel diagnostics-panel card">
-        <div class="panel-head with-actions">
-          <div>
-            <h2 data-i18n="diag_title">تشخیص سریع</h2>
-            <p data-i18n="diag_desc">این بخش با توجه به وضعیت فعلی، پیشنهادهای سریع می‌دهد.</p>
-          </div>
-          <div class="inline-actions">
-            <button id="copyDiagBtn" class="btn ghost">کپی تشخیص</button>
-          </div>
-        </div>
-        <div id="diagnosticsList" class="diagnostics-list"></div>
-      </section>
-
-      <section class="panel guide-panel card">
-        <div class="panel-head">
-          <h2 data-i18n="guide_title">راهنمای سریع</h2>
-          <p data-i18n="guide_desc">چک‌لیست شروع، تنظیم پراکسی، و عیب‌یابی.</p>
-        </div>
-        <div class="accordion-list">
-          <details open>
-            <summary data-i18n="guide_quick_title">شروع در ۳۰ ثانیه</summary>
-            <ol id="guideQuickList">
-              <li>روی <strong>Install Aether</strong> بزن.</li>
-              <li>پریست <strong>ایران / حالت پیشنهادی</strong> را انتخاب کن.</li>
-              <li>روی <strong>Save settings</strong> و بعد <strong>Start Aether</strong> بزن.</li>
-              <li>پراکسی مرورگر را روی <code>127.0.0.1:1819</code> با نوع <code>SOCKS5</code> تنظیم کن.</li>
-              <li>با <strong>Proxy Test</strong> مطمئن شو ترافیک عبور می‌کند.</li>
-            </ol>
-          </details>
-          <details>
-            <summary data-i18n="guide_udp_title">اگر UDP یا QUIC بسته بود</summary>
-            <p id="guideUdpBody">
-              پریست <strong>UDP بسته است</strong> را انتخاب کن. این حالت از MASQUE روی h2/TCP استفاده می‌کند.
-            </p>
-          </details>
-          <details>
-            <summary data-i18n="guide_tls_title">اگر TLS ClientHello بسته می‌شود</summary>
-            <p id="guideTlsBody">
-              پریست <strong>DPI سخت‌گیر</strong> را امتحان کن یا در بخش MASQUE گزینه
-              <strong>Fragment TLS ClientHello</strong> را برای h2 روشن کن.
-            </p>
-          </details>
-          <details>
-            <summary data-i18n="guide_browser_title">تنظیم پراکسی مرورگر</summary>
-            <ul id="guideBrowserList">
-              <li>Host: <code>127.0.0.1</code></li>
-              <li>Port: <code>1819</code></li>
-              <li>Type: <code>SOCKS5</code></li>
-              <li>اگر ممکن بود، DNS هم از داخل پراکسی عبور کند.</li>
-            </ul>
-          </details>
-          <details>
-            <summary data-i18n="guide_lan_title">دسترسی از لپ‌تاپ یا دستگاه دیگر</summary>
-            <p id="guideLanBody">
-              داشبورد را با <code>aether-web --host 0.0.0.0 --port 8787</code> اجرا کن و فقط روی شبکه محلی مطمئن از آن استفاده کن.
-            </p>
-          </details>
-        </div>
-        <div id="docsLinks" class="docs-links"></div>
       </section>
     </main>
 

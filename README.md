@@ -66,7 +66,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-After installation, `aether-web` opens an interactive menu with options to start the dashboard, install/update the Aether core, update the dashboard itself from the current repo/fork, and open the browser automatically. The web UI now also includes a Persian / English language switch and an in-panel Update Panel button. The web panel itself listens on `127.0.0.1:8787`, while Aether continues to expose its SOCKS5 proxy on `127.0.0.1:1819`.
+After installation, `aether-web` opens an interactive menu with options to start the dashboard, install/update the Aether core, update the dashboard itself from the current repo/fork, and open the browser automatically. The web UI now also includes a Persian / English language switch, an in-panel Update Panel button, simple/advanced mode, copy buttons, quick diagnostics, config export/import, an installable PWA shell with splash screen, and a Lite mode when the full Termux backend is unavailable. The web panel itself listens on `127.0.0.1:8787`, while Aether continues to expose its SOCKS5 proxy on `127.0.0.1:1819`.
 
 ## Build
 

@@ -16,12 +16,15 @@ It is designed for users who prefer a visual panel instead of manually typing co
   - strict DPI / fragmentation
   - fast WireGuard
   - stable GOOL
-- Live log viewer
+- Live log viewer with cleaner rendering and lightweight color diagnostics
 - One-click proxy test using `curl` through `socks5h://127.0.0.1:1819`
 - Built-in Persian-first help and troubleshooting
 - Persian / English language switch directly inside the web UI
 - Simple / advanced view mode to hide complex options when you do not need them
 - Copy buttons for the final command, logs, and diagnostics
+- Config export / import
+- Installable PWA mode with splash screen and local caching
+- Lite mode for using the UI without Termux (guides/config only, not real tunnel execution)
 - Built-in VPN usage hint for real Aether sessions
 
 ## Install in Termux

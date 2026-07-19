@@ -47,6 +47,9 @@ fi
 info "Copying updated files into ${APP_DIR} ..."
 cp -R "${REPO_DIR}/termux-webapp/." "${APP_DIR}/"
 chmod +x "${APP_DIR}/install.sh" "${APP_DIR}/bin/"*.sh
+if [[ -f "${APP_DIR}/bin/optimize-static.py" ]]; then
+  python3 "${APP_DIR}/bin/optimize-static.py" "${APP_DIR}/static" >/dev/null 2>&1 || true
+fi
 
 success "Dashboard files updated."
 

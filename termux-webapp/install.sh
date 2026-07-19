@@ -119,6 +119,9 @@ install_files() {
   mkdir -p "${INSTALL_DIR}"
   cp -R "${ROOT_DIR}/." "${INSTALL_DIR}/"
   chmod +x "${INSTALL_DIR}/install.sh" "${INSTALL_DIR}/bin/"*.sh
+  if [[ -f "${INSTALL_DIR}/bin/optimize-static.py" ]]; then
+    python3 "${INSTALL_DIR}/bin/optimize-static.py" "${INSTALL_DIR}/static" >/dev/null 2>&1 || true
+  fi
 
   cat > "${LAUNCHER}" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash

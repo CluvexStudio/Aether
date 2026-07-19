@@ -1,31 +1,134 @@
+const DEFAULT_CONFIG = {
+  bind_address: "127.0.0.1:1819",
+  protocol: "masque",
+  scan_mode: "balanced",
+  ip_mode: "v4",
+  quick_reconnect: "ask",
+  noise_profile: "firewall",
+  verbose: true,
+  peer: "",
+  wg_peer: "",
+  masque: {
+    transport: "h3",
+    h2_peer: "",
+    ech: "",
+    fragment: false,
+    fragment_size: "16-32",
+    fragment_delay: "2-10",
+    validate_secs: "10",
+    reconnect_secs: "2",
+    no_data_check: false,
+  },
+  wireguard: {
+    keepalive: "5",
+    reconnect_secs: "2",
+    no_data_check: false,
+    no_profile_retry: false,
+  },
+  config_paths: {
+    base: "",
+    wg: "",
+    masque: "",
+  },
+  advanced: {
+    binary_path: "/data/data/com.termux/files/usr/bin/aether",
+    tls_groups: "",
+    extra_args: "",
+    env_block: "",
+  },
+};
+
 const state = {
-  config: null,
+  config: JSON.parse(JSON.stringify(DEFAULT_CONFIG)),
   status: null,
   logsTimer: null,
   statusTimer: null,
+  healthTimer: null,
   lang: null,
   viewMode: "simple",
   lastPresets: [],
+  docs: [],
+  liteMode: false,
+  backendReady: false,
+  proxyHealth: null,
+  deferredPrompt: null,
+  actionText: "",
+  actionTitle: "",
 };
+
+const FALLBACK_PRESETS = [
+  {
+    id: "iran-recommended",
+    label_fa: "ایران / حالت پیشنهادی",
+    label_en: "Iran / Recommended",
+    description_fa: "MASQUE روی h3 با نویز firewall و اسکن balanced؛ شروع امن و سریع برای بیشتر شبکه‌ها.",
+    description_en: "MASQUE over h3 with firewall noise and balanced scan; a safe first choice for most networks.",
+    config: { protocol: "masque", scan_mode: "balanced", ip_mode: "v4", quick_reconnect: "on", noise_profile: "firewall", masque: { transport: "h3", fragment: false } },
+  },
+  {
+    id: "udp-blocked",
+    label_fa: "UDP بسته است",
+    label_en: "UDP Blocked",
+    description_fa: "MASQUE روی h2/TCP؛ مناسب وقتی HTTP/3 یا QUIC وصل نمی‌شود.",
+    description_en: "MASQUE over h2/TCP; use this when HTTP/3 or QUIC does not connect.",
+    config: { protocol: "masque", scan_mode: "balanced", ip_mode: "v4", quick_reconnect: "on", noise_profile: "firewall", masque: { transport: "h2", fragment: false } },
+  },
+  {
+    id: "strict-dpi",
+    label_fa: "DPI سخت‌گیر",
+    label_en: "Strict DPI",
+    description_fa: "MASQUE روی h2 با fragmentation و نویز gfw برای شبکه‌های خیلی سخت‌گیر.",
+    description_en: "MASQUE over h2 with fragmentation and gfw noise for very strict filtering.",
+    config: { protocol: "masque", scan_mode: "ironclad", ip_mode: "v4", quick_reconnect: "on", noise_profile: "gfw", masque: { transport: "h2", fragment: true, fragment_size: "8-24", fragment_delay: "5-15" } },
+  },
+  {
+    id: "wg-fast",
+    label_fa: "WireGuard سریع",
+    label_en: "Fast WireGuard",
+    description_fa: "برای شبکه‌های کمتر سخت‌گیر یا وقتی سرعت مهم‌تر از استتار است.",
+    description_en: "For less restrictive networks or when speed matters more than stealth.",
+    config: { protocol: "wg", scan_mode: "balanced", ip_mode: "v4", quick_reconnect: "on", noise_profile: "balanced", wireguard: { keepalive: "5", no_profile_retry: false } },
+  },
+  {
+    id: "gool-stability",
+    label_fa: "GOOL پایدار",
+    label_en: "Stable GOOL",
+    description_fa: "تونل دولایه برای وقتی که WireGuard معمولی وصل می‌شود اما ناپایدار است.",
+    description_en: "A nested tunnel for cases where plain WireGuard connects but is unstable.",
+    config: { protocol: "gool", scan_mode: "thorough", ip_mode: "v4", quick_reconnect: "on", noise_profile: "aggressive", wireguard: { keepalive: "5", no_profile_retry: false } },
+  },
+];
+
+const noiseOptions = {
+  masque: ["firewall", "gfw", "off"],
+  wg: ["balanced", "aggressive", "light", "off"],
+  gool: ["balanced", "aggressive", "light", "off"],
+};
+
+const $ = (id) => document.getElementById(id);
 
 const translations = {
   fa: {
     hero_eyebrow: "Aether / Termux / داشبورد محلی",
     hero_title: "داشبورد وب Aether برای Termux",
-    hero_lead: "بدون نیاز به حفظ کردن همه فلگ‌ها، از داخل مرورگر Aether را نصب، اجرا، متوقف و پایش کن.",
+    hero_lead: "بدون نیاز به حفظ کردن فلگ‌ها، از داخل مرورگر Aether را نصب، اجرا و پایش کن.",
     lang_label: "زبان",
     vpn_title: "نکته مهم درباره VPN",
     vpn_body: "برای اجرای واقعی Aether بهتر است VPN سیستم خاموش باشد. برای دانلود یا آپدیت، اگر لازم شد می‌توانی موقتاً VPN را روشن کنی.",
+    tab_overview: "نمای کلی",
+    tab_settings: "تنظیمات",
+    tab_logs: "لاگ‌ها",
+    tab_help: "راهنما",
     presets_title: "پریست‌های آماده",
     presets_desc: "برای شروع سریع، یکی از این پروفایل‌ها را انتخاب کن.",
+    diag_title: "تشخیص سریع",
+    diag_desc: "این بخش با توجه به وضعیت فعلی، پیشنهادهای سریع می‌دهد.",
+    action_title: "خروجی آخرین عملیات",
+    action_desc: "نتیجه‌ی نصب، آپدیت، تست پراکسی و خطاهای خلاصه‌شده اینجا نمایش داده می‌شود.",
     config_title: "تنظیمات اجرا",
     config_desc: "تنظیمات ذخیره می‌شوند و برای دفعات بعدی باقی می‌مانند.",
     preview_title: "دستور نهایی",
     preview_desc: "همان چیزی که داشبورد برای اجرای Aether استفاده می‌کند.",
-    diag_title: "تشخیص سریع",
-    diag_desc: "این بخش با توجه به وضعیت فعلی، پیشنهادهای سریع می‌دهد.",
-    action_title: "خروجی آخرین عملیات",
-    action_desc: "نتیجه‌ی نصب، آپدیت، تست پراکسی، و خطاهای خلاصه‌شده اینجا نمایش داده می‌شود.",
     logs_title: "لاگ زنده",
     logs_desc: "خروجی مستقیم خود Aether. هر چند ثانیه رفرش می‌شود.",
     guide_title: "راهنمای سریع",
@@ -35,6 +138,8 @@ const translations = {
     guide_tls_title: "اگر TLS ClientHello بسته می‌شود",
     guide_browser_title: "تنظیم پراکسی مرورگر",
     guide_lan_title: "دسترسی از لپ‌تاپ یا دستگاه دیگر",
+    lite_title: "حالت بدون Termux / Lite Mode",
+    lite_body: "اگر پنل بدون بک‌اند Termux باز شود، همچنان می‌توانی پریست‌ها را ببینی، کانفیگ را ویرایش و export/import کنی، ولی اجرای واقعی هسته Aether نیاز به Termux یا یک بک‌اند سازگار دارد.",
     field_bind: "Bind address",
     field_protocol: "Protocol",
     field_scan_mode: "Scan mode",
@@ -48,54 +153,64 @@ const translations = {
     label_pid: "PID",
     label_uptime: "Uptime",
     label_panel: "Panel",
+    label_mode: "Mode",
     label_binary: "Aether binary",
     label_log_file: "Log file",
+    version_prefix: "نسخه:",
     auto_refresh: "رفرش خودکار",
     btn_install: "نصب Aether",
     btn_start: "اجرای Aether",
     btn_stop: "توقف",
+    btn_restart: "ری‌استارت",
     btn_test: "تست پراکسی",
     btn_save: "ذخیره تنظیمات",
-    btn_restart: "ری‌استارت",
     btn_update_core: "آپدیت هسته",
     btn_update_panel: "آپدیت پنل",
+    btn_uninstall: "حذف",
+    btn_refresh_logs: "رفرش لاگ",
+    btn_clear: "پاک کردن",
     btn_view_simple: "حالت ساده",
     btn_view_advanced: "حالت پیشرفته",
     btn_copy_command: "کپی دستور",
     btn_copy_logs: "کپی لاگ",
     btn_copy_diag: "کپی تشخیص",
-    btn_uninstall: "حذف",
-    btn_refresh_logs: "رفرش لاگ",
-    btn_clear: "پاک کردن",
+    btn_export: "اکسپورت کانفیگ",
+    btn_import: "ایمپورت کانفیگ",
+    btn_install_pwa: "نصب به‌عنوان اپ",
+    installed_text: "نصب شده",
+    not_installed: "نصب نشده",
+    mode_termux: "Termux / Live",
+    mode_lite: "Browser / Lite",
     status_idle: "آماده",
     status_running: "در حال اجرا",
     status_stopped: "متوقف",
-    version_prefix: "نسخه:",
-    installed_text: "نصب شده",
-    not_installed: "نصب نشده",
+    health_ok: "سالم",
+    health_fail: "ناسالم",
+    health_unknown: "نامشخص",
     no_logs: "هنوز لاگی وجود ندارد.",
     no_action_yet: "هنوز عملیاتی اجرا نشده است.",
     save_success: "تنظیمات ذخیره شد.",
     install_success: "Aether نصب شد یا لاگ نصب نمایش داده شد.",
     core_update_success: "آپدیت هسته Aether انجام شد یا آغاز شد.",
     panel_update_success: "آپدیت پنل شروع شد؛ اگر پنل برای چند ثانیه قطع شد طبیعی است.",
-    copy_success: "کپی شد.",
-    view_simple_toast: "حالت ساده فعال شد.",
-    view_advanced_toast: "حالت پیشرفته فعال شد.",
     uninstall_success: "Aether حذف شد.",
     start_success: "Aether اجرا شد.",
     stop_success: "Aether متوقف شد.",
     restart_success: "Aether ری‌استارت شد.",
     test_success: "تست پراکسی انجام شد.",
+    copy_success: "کپی شد.",
+    import_success: "کانفیگ با موفقیت وارد شد.",
+    view_simple_toast: "حالت ساده فعال شد.",
+    view_advanced_toast: "حالت پیشرفته فعال شد.",
+    pwa_install_toast: "نسخه‌ی قابل نصب مرورگری آماده شد.",
+    lite_mode_toast: "پنل در حالت Lite باز شد؛ برای اجرای واقعی Aether باید بک‌اند Termux در دسترس باشد.",
     confirm_uninstall: "Aether uninstall شود؟",
     op_completed: "عملیات انجام شد",
     op_failed: "خطا",
-    action_ok_prefix: "✅",
-    action_err_prefix: "❌",
     quick_list_html: "<li>روی <strong>نصب Aether</strong> بزن.</li><li>پریست <strong>ایران / حالت پیشنهادی</strong> را انتخاب کن.</li><li>روی <strong>ذخیره تنظیمات</strong> و بعد <strong>اجرای Aether</strong> بزن.</li><li>پراکسی مرورگر را روی <code>127.0.0.1:1819</code> با نوع <code>SOCKS5</code> تنظیم کن.</li><li>با <strong>تست پراکسی</strong> مطمئن شو ترافیک عبور می‌کند.</li>",
     udp_body_html: "پریست <strong>UDP بسته است</strong> را انتخاب کن. این حالت از MASQUE روی h2/TCP استفاده می‌کند.",
     tls_body_html: "پریست <strong>DPI سخت‌گیر</strong> را امتحان کن یا در بخش MASQUE گزینه <strong>Fragment TLS ClientHello</strong> را برای h2 روشن کن.",
-    browser_list_html: "<li>Host: <code>127.0.0.1</code></li><li>Port: <code>1819</code></li><li>Type: <code>SOCKS5</code></li><li>اگر ممکن بود، DNS هم از داخل پراکسی عبور کند.</li>",
+    browser_list_html: "<li>Host: <code>127.0.0.1</code></li><li>Port: <code>1819</code></li><li>Type: <code>SOCKS5</code></li><li>اگر ممکن بود DNS هم از داخل پراکسی عبور کند.</li>",
     lan_body_html: "داشبورد را با <code>aether-web --host 0.0.0.0 --port 8787</code> اجرا کن و فقط روی شبکه محلی مطمئن از آن استفاده کن.",
     diag_binary_missing_title: "هسته Aether هنوز نصب نشده",
     diag_binary_missing_body: "اول روی «نصب Aether» یا «آپدیت هسته» بزن تا باینری داخل ترموکس قرار بگیرد.",
@@ -119,24 +234,35 @@ const translations = {
     diag_legacy_body: "باینری فعلی فلگ نسخه را کامل پشتیبانی نمی‌کند. بهتر است از داخل پنل، هسته را آپدیت کنی.",
     diag_version_ok_title: "نسخه‌ی هسته قابل تشخیص است",
     diag_version_ok_body: "{{version}}",
+    diag_lite_title: "پنل در حالت Lite اجرا شده",
+    diag_lite_body: "تو می‌توانی پریست‌ها، export/import و پیش‌نمایش دستور را بدون Termux استفاده کنی؛ ولی Start/Install واقعی نیاز به بک‌اند دارد.",
+    action_ok_prefix: "✅",
+    action_err_prefix: "❌",
+    splash_loading: "در حال آماده‌سازی پنل...",
+    splash_lite: "در حال ورود به حالت Lite...",
+    splash_ready: "پنل آماده است.",
   },
   en: {
     hero_eyebrow: "Aether / Termux / Local Dashboard",
     hero_title: "Aether Web Dashboard for Termux",
-    hero_lead: "Install, run, stop, and monitor Aether from your browser without memorizing every CLI flag.",
+    hero_lead: "Install, run, stop, and monitor Aether from your browser without memorizing CLI flags.",
     lang_label: "Language",
     vpn_title: "Important VPN note",
     vpn_body: "For real Aether usage, it is better to keep your system VPN off. For downloads or updates, you can temporarily enable a VPN if needed.",
+    tab_overview: "Overview",
+    tab_settings: "Settings",
+    tab_logs: "Logs",
+    tab_help: "Help",
     presets_title: "Ready-made presets",
     presets_desc: "Pick one of these profiles for a fast start.",
+    diag_title: "Quick diagnostics",
+    diag_desc: "This section gives fast suggestions based on your current state.",
+    action_title: "Latest action output",
+    action_desc: "Install, update, proxy test, and summarized errors appear here.",
     config_title: "Run settings",
     config_desc: "Your settings are saved and reused next time.",
     preview_title: "Final command",
     preview_desc: "This is the exact command the dashboard will use to launch Aether.",
-    diag_title: "Quick diagnostics",
-    diag_desc: "This section gives fast suggestions based on your current state.",
-    action_title: "Latest action output",
-    action_desc: "Install, update, proxy test, and summarized error output is shown here.",
     logs_title: "Live logs",
     logs_desc: "Direct Aether output. Refreshed every few seconds.",
     guide_title: "Quick guide",
@@ -146,6 +272,8 @@ const translations = {
     guide_tls_title: "If TLS ClientHello gets blocked",
     guide_browser_title: "Browser proxy setup",
     guide_lan_title: "Access from a laptop or another device",
+    lite_title: "Lite mode / no-Termux capability",
+    lite_body: "If the dashboard is opened without a Termux backend, you can still browse presets, edit config, and export/import settings, but real Aether execution still needs Termux or a compatible backend.",
     field_bind: "Bind address",
     field_protocol: "Protocol",
     field_scan_mode: "Scan mode",
@@ -159,57 +287,67 @@ const translations = {
     label_pid: "PID",
     label_uptime: "Uptime",
     label_panel: "Panel",
+    label_mode: "Mode",
     label_binary: "Aether binary",
     label_log_file: "Log file",
+    version_prefix: "Version:",
     auto_refresh: "Auto refresh",
     btn_install: "Install Aether",
     btn_start: "Start Aether",
     btn_stop: "Stop",
+    btn_restart: "Restart",
     btn_test: "Proxy Test",
     btn_save: "Save settings",
-    btn_restart: "Restart",
     btn_update_core: "Update Core",
     btn_update_panel: "Update Panel",
+    btn_uninstall: "Uninstall",
+    btn_refresh_logs: "Refresh logs",
+    btn_clear: "Clear",
     btn_view_simple: "Simple mode",
     btn_view_advanced: "Advanced mode",
     btn_copy_command: "Copy command",
     btn_copy_logs: "Copy logs",
     btn_copy_diag: "Copy diagnostics",
-    btn_uninstall: "Uninstall",
-    btn_refresh_logs: "Refresh logs",
-    btn_clear: "Clear",
+    btn_export: "Export config",
+    btn_import: "Import config",
+    btn_install_pwa: "Install App",
+    installed_text: "installed",
+    not_installed: "not installed",
+    mode_termux: "Termux / Live",
+    mode_lite: "Browser / Lite",
     status_idle: "Idle",
     status_running: "Running",
     status_stopped: "Stopped",
-    version_prefix: "Version:",
-    installed_text: "installed",
-    not_installed: "not installed",
+    health_ok: "Healthy",
+    health_fail: "Unhealthy",
+    health_unknown: "Unknown",
     no_logs: "No logs yet.",
     no_action_yet: "No action has been run yet.",
     save_success: "Settings saved.",
     install_success: "Aether was installed or the installer log was shown.",
     core_update_success: "Aether core update completed or started.",
     panel_update_success: "Panel update started. A short disconnect is normal while it restarts.",
-    copy_success: "Copied.",
-    view_simple_toast: "Simple mode enabled.",
-    view_advanced_toast: "Advanced mode enabled.",
     uninstall_success: "Aether was removed.",
     start_success: "Aether started.",
     stop_success: "Aether stopped.",
     restart_success: "Aether restarted.",
     test_success: "Proxy test completed.",
+    copy_success: "Copied.",
+    import_success: "Config imported successfully.",
+    view_simple_toast: "Simple mode enabled.",
+    view_advanced_toast: "Advanced mode enabled.",
+    pwa_install_toast: "Installable app mode is ready.",
+    lite_mode_toast: "The dashboard started in Lite mode; real Aether execution still needs a Termux backend.",
     confirm_uninstall: "Uninstall Aether?",
     op_completed: "Operation completed",
     op_failed: "Error",
-    action_ok_prefix: "✅",
-    action_err_prefix: "❌",
     quick_list_html: "<li>Click <strong>Install Aether</strong>.</li><li>Choose the <strong>Iran / Recommended</strong> preset.</li><li>Click <strong>Save settings</strong> and then <strong>Start Aether</strong>.</li><li>Set your browser proxy to <code>127.0.0.1:1819</code> using <code>SOCKS5</code>.</li><li>Use <strong>Proxy Test</strong> to verify traffic really passes.</li>",
     udp_body_html: "Choose the <strong>UDP Blocked</strong> preset. It runs MASQUE over h2/TCP.",
     tls_body_html: "Try the <strong>Strict DPI</strong> preset, or enable <strong>Fragment TLS ClientHello</strong> for h2 in the MASQUE section.",
     browser_list_html: "<li>Host: <code>127.0.0.1</code></li><li>Port: <code>1819</code></li><li>Type: <code>SOCKS5</code></li><li>If possible, route DNS through the proxy too.</li>",
     lan_body_html: "Run the dashboard with <code>aether-web --host 0.0.0.0 --port 8787</code> and only use this mode on a trusted local network.",
     diag_binary_missing_title: "Aether core is not installed yet",
-    diag_binary_missing_body: "Click Install Aether or Update Core first so the binary is available in Termux.",
+    diag_binary_missing_body: "Click Install Aether or Update Core first so the binary becomes available in Termux.",
     diag_running_title: "Aether is running",
     diag_running_body: "If traffic still does not pass, run Proxy Test and try h2 or fragmentation if needed.",
     diag_stopped_title: "Aether is not running yet",
@@ -221,7 +359,7 @@ const translations = {
     diag_port_conflict_title: "Port conflict detected",
     diag_port_conflict_body: "The web panel and proxy appear to share the same port. Keep the panel on 8787 and the proxy on 1819.",
     diag_vpn_title: "Turn off your system VPN",
-    diag_vpn_body: "For real Aether sessions it is better to keep the system VPN off. Only enable it temporarily for downloads or updates if needed.",
+    diag_vpn_body: "For real Aether sessions, it is better to keep the system VPN off. Only enable it temporarily for downloads or updates if needed.",
     diag_h3_title: "If QUIC/UDP is blocked",
     diag_h3_body: "If MASQUE on h3 does not connect, try the UDP Blocked preset or switch to h2/TCP.",
     diag_h2_title: "If the h2 handshake is blocked",
@@ -230,22 +368,24 @@ const translations = {
     diag_legacy_body: "The current binary does not fully support version flags. Updating the core is recommended.",
     diag_version_ok_title: "Core version detected",
     diag_version_ok_body: "{{version}}",
+    diag_lite_title: "The dashboard is running in Lite mode",
+    diag_lite_body: "You can still use presets, export/import, and command preview without Termux, but Start/Install actions need a backend.",
+    action_ok_prefix: "✅",
+    action_err_prefix: "❌",
+    splash_loading: "Preparing dashboard...",
+    splash_lite: "Switching to Lite mode...",
+    splash_ready: "Dashboard is ready.",
   },
 };
-
-const noiseOptions = {
-  masque: ["firewall", "gfw", "off"],
-  wg: ["balanced", "aggressive", "light", "off"],
-  gool: ["balanced", "aggressive", "light", "off"],
-};
-
-const $ = (id) => document.getElementById(id);
 
 function preferredLanguage() {
   const saved = localStorage.getItem("aether-web-lang");
   if (saved === "fa" || saved === "en") return saved;
-  const browser = (navigator.language || "").toLowerCase();
-  return browser.startsWith("fa") ? "fa" : "en";
+  return (navigator.language || "").toLowerCase().startsWith("fa") ? "fa" : "en";
+}
+
+function preferredViewMode() {
+  return localStorage.getItem("aether-web-view") === "advanced" ? "advanced" : "simple";
 }
 
 function t(key) {
@@ -253,84 +393,29 @@ function t(key) {
   return translations[lang]?.[key] ?? translations.fa[key] ?? key;
 }
 
-function applyTranslations() {
-  const lang = state.lang || preferredLanguage();
-  document.documentElement.lang = lang;
-  document.documentElement.dir = lang === "fa" ? "rtl" : "ltr";
-  document.body.classList.toggle("lang-en", lang === "en");
-  $("langSwitcher").value = lang;
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
-  document.querySelectorAll("[data-i18n]").forEach((el) => {
-    el.textContent = t(el.dataset.i18n);
+function cloneValue(value) {
+  return JSON.parse(JSON.stringify(value ?? {}));
+}
+
+function deepMerge(base, patch) {
+  const out = cloneValue(base || {});
+  Object.entries(patch || {}).forEach(([key, value]) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      out[key] = deepMerge(out[key] || {}, value);
+    } else {
+      out[key] = value;
+    }
   });
-
-  $("installBtn").textContent = t("btn_install");
-  $("startBtn").textContent = t("btn_start");
-  $("stopBtn").textContent = t("btn_stop");
-  $("testBtn").textContent = t("btn_test");
-  $("saveBtn").textContent = t("btn_save");
-  $("restartBtn").textContent = t("btn_restart");
-  $("updateBtn").textContent = t("btn_update_core");
-  $("updatePanelBtn").textContent = t("btn_update_panel");
-  $("viewModeBtn").textContent = state.viewMode === "simple" ? t("btn_view_advanced") : t("btn_view_simple");
-  $("copyCommandBtn").textContent = t("btn_copy_command");
-  $("copyLogsBtn").textContent = t("btn_copy_logs");
-  $("copyDiagBtn").textContent = t("btn_copy_diag");
-  $("uninstallBtn").textContent = t("btn_uninstall");
-  $("refreshLogsBtn").textContent = t("btn_refresh_logs");
-  $("clearActionOutputBtn").textContent = t("btn_clear");
-
-  $("guideQuickList").innerHTML = t("quick_list_html");
-  $("guideUdpBody").innerHTML = t("udp_body_html");
-  $("guideTlsBody").innerHTML = t("tls_body_html");
-  $("guideBrowserList").innerHTML = t("browser_list_html");
-  $("guideLanBody").innerHTML = t("lan_body_html");
-
-  if ($("actionOutputBox").dataset.empty === "1") {
-    setActionOutput(t("no_action_yet"));
-  }
-  if ($("logsBox").dataset.empty === "1") {
-    $("logsBox").textContent = t("no_logs");
-  }
-}
-
-function setLanguage(lang) {
-  state.lang = lang === "en" ? "en" : "fa";
-  localStorage.setItem("aether-web-lang", state.lang);
-  applyTranslations();
-  renderPresets(state.status?.presets || state.lastPresets || []);
-  renderDiagnostics(state.status);
-  if (state.status) refreshStatus().catch(() => {});
-}
-
-function preferredViewMode() {
-  return localStorage.getItem("aether-web-view") === "advanced" ? "advanced" : "simple";
-}
-
-function setViewMode(mode, announce = false) {
-  state.viewMode = mode === "advanced" ? "advanced" : "simple";
-  localStorage.setItem("aether-web-view", state.viewMode);
-  document.body.classList.toggle("simple-mode", state.viewMode === "simple");
-  $("viewModeBtn").textContent = state.viewMode === "simple" ? t("btn_view_advanced") : t("btn_view_simple");
-  if (announce) {
-    showToast(state.viewMode === "simple" ? t("view_simple_toast") : t("view_advanced_toast"));
-  }
-}
-
-async function copyText(text) {
-  const value = String(text || "").trim();
-  if (!value) return;
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-  } else {
-    const area = document.createElement("textarea");
-    area.value = value;
-    document.body.appendChild(area);
-    area.select();
-    document.execCommand("copy");
-    area.remove();
-  }
-  showToast(t("copy_success"));
+  return out;
 }
 
 function interpolate(template, params = {}) {
@@ -338,63 +423,6 @@ function interpolate(template, params = {}) {
     (acc, [key, value]) => acc.replaceAll(`{{${key}}}`, value),
     template,
   );
-}
-
-function buildDiagnostics(status) {
-  if (!status) return [];
-  const items = [];
-  const bind = status?.config?.bind_address || "127.0.0.1:1819";
-  const panelPort = String(status?.port || "8787");
-  const bindPort = bind.includes(":") ? bind.split(":").pop() : bind;
-  const binaryVersion = String(status?.binary?.version || "");
-  const protocol = status?.config?.protocol || "masque";
-  const transport = status?.config?.masque?.transport || "h3";
-
-  if (!status?.binary?.exists) {
-    items.push({ level: "error", title: t("diag_binary_missing_title"), body: t("diag_binary_missing_body") });
-  } else {
-    items.push({ level: "success", title: t("diag_version_ok_title"), body: interpolate(t("diag_version_ok_body"), { version: binaryVersion || t("installed_text") }) });
-    if (binaryVersion.includes("unsupported")) {
-      items.push({ level: "warn", title: t("diag_legacy_title"), body: t("diag_legacy_body") });
-    }
-  }
-
-  if (bindPort === panelPort) {
-    items.push({ level: "error", title: t("diag_port_conflict_title"), body: t("diag_port_conflict_body") });
-  } else if (bind === "127.0.0.1:1819") {
-    items.push({ level: "success", title: t("diag_port_ok_title"), body: t("diag_port_ok_body") });
-  } else {
-    items.push({ level: "info", title: t("diag_port_custom_title"), body: interpolate(t("diag_port_custom_body"), { bind }) });
-  }
-
-  if (status.running) {
-    items.push({ level: "success", title: t("diag_running_title"), body: t("diag_running_body") });
-  } else {
-    items.push({ level: "warn", title: t("diag_stopped_title"), body: t("diag_stopped_body") });
-  }
-
-  items.push({ level: "warn", title: t("diag_vpn_title"), body: t("diag_vpn_body") });
-
-  if (protocol === "masque" && transport === "h3") {
-    items.push({ level: "info", title: t("diag_h3_title"), body: t("diag_h3_body") });
-  }
-  if (protocol === "masque" && transport === "h2") {
-    items.push({ level: "info", title: t("diag_h2_title"), body: t("diag_h2_body") });
-  }
-
-  return items;
-}
-
-function renderDiagnostics(status) {
-  const list = $("diagnosticsList");
-  const items = buildDiagnostics(status);
-  list.innerHTML = "";
-  items.forEach((item) => {
-    const box = document.createElement("div");
-    box.className = `diag-card ${item.level}`;
-    box.innerHTML = `<strong>${item.title}</strong><p>${item.body}</p>`;
-    list.appendChild(box);
-  });
 }
 
 function showToast(message, kind = "info") {
@@ -406,29 +434,30 @@ function showToast(message, kind = "info") {
   showToast._timer = setTimeout(() => el.classList.add("hidden"), 4000);
 }
 
-function summarizeText(text, fallback = t("op_failed")) {
-  const raw = String(text || "").trim();
-  if (!raw) return fallback;
+function setSplash(text) {
+  $("splashStatus").textContent = text;
+}
 
-  const lines = raw
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    const lowered = line.toLowerCase();
-    if (lowered.startsWith("usage:")) continue;
-    if (line.length <= 180) return line;
-    return `${line.slice(0, 177)}...`;
-  }
-
-  return lines[0] || fallback;
+function hideSplash() {
+  setTimeout(() => $("splashScreen").classList.add("hidden"), 220);
 }
 
 function setActionOutput(title, text = "") {
-  const content = String(text || "").trim();
-  $("actionOutputBox").dataset.empty = content || title !== t("no_action_yet") ? "0" : "1";
-  $("actionOutputBox").textContent = content ? `${title}\n\n${content}` : title;
+  state.actionTitle = title;
+  state.actionText = String(text || "").trim();
+  $("actionOutputBox").textContent = state.actionText ? `${title}\n\n${state.actionText}` : title;
+}
+
+function summarizeText(text, fallback = t("op_failed")) {
+  const raw = String(text || "").trim();
+  if (!raw) return fallback;
+  const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    const lowered = line.toLowerCase();
+    if (lowered.startsWith("usage:")) continue;
+    return line.length > 180 ? `${line.slice(0, 177)}...` : line;
+  }
+  return lines[0] || fallback;
 }
 
 async function api(path, options = {}) {
@@ -445,6 +474,69 @@ async function api(path, options = {}) {
     throw err;
   }
   return data;
+}
+
+function setLanguage(lang) {
+  state.lang = lang === "en" ? "en" : "fa";
+  localStorage.setItem("aether-web-lang", state.lang);
+  applyTranslations();
+  renderPresets(state.lastPresets);
+  renderDiagnostics();
+  renderActionOutput();
+  renderDocs(state.docs);
+  renderLogs(state.rawLogs || "");
+  updatePreviewFromForm();
+  renderStatus();
+}
+
+function setViewMode(mode, announce = false) {
+  state.viewMode = mode === "advanced" ? "advanced" : "simple";
+  localStorage.setItem("aether-web-view", state.viewMode);
+  document.body.classList.toggle("simple-mode", state.viewMode === "simple");
+  $("viewModeBtn").textContent = state.viewMode === "simple" ? t("btn_view_advanced") : t("btn_view_simple");
+  if (announce) showToast(state.viewMode === "simple" ? t("view_simple_toast") : t("view_advanced_toast"));
+}
+
+function applyTranslations() {
+  document.documentElement.lang = state.lang;
+  document.documentElement.dir = state.lang === "fa" ? "rtl" : "ltr";
+  document.body.classList.toggle("lang-en", state.lang === "en");
+  $("langSwitcher").value = state.lang;
+
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    el.textContent = t(el.dataset.i18n);
+  });
+
+  $("installBtn").textContent = t("btn_install");
+  $("startBtn").textContent = t("btn_start");
+  $("stopBtn").textContent = t("btn_stop");
+  $("restartBtn").textContent = t("btn_restart");
+  $("testBtn").textContent = t("btn_test");
+  $("saveBtn").textContent = t("btn_save");
+  $("updateBtn").textContent = t("btn_update_core");
+  $("updatePanelBtn").textContent = t("btn_update_panel");
+  $("viewModeBtn").textContent = state.viewMode === "simple" ? t("btn_view_advanced") : t("btn_view_simple");
+  $("copyCommandBtn").textContent = t("btn_copy_command");
+  $("copyLogsBtn").textContent = t("btn_copy_logs");
+  $("copyDiagBtn").textContent = t("btn_copy_diag");
+  $("exportConfigBtn").textContent = t("btn_export");
+  $("importConfigBtn").textContent = t("btn_import");
+  $("installPwaBtn").textContent = t("btn_install_pwa");
+  $("uninstallBtn").textContent = t("btn_uninstall");
+  $("refreshLogsBtn").textContent = t("btn_refresh_logs");
+  $("clearActionOutputBtn").textContent = t("btn_clear");
+  $("backendModeText").textContent = state.liteMode ? t("mode_lite") : t("mode_termux");
+
+  $("guideQuickList").innerHTML = t("quick_list_html");
+  $("guideUdpBody").innerHTML = t("udp_body_html");
+  $("guideTlsBody").innerHTML = t("tls_body_html");
+  $("guideBrowserList").innerHTML = t("browser_list_html");
+  $("guideLanBody").innerHTML = t("lan_body_html");
+}
+
+function enableTab(name) {
+  document.querySelectorAll(".tab-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === name));
+  document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${name}`));
 }
 
 function populateNoiseOptions(protocol, selected = "") {
@@ -465,40 +557,36 @@ function currentNoiseDefault(protocol) {
 }
 
 function fillConfig(cfg) {
-  state.config = cfg;
-  $("bindAddress").value = cfg.bind_address || "127.0.0.1:1819";
-  $("protocol").value = cfg.protocol || "masque";
-  $("scanMode").value = cfg.scan_mode || "balanced";
-  $("ipMode").value = cfg.ip_mode || "v4";
-  $("quickReconnect").value = cfg.quick_reconnect || "ask";
-  populateNoiseOptions(cfg.protocol, cfg.noise_profile || currentNoiseDefault(cfg.protocol));
-  $("verbose").checked = !!cfg.verbose;
-  $("peer").value = cfg.peer || "";
-  $("wgPeer").value = cfg.wg_peer || "";
-
-  $("masqueTransport").value = cfg.masque?.transport || "h3";
-  $("h2Peer").value = cfg.masque?.h2_peer || "";
-  $("ech").value = cfg.masque?.ech || "";
-  $("fragment").checked = !!cfg.masque?.fragment;
-  $("fragmentSize").value = cfg.masque?.fragment_size || "16-32";
-  $("fragmentDelay").value = cfg.masque?.fragment_delay || "2-10";
-  $("validateSecs").value = cfg.masque?.validate_secs || "10";
-  $("masqueReconnectSecs").value = cfg.masque?.reconnect_secs || "2";
-  $("masqueNoDataCheck").checked = !!cfg.masque?.no_data_check;
-
-  $("keepalive").value = cfg.wireguard?.keepalive || "5";
-  $("wgReconnectSecs").value = cfg.wireguard?.reconnect_secs || "2";
-  $("wgNoDataCheck").checked = !!cfg.wireguard?.no_data_check;
-  $("noProfileRetry").checked = !!cfg.wireguard?.no_profile_retry;
-
-  $("binaryPath").value = cfg.advanced?.binary_path || "";
-  $("baseConfig").value = cfg.config_paths?.base || "";
-  $("wgConfig").value = cfg.config_paths?.wg || "";
-  $("masqueConfig").value = cfg.config_paths?.masque || "";
-  $("tlsGroups").value = cfg.advanced?.tls_groups || "";
-  $("extraArgs").value = cfg.advanced?.extra_args || "";
-  $("envBlock").value = cfg.advanced?.env_block || "";
-
+  state.config = deepMerge(DEFAULT_CONFIG, cfg || {});
+  $("bindAddress").value = state.config.bind_address || "127.0.0.1:1819";
+  $("protocol").value = state.config.protocol || "masque";
+  $("scanMode").value = state.config.scan_mode || "balanced";
+  $("ipMode").value = state.config.ip_mode || "v4";
+  $("quickReconnect").value = state.config.quick_reconnect || "ask";
+  populateNoiseOptions(state.config.protocol, state.config.noise_profile || currentNoiseDefault(state.config.protocol));
+  $("verbose").checked = !!state.config.verbose;
+  $("peer").value = state.config.peer || "";
+  $("wgPeer").value = state.config.wg_peer || "";
+  $("masqueTransport").value = state.config.masque.transport || "h3";
+  $("h2Peer").value = state.config.masque.h2_peer || "";
+  $("ech").value = state.config.masque.ech || "";
+  $("fragment").checked = !!state.config.masque.fragment;
+  $("fragmentSize").value = state.config.masque.fragment_size || "16-32";
+  $("fragmentDelay").value = state.config.masque.fragment_delay || "2-10";
+  $("validateSecs").value = state.config.masque.validate_secs || "10";
+  $("masqueReconnectSecs").value = state.config.masque.reconnect_secs || "2";
+  $("masqueNoDataCheck").checked = !!state.config.masque.no_data_check;
+  $("keepalive").value = state.config.wireguard.keepalive || "5";
+  $("wgReconnectSecs").value = state.config.wireguard.reconnect_secs || "2";
+  $("wgNoDataCheck").checked = !!state.config.wireguard.no_data_check;
+  $("noProfileRetry").checked = !!state.config.wireguard.no_profile_retry;
+  $("binaryPath").value = state.config.advanced.binary_path || DEFAULT_CONFIG.advanced.binary_path;
+  $("baseConfig").value = state.config.config_paths.base || "";
+  $("wgConfig").value = state.config.config_paths.wg || "";
+  $("masqueConfig").value = state.config.config_paths.masque || "";
+  $("tlsGroups").value = state.config.advanced.tls_groups || "";
+  $("extraArgs").value = state.config.advanced.extra_args || "";
+  $("envBlock").value = state.config.advanced.env_block || "";
   syncVisibility();
 }
 
@@ -545,59 +633,38 @@ function gatherConfig() {
   };
 }
 
-function cloneValue(value) {
-  return JSON.parse(JSON.stringify(value ?? {}));
-}
-
-function applyPreset(preset) {
-  const merged = cloneValue(state.config || {});
-  const patch = cloneValue(preset.config || {});
-  state.config = deepMerge(merged, patch);
-  if (!patch.noise_profile) {
-    state.config.noise_profile = currentNoiseDefault(state.config.protocol);
-  }
-  fillConfig(state.config);
-  updatePreviewFromForm();
-  showToast(`${t("action_ok_prefix")} ${presetText(preset, "label")}`);
-}
-
-function deepMerge(target, patch) {
-  const output = cloneValue(target || {});
-  Object.entries(patch || {}).forEach(([key, value]) => {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      output[key] = deepMerge(output[key] || {}, value);
-    } else {
-      output[key] = value;
-    }
-  });
-  return output;
+function syncVisibility() {
+  const protocol = $("protocol").value;
+  $("masqueFields").style.display = protocol === "masque" ? "block" : "none";
+  $("wgFields").style.display = protocol === "wg" || protocol === "gool" ? "block" : "none";
+  populateNoiseOptions(protocol, $("noiseProfile").value || currentNoiseDefault(protocol));
 }
 
 function presetText(preset, key) {
-  if (state.lang === "en") {
-    return preset[`${key}_en`] || preset[`${key}_fa`] || preset[key] || "";
-  }
-  return preset[`${key}_fa`] || preset[`${key}_en`] || preset[key] || "";
+  return state.lang === "en"
+    ? preset[`${key}_en`] || preset[`${key}_fa`] || preset[key] || ""
+    : preset[`${key}_fa`] || preset[`${key}_en`] || preset[key] || "";
 }
 
 function renderPresets(presets) {
-  state.lastPresets = presets;
+  state.lastPresets = presets || [];
   const container = $("presets");
   container.innerHTML = "";
-  presets.forEach((preset) => {
+  state.lastPresets.forEach((preset) => {
     const card = document.createElement("button");
     card.type = "button";
     card.className = "preset-card";
-    card.innerHTML = `<strong>${presetText(preset, "label")}</strong><p>${presetText(preset, "description")}</p>`;
+    card.innerHTML = `<strong>${escapeHtml(presetText(preset, "label"))}</strong><p>${escapeHtml(presetText(preset, "description"))}</p>`;
     card.addEventListener("click", () => applyPreset(preset));
     container.appendChild(card);
   });
 }
 
 function renderDocs(docs) {
+  state.docs = docs || [];
   const container = $("docsLinks");
   container.innerHTML = "";
-  (docs || []).forEach((doc) => {
+  state.docs.forEach((doc) => {
     const link = document.createElement("a");
     link.href = doc.url;
     link.target = "_blank";
@@ -607,106 +674,177 @@ function renderDocs(docs) {
   });
 }
 
-function syncVisibility() {
-  const protocol = $("protocol").value;
-  $("masqueFields").style.display = protocol === "masque" ? "block" : "none";
-  $("wgFields").style.display = protocol === "wg" || protocol === "gool" ? "block" : "none";
+function renderStatus() {
+  const status = state.status;
+  const bind = status?.config?.bind_address || state.config.bind_address;
+  $("proxyAddr").textContent = bind;
+  $("pidValue").textContent = status?.pid || "--";
+  $("uptimeValue").textContent = status?.running ? status.uptime_human : "--";
+  const versionText = status?.binary?.version || (status?.binary?.exists ? t("installed_text") : t("not_installed"));
+  $("binaryVersion").textContent = `${t("version_prefix")} ${versionText}`;
+  $("binaryPathView").textContent = status?.binary?.path || state.config.advanced.binary_path;
+  $("logPathView").textContent = status?.log_file || "--";
+  $("serverUrls").textContent = (status?.urls || [window.location.origin]).join("  |  ");
+  $("backendModeText").textContent = state.liteMode ? t("mode_lite") : t("mode_termux");
 
-  const current = $("noiseProfile").value;
-  populateNoiseOptions(protocol, current || currentNoiseDefault(protocol));
-}
-
-async function refreshStatus() {
-  const data = await api("/api/status");
-  state.status = data.status;
-  const status = data.status;
-
-  $("proxyAddr").textContent = status.config.bind_address;
-  $("pidValue").textContent = status.pid || "--";
-  $("uptimeValue").textContent = status.running ? status.uptime_human : "--";
-  $("binaryVersion").textContent = `${t("version_prefix")} ${status.binary.version || (status.binary.exists ? t("installed_text") : t("not_installed"))}`;
-  $("binaryPathView").textContent = status.binary.path;
-  $("logPathView").textContent = status.log_file;
-  $("commandPreview").textContent = status.command_preview || "--";
-  $("serverUrls").textContent = (status.urls || []).join("  |  ") || "--";
-
-  const badge = $("runningBadge");
-  badge.className = "badge";
-  if (status.running) {
-    badge.classList.add("running");
-    badge.textContent = t("status_running");
-  } else if (status.last_exit_note) {
-    badge.classList.add("error");
-    badge.textContent = `${t("status_stopped")} (${status.last_exit_note})`;
+  const runBadge = $("runningBadge");
+  runBadge.className = "badge";
+  if (state.liteMode) {
+    runBadge.classList.add("info");
+    runBadge.textContent = t("mode_lite");
+  } else if (status?.running) {
+    runBadge.classList.add("running");
+    runBadge.textContent = t("status_running");
+  } else if (status?.last_exit_note) {
+    runBadge.classList.add("error");
+    runBadge.textContent = `${t("status_stopped")} (${status.last_exit_note})`;
   } else {
-    badge.classList.add("idle");
-    badge.textContent = t("status_idle");
+    runBadge.classList.add("idle");
+    runBadge.textContent = t("status_idle");
   }
 
-  renderDocs(data.status.docs || status.docs || []);
-  renderDiagnostics(status);
-}
-
-async function refreshLogs(force = false) {
-  if (!force && !$("autoRefreshLogs").checked) return;
-  const data = await api("/api/logs?tail=250");
-  const text = data.log || t("no_logs");
-  $("logsBox").dataset.empty = data.log ? "0" : "1";
-  $("logsBox").textContent = text;
-  $("logsBox").scrollTop = $("logsBox").scrollHeight;
-}
-
-async function loadConfig() {
-  const data = await api("/api/config");
-  state.config = data.config;
-  state.lastPresets = data.presets || [];
-  fillConfig(data.config);
-  renderPresets(data.presets || []);
-  renderDocs(data.docs || []);
-  if (data.plan?.command_preview) {
-    $("commandPreview").textContent = data.plan.command_preview;
+  const healthBadge = $("healthBadge");
+  healthBadge.className = "badge small";
+  if (state.proxyHealth === true) {
+    healthBadge.classList.add("running");
+    healthBadge.textContent = `Proxy: ${t("health_ok")}`;
+  } else if (state.proxyHealth === false) {
+    healthBadge.classList.add("warn");
+    healthBadge.textContent = `Proxy: ${t("health_fail")}`;
+  } else {
+    healthBadge.classList.add("idle");
+    healthBadge.textContent = `Proxy: ${t("health_unknown")}`;
   }
+
+  const disabled = state.liteMode;
+  ["installBtn", "startBtn", "stopBtn", "restartBtn", "testBtn", "saveBtn", "updateBtn", "updatePanelBtn", "uninstallBtn"].forEach((id) => {
+    $(id).disabled = false;
+  });
+  if (disabled) {
+    ["installBtn", "startBtn", "stopBtn", "restartBtn", "testBtn", "updateBtn", "updatePanelBtn", "uninstallBtn"].forEach((id) => {
+      $(id).disabled = true;
+    });
+  }
+}
+
+function renderActionOutput() {
+  const title = state.actionTitle || t("no_action_yet");
+  const text = state.actionText || "";
+  $("actionOutputBox").textContent = text ? `${title}\n\n${text}` : title;
+}
+
+function stripAnsi(text) {
+  return String(text || "").replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function renderLogs(text) {
+  state.rawLogs = text || "";
+  const box = $("logsBox");
+  if (!text) {
+    box.innerHTML = escapeHtml(t("no_logs"));
+    return;
+  }
+  const lines = stripAnsi(text).split("\n").map((line) => {
+    const lowered = line.toLowerCase();
+    let cls = "log-dim";
+    if (/(error|failed|panic|fatal|cannot)/.test(lowered)) cls = "log-error";
+    else if (/(warn|warning)/.test(lowered)) cls = "log-warn";
+    else if (/(success|installed|ready|started|running|ok)/.test(lowered)) cls = "log-success";
+    else if (/(info|debug|trace|scan|proxy|listen)/.test(lowered)) cls = "log-info";
+    return `<span class="log-line ${cls}">${escapeHtml(line || " ")}</span>`;
+  });
+  box.innerHTML = lines.join("");
+  box.scrollTop = box.scrollHeight;
+}
+
+function buildDiagnostics() {
+  if (state.liteMode) {
+    return [{ level: "info", title: t("diag_lite_title"), body: t("diag_lite_body") }];
+  }
+  const status = state.status || {};
+  const items = [];
+  const bind = status?.config?.bind_address || state.config.bind_address || "127.0.0.1:1819";
+  const panelPort = String(status?.port || (window.location.port || "8787"));
+  const bindPort = bind.includes(":") ? bind.split(":").pop() : bind;
+  const binaryVersion = String(status?.binary?.version || "");
+  const protocol = status?.config?.protocol || state.config.protocol;
+  const transport = status?.config?.masque?.transport || state.config.masque.transport;
+
+  if (!status?.binary?.exists) {
+    items.push({ level: "error", title: t("diag_binary_missing_title"), body: t("diag_binary_missing_body") });
+  } else {
+    items.push({ level: "success", title: t("diag_version_ok_title"), body: interpolate(t("diag_version_ok_body"), { version: binaryVersion || t("installed_text") }) });
+    if (binaryVersion.includes("unsupported")) {
+      items.push({ level: "warn", title: t("diag_legacy_title"), body: t("diag_legacy_body") });
+    }
+  }
+
+  if (bindPort === panelPort) {
+    items.push({ level: "error", title: t("diag_port_conflict_title"), body: t("diag_port_conflict_body") });
+  } else if (bind === "127.0.0.1:1819") {
+    items.push({ level: "success", title: t("diag_port_ok_title"), body: t("diag_port_ok_body") });
+  } else {
+    items.push({ level: "info", title: t("diag_port_custom_title"), body: interpolate(t("diag_port_custom_body"), { bind }) });
+  }
+
+  if (status?.running) {
+    items.push({ level: "success", title: t("diag_running_title"), body: t("diag_running_body") });
+  } else {
+    items.push({ level: "warn", title: t("diag_stopped_title"), body: t("diag_stopped_body") });
+  }
+
+  items.push({ level: "warn", title: t("diag_vpn_title"), body: t("diag_vpn_body") });
+  if (protocol === "masque" && transport === "h3") items.push({ level: "info", title: t("diag_h3_title"), body: t("diag_h3_body") });
+  if (protocol === "masque" && transport === "h2") items.push({ level: "info", title: t("diag_h2_title"), body: t("diag_h2_body") });
+  return items;
+}
+
+function renderDiagnostics() {
+  const list = $("diagnosticsList");
+  list.innerHTML = "";
+  buildDiagnostics().forEach((item) => {
+    const card = document.createElement("div");
+    card.className = `diag-card ${item.level}`;
+    card.innerHTML = `<strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.body)}</p>`;
+    list.appendChild(card);
+  });
+}
+
+function renderAll() {
+  applyTranslations();
+  renderPresets(state.lastPresets);
+  renderDocs(state.docs);
+  renderStatus();
+  renderActionOutput();
+  renderDiagnostics();
+  renderLogs(state.rawLogs || "");
+  updatePreviewFromForm();
+}
+
+function applyPreset(preset) {
+  const merged = deepMerge(state.config, preset.config || {});
+  if (!(preset.config || {}).noise_profile) merged.noise_profile = currentNoiseDefault(merged.protocol);
+  fillConfig(merged);
+  updatePreviewFromForm();
+  showToast(`${t("action_ok_prefix")} ${presetText(preset, "label")}`);
 }
 
 async function saveConfig(showMessage = true) {
-  const config = gatherConfig();
-  const data = await api("/api/config", {
-    method: "POST",
-    body: JSON.stringify({ config }),
-  });
-  state.config = data.config;
-  $("commandPreview").textContent = data.plan.command_preview || "--";
-  if (showMessage) showToast(t("save_success"));
-  return data.config;
-}
-
-async function handleAction(button, work, successMessage) {
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = "...";
-  try {
-    const result = await work();
-    if (successMessage) showToast(successMessage);
-    if (result?.output) {
-      setActionOutput(`${t("action_ok_prefix")} ${successMessage || t("op_completed")}`, result.output);
-    } else if (result?.message) {
-      setActionOutput(`${t("action_ok_prefix")} ${successMessage || t("op_completed")}`, result.message);
-    }
-    await refreshStatus();
-    await refreshLogs();
-    return result;
-  } catch (error) {
-    setActionOutput(`${t("action_err_prefix")} ${error.message || t("op_failed")}`, error.fullOutput || error.message || t("op_failed"));
-    showToast(error.message || t("op_failed"), "error");
-    throw error;
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
+  state.config = gatherConfig();
+  if (state.liteMode) {
+    localStorage.setItem("aether-web-lite-config", JSON.stringify(state.config));
+    if (showMessage) showToast(t("save_success"));
+    renderAll();
+    return state.config;
   }
+  const data = await api("/api/config", { method: "POST", body: JSON.stringify({ config: state.config }) });
+  state.config = data.config;
+  if (showMessage) showToast(t("save_success"));
+  renderAll();
+  return state.config;
 }
 
-function updatePreviewFromForm() {
-  const config = gatherConfig();
+function buildPreviewFromConfig(config) {
   const env = [];
   const args = [config.advanced.binary_path || "aether"];
   args.push("--bind", config.bind_address || "127.0.0.1:1819");
@@ -744,16 +882,15 @@ function updatePreviewFromForm() {
   }
 
   if (config.advanced.env_block?.trim()) {
-    config.advanced.env_block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .forEach((line) => env.push(line));
+    config.advanced.env_block.split("\n").map((line) => line.trim()).filter(Boolean).forEach((line) => env.push(line));
   }
   if (config.advanced.extra_args?.trim()) args.push(config.advanced.extra_args.trim());
+  return `${env.join(" ")} ${args.join(" ")}`.trim();
+}
 
-  const preview = `${env.join(" ")} ${args.join(" ")}`.trim();
-  $("commandPreview").textContent = preview || "--";
+function updatePreviewFromForm() {
+  state.config = gatherConfig();
+  $("commandPreview").textContent = buildPreviewFromConfig(state.config) || "--";
 }
 
 function bindFormUpdates() {
@@ -766,41 +903,100 @@ function bindFormUpdates() {
   ids.forEach((id) => {
     $(id).addEventListener("input", updatePreviewFromForm);
     $(id).addEventListener("change", () => {
-      if (id === "protocol") {
-        const protocol = $("protocol").value;
-        populateNoiseOptions(protocol, currentNoiseDefault(protocol));
-        syncVisibility();
-      }
+      if (id === "protocol") syncVisibility();
       updatePreviewFromForm();
     });
   });
 }
 
-async function init() {
-  state.lang = preferredLanguage();
-  state.viewMode = preferredViewMode();
-  bindFormUpdates();
-  $("langSwitcher").addEventListener("change", (event) => setLanguage(event.target.value));
-  $("viewModeBtn").addEventListener("click", () => setViewMode(state.viewMode === "simple" ? "advanced" : "simple", true));
-  applyTranslations();
-  setViewMode(state.viewMode);
-  setActionOutput(t("no_action_yet"));
-  $("logsBox").dataset.empty = "1";
-  $("logsBox").textContent = t("no_logs");
+async function refreshStatus() {
+  if (state.liteMode) return;
+  const data = await api("/api/status");
+  state.status = data.status;
+  state.docs = data.status.docs || state.docs;
+  renderAll();
+}
 
-  await loadConfig();
-  await refreshStatus();
-  await refreshLogs();
+async function refreshLogs(force = false) {
+  if (state.liteMode) return;
+  if (!force && !$("autoRefreshLogs").checked) return;
+  const data = await api("/api/logs?tail=250");
+  renderLogs(data.log || "");
+}
+
+async function refreshHealth() {
+  if (state.liteMode) return;
+  try {
+    const data = await api("/api/health");
+    state.proxyHealth = !!data.ok;
+  } catch {
+    state.proxyHealth = false;
+  }
+  renderStatus();
+  renderDiagnostics();
+}
+
+async function handleAction(button, work, successMessage) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "...";
+  try {
+    const result = await work();
+    showToast(successMessage);
+    setActionOutput(`${t("action_ok_prefix")} ${successMessage}`, result?.output || result?.message || "");
+    renderActionOutput();
+    await refreshStatus();
+    await refreshLogs(true);
+    await refreshHealth();
+    return result;
+  } catch (error) {
+    setActionOutput(`${t("action_err_prefix")} ${error.message || t("op_failed")}`, error.fullOutput || error.message || t("op_failed"));
+    renderActionOutput();
+    showToast(error.message || t("op_failed"), "error");
+    throw error;
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function exportConfig() {
+  const config = gatherConfig();
+  const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "aether-web-config.json";
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(t("copy_success"));
+}
+
+function importConfigFromText(text) {
+  const parsed = JSON.parse(text);
+  fillConfig(deepMerge(DEFAULT_CONFIG, parsed));
   updatePreviewFromForm();
+  showToast(t("import_success"));
+}
 
-  $("saveBtn").addEventListener("click", () => handleAction($("saveBtn"), () => saveConfig(), t("save_success")));
+async function copyText(text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+  } else {
+    const area = document.createElement("textarea");
+    area.value = value;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  showToast(t("copy_success"));
+}
+
+function bindButtons() {
   $("installBtn").addEventListener("click", () => handleAction($("installBtn"), () => api("/api/install", { method: "POST", body: JSON.stringify({}) }), t("install_success")));
-  $("updateBtn").addEventListener("click", () => handleAction($("updateBtn"), () => api("/api/update", { method: "POST", body: JSON.stringify({}) }), t("core_update_success")));
-  $("updatePanelBtn").addEventListener("click", () => handleAction($("updatePanelBtn"), () => api("/api/update-panel", { method: "POST", body: JSON.stringify({}) }), t("panel_update_success")));
-  $("uninstallBtn").addEventListener("click", async () => {
-    if (!confirm(t("confirm_uninstall"))) return;
-    await handleAction($("uninstallBtn"), () => api("/api/uninstall", { method: "POST", body: JSON.stringify({}) }), t("uninstall_success"));
-  });
   $("startBtn").addEventListener("click", () => handleAction($("startBtn"), async () => {
     const config = await saveConfig(false);
     return api("/api/start", { method: "POST", body: JSON.stringify({ config }) });
@@ -811,19 +1007,141 @@ async function init() {
     return api("/api/restart", { method: "POST", body: JSON.stringify({ config }) });
   }, t("restart_success")));
   $("testBtn").addEventListener("click", () => handleAction($("testBtn"), () => api("/api/test", { method: "POST", body: JSON.stringify({}) }), t("test_success")));
-  $("refreshLogsBtn").addEventListener("click", () => refreshLogs(true));
-  $("copyCommandBtn").addEventListener("click", () => copyText($("commandPreview").textContent).catch((error) => showToast(error.message || t("op_failed"), "error")));
-  $("copyLogsBtn").addEventListener("click", () => copyText($("logsBox").textContent).catch((error) => showToast(error.message || t("op_failed"), "error")));
-  $("copyDiagBtn").addEventListener("click", () => copyText(Array.from(document.querySelectorAll("#diagnosticsList .diag-card")).map((el) => el.innerText).join("\n\n")).catch((error) => showToast(error.message || t("op_failed"), "error")));
-  $("clearActionOutputBtn").addEventListener("click", () => setActionOutput(t("no_action_yet")));
+  $("saveBtn").addEventListener("click", () => handleAction($("saveBtn"), () => saveConfig(), t("save_success")));
+  $("updateBtn").addEventListener("click", () => handleAction($("updateBtn"), () => api("/api/update", { method: "POST", body: JSON.stringify({}) }), t("core_update_success")));
+  $("updatePanelBtn").addEventListener("click", () => handleAction($("updatePanelBtn"), () => api("/api/update-panel", { method: "POST", body: JSON.stringify({}) }), t("panel_update_success")));
+  $("uninstallBtn").addEventListener("click", async () => {
+    if (!confirm(t("confirm_uninstall"))) return;
+    await handleAction($("uninstallBtn"), () => api("/api/uninstall", { method: "POST", body: JSON.stringify({}) }), t("uninstall_success"));
+  });
 
-  state.statusTimer = setInterval(() => refreshStatus().catch((error) => showToast(error.message, "error")), 3000);
-  state.logsTimer = setInterval(() => refreshLogs().catch((error) => showToast(error.message, "error")), 2500);
+  $("clearActionOutputBtn").addEventListener("click", () => {
+    state.actionTitle = t("no_action_yet");
+    state.actionText = "";
+    renderActionOutput();
+  });
+  $("refreshLogsBtn").addEventListener("click", () => refreshLogs(true));
+  $("copyCommandBtn").addEventListener("click", () => copyText($("commandPreview").textContent).catch((e) => showToast(e.message, "error")));
+  $("copyLogsBtn").addEventListener("click", () => copyText(stripAnsi(state.rawLogs || "")).catch((e) => showToast(e.message, "error")));
+  $("copyDiagBtn").addEventListener("click", () => copyText(Array.from(document.querySelectorAll("#diagnosticsList .diag-card")).map((el) => el.innerText).join("\n\n")).catch((e) => showToast(e.message, "error")));
+
+  $("exportConfigBtn").addEventListener("click", exportConfig);
+  $("importConfigBtn").addEventListener("click", () => $("importConfigFile").click());
+  $("importConfigFile").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      importConfigFromText(await file.text());
+    } catch (error) {
+      showToast(error.message || t("op_failed"), "error");
+    }
+    event.target.value = "";
+  });
+
+  $("langSwitcher").addEventListener("change", (event) => setLanguage(event.target.value));
+  $("viewModeBtn").addEventListener("click", () => setViewMode(state.viewMode === "simple" ? "advanced" : "simple", true));
+  $("installPwaBtn").addEventListener("click", async () => {
+    if (!state.deferredPrompt) return;
+    state.deferredPrompt.prompt();
+    await state.deferredPrompt.userChoice;
+    state.deferredPrompt = null;
+    $("installPwaBtn").classList.add("hidden");
+  });
+
+  document.querySelectorAll(".tab-btn").forEach((btn) => btn.addEventListener("click", () => enableTab(btn.dataset.tab)));
+}
+
+async function initializeBackend() {
+  try {
+    setSplash(t("splash_loading"));
+    const [cfgData, statusData] = await Promise.all([api("/api/config"), api("/api/status")]);
+    state.backendReady = true;
+    state.liteMode = false;
+    state.config = cfgData.config;
+    state.lastPresets = cfgData.presets || statusData.status.presets || [];
+    state.docs = cfgData.docs || statusData.status.docs || [];
+    state.status = statusData.status;
+    fillConfig(state.config);
+    return true;
+  } catch {
+    setSplash(t("splash_lite"));
+    state.backendReady = false;
+    state.liteMode = true;
+    const saved = localStorage.getItem("aether-web-lite-config");
+    state.config = saved ? deepMerge(DEFAULT_CONFIG, JSON.parse(saved)) : cloneValue(DEFAULT_CONFIG);
+    state.lastPresets = FALLBACK_PRESETS;
+    state.docs = [];
+    state.status = {
+      running: false,
+      pid: null,
+      uptime_human: "--",
+      urls: [window.location.origin],
+      port: window.location.port || "8787",
+      config: state.config,
+      binary: { path: state.config.advanced.binary_path, exists: false, version: t("not_installed") },
+      log_file: "--",
+      last_exit_note: null,
+    };
+    fillConfig(state.config);
+    showToast(t("lite_mode_toast"));
+    return false;
+  }
+}
+
+async function registerPwa() {
+  if ("serviceWorker" in navigator) {
+    try {
+      await navigator.serviceWorker.register("/service-worker.js");
+    } catch {
+      // ignore silently on local unsupported setups
+    }
+  }
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    state.deferredPrompt = event;
+    $("installPwaBtn").classList.remove("hidden");
+    showToast(t("pwa_install_toast"));
+  });
+}
+
+function startPolling() {
+  clearInterval(state.statusTimer);
+  clearInterval(state.logsTimer);
+  clearInterval(state.healthTimer);
+  if (state.liteMode) return;
+
+  state.statusTimer = setInterval(() => refreshStatus().catch(() => {}), 4000);
+  state.logsTimer = setInterval(() => refreshLogs().catch(() => {}), 2800);
+  state.healthTimer = setInterval(() => refreshHealth().catch(() => {}), 12000);
+}
+
+async function init() {
+  state.lang = preferredLanguage();
+  state.viewMode = preferredViewMode();
+  bindFormUpdates();
+  bindButtons();
+  await registerPwa();
+  applyTranslations();
+  setViewMode(state.viewMode);
+  setActionOutput(t("no_action_yet"));
+  renderLogs("");
+  enableTab("overview");
+
+  await initializeBackend();
+  renderAll();
+  startPolling();
+  if (!state.liteMode) {
+    await refreshLogs(true).catch(() => {});
+    await refreshHealth().catch(() => {});
+  }
+  setSplash(t("splash_ready"));
+  hideSplash();
 }
 
 init().catch((error) => {
-  const title = `${t("action_err_prefix")} ${t("op_failed")}`;
-  setActionOutput(title, error.fullOutput || error.message || String(error));
-  $("logsBox").textContent = error.message || String(error);
-  showToast(error.message || t("op_failed"), "error");
+  setActionOutput(`${t("action_err_prefix")} ${t("op_failed")}`, error?.message || String(error));
+  renderActionOutput();
+  setSplash(t("op_failed"));
+  setTimeout(hideSplash, 600);
 });
