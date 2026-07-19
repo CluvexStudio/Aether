@@ -4,6 +4,7 @@ const state = {
   logsTimer: null,
   statusTimer: null,
   lang: null,
+  viewMode: "simple",
   lastPresets: [],
 };
 
@@ -21,6 +22,8 @@ const translations = {
     config_desc: "تنظیمات ذخیره می‌شوند و برای دفعات بعدی باقی می‌مانند.",
     preview_title: "دستور نهایی",
     preview_desc: "همان چیزی که داشبورد برای اجرای Aether استفاده می‌کند.",
+    diag_title: "تشخیص سریع",
+    diag_desc: "این بخش با توجه به وضعیت فعلی، پیشنهادهای سریع می‌دهد.",
     action_title: "خروجی آخرین عملیات",
     action_desc: "نتیجه‌ی نصب، آپدیت، تست پراکسی، و خطاهای خلاصه‌شده اینجا نمایش داده می‌شود.",
     logs_title: "لاگ زنده",
@@ -56,6 +59,11 @@ const translations = {
     btn_restart: "ری‌استارت",
     btn_update_core: "آپدیت هسته",
     btn_update_panel: "آپدیت پنل",
+    btn_view_simple: "حالت ساده",
+    btn_view_advanced: "حالت پیشرفته",
+    btn_copy_command: "کپی دستور",
+    btn_copy_logs: "کپی لاگ",
+    btn_copy_diag: "کپی تشخیص",
     btn_uninstall: "حذف",
     btn_refresh_logs: "رفرش لاگ",
     btn_clear: "پاک کردن",
@@ -71,6 +79,9 @@ const translations = {
     install_success: "Aether نصب شد یا لاگ نصب نمایش داده شد.",
     core_update_success: "آپدیت هسته Aether انجام شد یا آغاز شد.",
     panel_update_success: "آپدیت پنل شروع شد؛ اگر پنل برای چند ثانیه قطع شد طبیعی است.",
+    copy_success: "کپی شد.",
+    view_simple_toast: "حالت ساده فعال شد.",
+    view_advanced_toast: "حالت پیشرفته فعال شد.",
     uninstall_success: "Aether حذف شد.",
     start_success: "Aether اجرا شد.",
     stop_success: "Aether متوقف شد.",
@@ -86,6 +97,28 @@ const translations = {
     tls_body_html: "پریست <strong>DPI سخت‌گیر</strong> را امتحان کن یا در بخش MASQUE گزینه <strong>Fragment TLS ClientHello</strong> را برای h2 روشن کن.",
     browser_list_html: "<li>Host: <code>127.0.0.1</code></li><li>Port: <code>1819</code></li><li>Type: <code>SOCKS5</code></li><li>اگر ممکن بود، DNS هم از داخل پراکسی عبور کند.</li>",
     lan_body_html: "داشبورد را با <code>aether-web --host 0.0.0.0 --port 8787</code> اجرا کن و فقط روی شبکه محلی مطمئن از آن استفاده کن.",
+    diag_binary_missing_title: "هسته Aether هنوز نصب نشده",
+    diag_binary_missing_body: "اول روی «نصب Aether» یا «آپدیت هسته» بزن تا باینری داخل ترموکس قرار بگیرد.",
+    diag_running_title: "Aether در حال اجراست",
+    diag_running_body: "اگر ترافیک رد نمی‌شود، یک بار تست پراکسی را بزن و در صورت نیاز h2 یا fragmentation را امتحان کن.",
+    diag_stopped_title: "Aether هنوز اجرا نشده",
+    diag_stopped_body: "بعد از انتخاب پریست مناسب، روی «اجرای Aether» بزن.",
+    diag_port_ok_title: "پورت پراکسی درست است",
+    diag_port_ok_body: "پراکسی روی 127.0.0.1:1819 تنظیم شده؛ این همان پورت پیش‌فرض Aether است.",
+    diag_port_custom_title: "پورت پراکسی تغییر کرده",
+    diag_port_custom_body: "الان پراکسی روی {{bind}} است. اگر مرورگرت قبلاً روی 1819 بوده، تنظیمش را هماهنگ کن.",
+    diag_port_conflict_title: "تداخل پورت پیدا شد",
+    diag_port_conflict_body: "پورت پنل وب و پراکسی یکی شده‌اند. پورت پنل باید 8787 بماند و پراکسی 1819.",
+    diag_vpn_title: "VPN سیستم را خاموش کن",
+    diag_vpn_body: "برای اجرای واقعی Aether بهتر است VPN خاموش باشد. فقط برای دانلود یا آپدیت اگر لازم شد موقتاً روشنش کن.",
+    diag_h3_title: "اگر QUIC/UDP بسته بود",
+    diag_h3_body: "اگر MASQUE روی h3 وصل نمی‌شود، پریست «UDP بسته است» یا حالت h2/TCP را امتحان کن.",
+    diag_h2_title: "اگر h2 handshake بسته می‌شود",
+    diag_h2_body: "در حالت h2، اگر باز هم اتصال نمی‌گیرد، Fragment TLS ClientHello را روشن کن یا پریست DPI سخت‌گیر را بزن.",
+    diag_legacy_title: "نسخه‌ی هسته قدیمی یا محدود است",
+    diag_legacy_body: "باینری فعلی فلگ نسخه را کامل پشتیبانی نمی‌کند. بهتر است از داخل پنل، هسته را آپدیت کنی.",
+    diag_version_ok_title: "نسخه‌ی هسته قابل تشخیص است",
+    diag_version_ok_body: "{{version}}",
   },
   en: {
     hero_eyebrow: "Aether / Termux / Local Dashboard",
@@ -100,6 +133,8 @@ const translations = {
     config_desc: "Your settings are saved and reused next time.",
     preview_title: "Final command",
     preview_desc: "This is the exact command the dashboard will use to launch Aether.",
+    diag_title: "Quick diagnostics",
+    diag_desc: "This section gives fast suggestions based on your current state.",
     action_title: "Latest action output",
     action_desc: "Install, update, proxy test, and summarized error output is shown here.",
     logs_title: "Live logs",
@@ -135,6 +170,11 @@ const translations = {
     btn_restart: "Restart",
     btn_update_core: "Update Core",
     btn_update_panel: "Update Panel",
+    btn_view_simple: "Simple mode",
+    btn_view_advanced: "Advanced mode",
+    btn_copy_command: "Copy command",
+    btn_copy_logs: "Copy logs",
+    btn_copy_diag: "Copy diagnostics",
     btn_uninstall: "Uninstall",
     btn_refresh_logs: "Refresh logs",
     btn_clear: "Clear",
@@ -150,6 +190,9 @@ const translations = {
     install_success: "Aether was installed or the installer log was shown.",
     core_update_success: "Aether core update completed or started.",
     panel_update_success: "Panel update started. A short disconnect is normal while it restarts.",
+    copy_success: "Copied.",
+    view_simple_toast: "Simple mode enabled.",
+    view_advanced_toast: "Advanced mode enabled.",
     uninstall_success: "Aether was removed.",
     start_success: "Aether started.",
     stop_success: "Aether stopped.",
@@ -165,6 +208,28 @@ const translations = {
     tls_body_html: "Try the <strong>Strict DPI</strong> preset, or enable <strong>Fragment TLS ClientHello</strong> for h2 in the MASQUE section.",
     browser_list_html: "<li>Host: <code>127.0.0.1</code></li><li>Port: <code>1819</code></li><li>Type: <code>SOCKS5</code></li><li>If possible, route DNS through the proxy too.</li>",
     lan_body_html: "Run the dashboard with <code>aether-web --host 0.0.0.0 --port 8787</code> and only use this mode on a trusted local network.",
+    diag_binary_missing_title: "Aether core is not installed yet",
+    diag_binary_missing_body: "Click Install Aether or Update Core first so the binary is available in Termux.",
+    diag_running_title: "Aether is running",
+    diag_running_body: "If traffic still does not pass, run Proxy Test and try h2 or fragmentation if needed.",
+    diag_stopped_title: "Aether is not running yet",
+    diag_stopped_body: "Choose a preset, save your settings, and then click Start Aether.",
+    diag_port_ok_title: "Proxy port looks correct",
+    diag_port_ok_body: "The proxy is set to 127.0.0.1:1819, which is the normal Aether default.",
+    diag_port_custom_title: "Proxy port was changed",
+    diag_port_custom_body: "The proxy is currently set to {{bind}}. Make sure your browser matches that value.",
+    diag_port_conflict_title: "Port conflict detected",
+    diag_port_conflict_body: "The web panel and proxy appear to share the same port. Keep the panel on 8787 and the proxy on 1819.",
+    diag_vpn_title: "Turn off your system VPN",
+    diag_vpn_body: "For real Aether sessions it is better to keep the system VPN off. Only enable it temporarily for downloads or updates if needed.",
+    diag_h3_title: "If QUIC/UDP is blocked",
+    diag_h3_body: "If MASQUE on h3 does not connect, try the UDP Blocked preset or switch to h2/TCP.",
+    diag_h2_title: "If the h2 handshake is blocked",
+    diag_h2_body: "When using h2, enable Fragment TLS ClientHello or use the Strict DPI preset if the handshake still fails.",
+    diag_legacy_title: "The core binary looks old or limited",
+    diag_legacy_body: "The current binary does not fully support version flags. Updating the core is recommended.",
+    diag_version_ok_title: "Core version detected",
+    diag_version_ok_body: "{{version}}",
   },
 };
 
@@ -207,6 +272,10 @@ function applyTranslations() {
   $("restartBtn").textContent = t("btn_restart");
   $("updateBtn").textContent = t("btn_update_core");
   $("updatePanelBtn").textContent = t("btn_update_panel");
+  $("viewModeBtn").textContent = state.viewMode === "simple" ? t("btn_view_advanced") : t("btn_view_simple");
+  $("copyCommandBtn").textContent = t("btn_copy_command");
+  $("copyLogsBtn").textContent = t("btn_copy_logs");
+  $("copyDiagBtn").textContent = t("btn_copy_diag");
   $("uninstallBtn").textContent = t("btn_uninstall");
   $("refreshLogsBtn").textContent = t("btn_refresh_logs");
   $("clearActionOutputBtn").textContent = t("btn_clear");
@@ -230,7 +299,102 @@ function setLanguage(lang) {
   localStorage.setItem("aether-web-lang", state.lang);
   applyTranslations();
   renderPresets(state.status?.presets || state.lastPresets || []);
+  renderDiagnostics(state.status);
   if (state.status) refreshStatus().catch(() => {});
+}
+
+function preferredViewMode() {
+  return localStorage.getItem("aether-web-view") === "advanced" ? "advanced" : "simple";
+}
+
+function setViewMode(mode, announce = false) {
+  state.viewMode = mode === "advanced" ? "advanced" : "simple";
+  localStorage.setItem("aether-web-view", state.viewMode);
+  document.body.classList.toggle("simple-mode", state.viewMode === "simple");
+  $("viewModeBtn").textContent = state.viewMode === "simple" ? t("btn_view_advanced") : t("btn_view_simple");
+  if (announce) {
+    showToast(state.viewMode === "simple" ? t("view_simple_toast") : t("view_advanced_toast"));
+  }
+}
+
+async function copyText(text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+  } else {
+    const area = document.createElement("textarea");
+    area.value = value;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  showToast(t("copy_success"));
+}
+
+function interpolate(template, params = {}) {
+  return Object.entries(params).reduce(
+    (acc, [key, value]) => acc.replaceAll(`{{${key}}}`, value),
+    template,
+  );
+}
+
+function buildDiagnostics(status) {
+  if (!status) return [];
+  const items = [];
+  const bind = status?.config?.bind_address || "127.0.0.1:1819";
+  const panelPort = String(status?.port || "8787");
+  const bindPort = bind.includes(":") ? bind.split(":").pop() : bind;
+  const binaryVersion = String(status?.binary?.version || "");
+  const protocol = status?.config?.protocol || "masque";
+  const transport = status?.config?.masque?.transport || "h3";
+
+  if (!status?.binary?.exists) {
+    items.push({ level: "error", title: t("diag_binary_missing_title"), body: t("diag_binary_missing_body") });
+  } else {
+    items.push({ level: "success", title: t("diag_version_ok_title"), body: interpolate(t("diag_version_ok_body"), { version: binaryVersion || t("installed_text") }) });
+    if (binaryVersion.includes("unsupported")) {
+      items.push({ level: "warn", title: t("diag_legacy_title"), body: t("diag_legacy_body") });
+    }
+  }
+
+  if (bindPort === panelPort) {
+    items.push({ level: "error", title: t("diag_port_conflict_title"), body: t("diag_port_conflict_body") });
+  } else if (bind === "127.0.0.1:1819") {
+    items.push({ level: "success", title: t("diag_port_ok_title"), body: t("diag_port_ok_body") });
+  } else {
+    items.push({ level: "info", title: t("diag_port_custom_title"), body: interpolate(t("diag_port_custom_body"), { bind }) });
+  }
+
+  if (status.running) {
+    items.push({ level: "success", title: t("diag_running_title"), body: t("diag_running_body") });
+  } else {
+    items.push({ level: "warn", title: t("diag_stopped_title"), body: t("diag_stopped_body") });
+  }
+
+  items.push({ level: "warn", title: t("diag_vpn_title"), body: t("diag_vpn_body") });
+
+  if (protocol === "masque" && transport === "h3") {
+    items.push({ level: "info", title: t("diag_h3_title"), body: t("diag_h3_body") });
+  }
+  if (protocol === "masque" && transport === "h2") {
+    items.push({ level: "info", title: t("diag_h2_title"), body: t("diag_h2_body") });
+  }
+
+  return items;
+}
+
+function renderDiagnostics(status) {
+  const list = $("diagnosticsList");
+  const items = buildDiagnostics(status);
+  list.innerHTML = "";
+  items.forEach((item) => {
+    const box = document.createElement("div");
+    box.className = `diag-card ${item.level}`;
+    box.innerHTML = `<strong>${item.title}</strong><p>${item.body}</p>`;
+    list.appendChild(box);
+  });
 }
 
 function showToast(message, kind = "info") {
@@ -480,6 +644,7 @@ async function refreshStatus() {
   }
 
   renderDocs(data.status.docs || status.docs || []);
+  renderDiagnostics(status);
 }
 
 async function refreshLogs(force = false) {
@@ -613,9 +778,12 @@ function bindFormUpdates() {
 
 async function init() {
   state.lang = preferredLanguage();
+  state.viewMode = preferredViewMode();
   bindFormUpdates();
   $("langSwitcher").addEventListener("change", (event) => setLanguage(event.target.value));
+  $("viewModeBtn").addEventListener("click", () => setViewMode(state.viewMode === "simple" ? "advanced" : "simple", true));
   applyTranslations();
+  setViewMode(state.viewMode);
   setActionOutput(t("no_action_yet"));
   $("logsBox").dataset.empty = "1";
   $("logsBox").textContent = t("no_logs");
@@ -644,6 +812,9 @@ async function init() {
   }, t("restart_success")));
   $("testBtn").addEventListener("click", () => handleAction($("testBtn"), () => api("/api/test", { method: "POST", body: JSON.stringify({}) }), t("test_success")));
   $("refreshLogsBtn").addEventListener("click", () => refreshLogs(true));
+  $("copyCommandBtn").addEventListener("click", () => copyText($("commandPreview").textContent).catch((error) => showToast(error.message || t("op_failed"), "error")));
+  $("copyLogsBtn").addEventListener("click", () => copyText($("logsBox").textContent).catch((error) => showToast(error.message || t("op_failed"), "error")));
+  $("copyDiagBtn").addEventListener("click", () => copyText(Array.from(document.querySelectorAll("#diagnosticsList .diag-card")).map((el) => el.innerText).join("\n\n")).catch((error) => showToast(error.message || t("op_failed"), "error")));
   $("clearActionOutputBtn").addEventListener("click", () => setActionOutput(t("no_action_yet")));
 
   state.statusTimer = setInterval(() => refreshStatus().catch((error) => showToast(error.message, "error")), 3000);

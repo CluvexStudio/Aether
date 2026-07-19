@@ -174,7 +174,8 @@ h1 {
 
 .presets-panel,
 .preview-panel,
-.guide-panel {
+.guide-panel,
+.diagnostics-panel {
   grid-column: span 4;
 }
 
@@ -425,6 +426,50 @@ textarea:focus {
   margin-top: 18px;
 }
 
+.diagnostics-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.diag-card {
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(120, 177, 255, 0.14);
+  background: rgba(9, 20, 34, 0.72);
+}
+
+.diag-card strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.diag-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.diag-card.success {
+  border-color: rgba(43, 230, 168, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(43, 230, 168, 0.06);
+}
+
+.diag-card.warn {
+  border-color: rgba(255, 200, 97, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(255, 200, 97, 0.06);
+}
+
+.diag-card.error {
+  border-color: rgba(255, 107, 136, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 136, 0.06);
+}
+
+.diag-card.info {
+  border-color: rgba(91, 180, 255, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(91, 180, 255, 0.06);
+}
+
 .docs-links a {
   color: var(--text);
   text-decoration: none;
@@ -485,6 +530,10 @@ body.lang-en .lang-switcher {
   margin-left: auto;
 }
 
+body.simple-mode .advanced-only {
+  display: none !important;
+}
+
 @media (max-width: 1080px) {
   .hero,
   .main-grid {
@@ -494,6 +543,7 @@ body.lang-en .lang-switcher {
   .presets-panel,
   .preview-panel,
   .guide-panel,
+  .diagnostics-panel,
   .config-panel,
   .logs-panel {
     grid-column: 1;

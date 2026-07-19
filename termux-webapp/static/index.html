@@ -83,6 +83,7 @@
             <button id="restartBtn" class="btn ghost">ری‌استارت</button>
             <button id="updateBtn" class="btn ghost">آپدیت هسته</button>
             <button id="updatePanelBtn" class="btn ghost">آپدیت پنل</button>
+            <button id="viewModeBtn" class="btn ghost">حالت ساده</button>
             <button id="uninstallBtn" class="btn ghost">حذف</button>
           </div>
         </div>
@@ -143,12 +144,12 @@
             </label>
           </div>
 
-          <div class="field wide">
+          <div class="field wide advanced-only">
             <label for="peer" data-i18n="field_peer">Peer override</label>
             <input id="peer" name="peer" type="text" placeholder="162.159.x.x:443" />
           </div>
 
-          <div class="field wide">
+          <div class="field wide advanced-only">
             <label for="wgPeer" data-i18n="field_wg_peer">WG peer override</label>
             <input id="wgPeer" name="wg_peer" type="text" placeholder="162.159.x.x:2408" />
           </div>
@@ -163,23 +164,23 @@
                   <option value="h2">h2 / TCP</option>
                 </select>
               </div>
-              <div class="field">
+              <div class="field advanced-only">
                 <label for="h2Peer">H2 peer override</label>
                 <input id="h2Peer" type="text" placeholder="optional" />
               </div>
-              <div class="field">
+              <div class="field advanced-only">
                 <label for="ech">ECH</label>
                 <input id="ech" type="text" placeholder="auto یا base64" />
               </div>
-              <div class="field">
+              <div class="field advanced-only">
                 <label for="validateSecs">Validate secs</label>
                 <input id="validateSecs" type="text" placeholder="10" />
               </div>
-              <div class="field">
+              <div class="field advanced-only">
                 <label for="masqueReconnectSecs">Reconnect secs</label>
                 <input id="masqueReconnectSecs" type="text" placeholder="2" />
               </div>
-              <div class="field checkbox-field">
+              <div class="field checkbox-field advanced-only">
                 <label>
                   <input id="masqueNoDataCheck" type="checkbox" />
                   No data check
@@ -209,17 +210,17 @@
                 <label for="keepalive">Keepalive</label>
                 <input id="keepalive" type="text" placeholder="5" />
               </div>
-              <div class="field">
+              <div class="field advanced-only">
                 <label for="wgReconnectSecs">Reconnect secs</label>
                 <input id="wgReconnectSecs" type="text" placeholder="2" />
               </div>
-              <div class="field checkbox-field">
+              <div class="field checkbox-field advanced-only">
                 <label>
                   <input id="wgNoDataCheck" type="checkbox" />
                   No data check
                 </label>
               </div>
-              <div class="field checkbox-field">
+              <div class="field checkbox-field advanced-only">
                 <label>
                   <input id="noProfileRetry" type="checkbox" />
                   No profile retry
@@ -228,7 +229,7 @@
             </div>
           </div>
 
-          <div class="subsection wide">
+          <div class="subsection wide advanced-only">
             <h3>Advanced</h3>
             <div class="subgrid">
               <div class="field wide">
@@ -265,9 +266,14 @@
       </section>
 
       <section class="panel preview-panel card">
-        <div class="panel-head">
-          <h2 data-i18n="preview_title">دستور نهایی</h2>
-          <p data-i18n="preview_desc">همان چیزی که داشبورد برای اجرای Aether استفاده می‌کند.</p>
+        <div class="panel-head with-actions">
+          <div>
+            <h2 data-i18n="preview_title">دستور نهایی</h2>
+            <p data-i18n="preview_desc">همان چیزی که داشبورد برای اجرای Aether استفاده می‌کند.</p>
+          </div>
+          <div class="inline-actions">
+            <button id="copyCommandBtn" class="btn ghost">کپی دستور</button>
+          </div>
         </div>
         <pre id="commandPreview" class="codeblock">--</pre>
         <div class="mini-grid">
@@ -306,10 +312,24 @@
               <input id="autoRefreshLogs" type="checkbox" checked />
               <span data-i18n="auto_refresh">Auto refresh</span>
             </label>
+            <button id="copyLogsBtn" class="btn ghost">کپی لاگ</button>
             <button id="refreshLogsBtn" class="btn ghost">Refresh logs</button>
           </div>
         </div>
         <pre id="logsBox" class="logbox">Loading logs...</pre>
+      </section>
+
+      <section class="panel diagnostics-panel card">
+        <div class="panel-head with-actions">
+          <div>
+            <h2 data-i18n="diag_title">تشخیص سریع</h2>
+            <p data-i18n="diag_desc">این بخش با توجه به وضعیت فعلی، پیشنهادهای سریع می‌دهد.</p>
+          </div>
+          <div class="inline-actions">
+            <button id="copyDiagBtn" class="btn ghost">کپی تشخیص</button>
+          </div>
+        </div>
+        <div id="diagnosticsList" class="diagnostics-list"></div>
       </section>
 
       <section class="panel guide-panel card">
