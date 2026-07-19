@@ -25,8 +25,10 @@ It is designed for users who prefer a visual panel instead of manually typing co
 - Config export / import
 - Automatic local config backups with quick restore
 - History of recent successful profiles
+- In-UI notification/event history
 - QR, text payload, and local share-link export for moving config to another device
 - QR import from camera / gallery on supported browsers
+- Log-level filters (all / success / info / warn / error)
 - Installable PWA mode with splash screen and local caching
 - Lite mode for using the UI without Termux (guides/config only, not real tunnel execution)
 - Built-in VPN usage hint for real Aether sessions

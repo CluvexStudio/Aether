@@ -50,14 +50,18 @@ const state = {
   docs: [],
   histories: [],
   backups: [],
+  notifications: [],
   liteMode: false,
   backendReady: false,
   proxyHealth: null,
   proxyHealthDetail: null,
   deferredPrompt: null,
+  cameraStream: null,
+  cameraFrame: null,
   actionText: "",
   actionTitle: "",
   rawLogs: "",
+  logFilter: "all",
 };
 
 const STORAGE_KEYS = {
@@ -66,6 +70,7 @@ const STORAGE_KEYS = {
   liteConfig: "aether-web-lite-config",
   history: "aether-web-history",
   backups: "aether-web-backups",
+  notifications: "aether-web-notifications",
 };
 
 const FALLBACK_PRESETS = [
@@ -197,22 +202,28 @@ const translations = {
     btn_backup_now: "بکاپ دستی",
     btn_clear_backups: "حذف همه",
     btn_clear_history: "پاک کردن سابقه",
+    btn_clear_notifications: "پاک کردن اعلان‌ها",
+    btn_close_camera: "بستن",
     btn_restore: "بازیابی",
     btn_apply: "اعمال",
     btn_delete: "حذف",
     history_title: "پروفایل‌های موفق اخیر",
     history_desc: "آخرین اجراها و تست‌های موفق اینجا ذخیره می‌شوند تا سریع دوباره برگردی.",
+    notif_title: "تاریخچه اعلان‌ها",
+    notif_desc: "تست‌ها، آپدیت‌ها و خطاهای اخیر اینجا ذخیره می‌شوند.",
     backup_title: "نسخه‌های پشتیبان کانفیگ",
     backup_desc: "هر بار ذخیره یا ایمپورت، یک نسخه‌ی پشتیبان محلی ساخته می‌شود.",
     qr_title: "انتقال کانفیگ با QR",
     qr_desc: "کانفیگ فعلی را به‌صورت QR و متن فشرده برای دستگاه دیگر آماده کن.",
     qr_payload_label: "متن فشرده‌ی کانفیگ",
+    notif_empty: "هنوز هیچ اعلانی ذخیره نشده است.",
     history_empty: "هنوز هیچ اجرای موفقی ثبت نشده است.",
     backup_empty: "هنوز هیچ بکاپی ساخته نشده است.",
     qr_placeholder: "QR",
     backup_created: "نسخه‌ی پشتیبان ذخیره شد.",
     history_cleared: "سابقه پاک شد.",
     backups_cleared: "بکاپ‌ها حذف شدند.",
+    notifications_cleared: "اعلان‌ها پاک شدند.",
     backup_restored: "بکاپ بازیابی شد.",
     backup_deleted: "بکاپ حذف شد.",
     history_applied: "پروفایل دوباره اعمال شد.",
@@ -287,6 +298,12 @@ const translations = {
     splash_loading: "در حال آماده‌سازی پنل...",
     splash_lite: "در حال ورود به حالت Lite...",
     splash_ready: "پنل آماده است.",
+    camera_title: "اسکن زنده QR",
+    camera_desc: "دوربین را روبه‌روی QR بگیر تا کانفیگ خودکار خوانده شود.",
+    camera_starting: "در حال آماده‌سازی دوربین...",
+    camera_point: "QR را داخل کادر نگه دار.",
+    camera_found: "QR پیدا شد؛ در حال اعمال کانفیگ...",
+    log_filter_placeholder: "جستجو در لاگ‌ها",
   },
   en: {
     hero_eyebrow: "Aether / Termux / Local Dashboard",
@@ -365,22 +382,28 @@ const translations = {
     btn_backup_now: "Backup now",
     btn_clear_backups: "Delete all",
     btn_clear_history: "Clear history",
+    btn_clear_notifications: "Clear notifications",
+    btn_close_camera: "Close",
     btn_restore: "Restore",
     btn_apply: "Apply",
     btn_delete: "Delete",
     history_title: "Recent successful profiles",
     history_desc: "Your latest successful starts and proxy tests are kept here for quick reuse.",
+    notif_title: "Notification history",
+    notif_desc: "Recent updates, proxy tests, and errors are stored here.",
     backup_title: "Config backup versions",
     backup_desc: "Every save or import creates a local config backup.",
     qr_title: "Transfer config with QR",
     qr_desc: "Prepare the current config as a QR code and compact text for another device.",
     qr_payload_label: "Compressed config payload",
+    notif_empty: "No notifications have been stored yet.",
     history_empty: "No successful runs have been saved yet.",
     backup_empty: "No backups have been created yet.",
     qr_placeholder: "QR",
     backup_created: "Backup saved.",
     history_cleared: "History cleared.",
     backups_cleared: "Backups deleted.",
+    notifications_cleared: "Notifications cleared.",
     backup_restored: "Backup restored.",
     backup_deleted: "Backup deleted.",
     history_applied: "Profile applied again.",
@@ -455,6 +478,12 @@ const translations = {
     splash_loading: "Preparing dashboard...",
     splash_lite: "Switching to Lite mode...",
     splash_ready: "Dashboard is ready.",
+    camera_title: "Live QR scanner",
+    camera_desc: "Point the camera at a QR code to read and apply the config automatically.",
+    camera_starting: "Preparing camera...",
+    camera_point: "Keep the QR code inside the frame.",
+    camera_found: "QR detected; applying config...",
+    log_filter_placeholder: "Search logs",
   },
 };
 
@@ -505,11 +534,25 @@ function interpolate(template, params = {}) {
   );
 }
 
+function pushNotification(message, kind = "info") {
+  const notifications = storageGetJson(STORAGE_KEYS.notifications, []);
+  notifications.unshift({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    message,
+    kind,
+    createdAt: new Date().toISOString(),
+  });
+  state.notifications = notifications.slice(0, 24);
+  storageSetJson(STORAGE_KEYS.notifications, state.notifications);
+  renderNotifications();
+}
+
 function showToast(message, kind = "info") {
   const el = $("toast");
   el.textContent = message;
   el.classList.remove("hidden");
-  el.style.borderColor = kind === "error" ? "rgba(255, 107, 136, 0.4)" : "rgba(120, 177, 255, 0.18)";
+  el.style.borderColor = kind === "error" ? "rgba(255, 107, 136, 0.4)" : kind === "warn" ? "rgba(255, 200, 97, 0.4)" : "rgba(120, 177, 255, 0.18)";
+  pushNotification(message, kind);
   clearTimeout(showToast._timer);
   showToast._timer = setTimeout(() => el.classList.add("hidden"), 4000);
 }
@@ -667,10 +710,12 @@ function applyTranslations() {
   $("createBackupBtn").textContent = t("btn_backup_now");
   $("clearBackupsBtn").textContent = t("btn_clear_backups");
   $("clearHistoryBtn").textContent = t("btn_clear_history");
+  $("clearNotificationsBtn").textContent = t("btn_clear_notifications");
   $("installPwaBtn").textContent = t("btn_install_pwa");
   $("uninstallBtn").textContent = t("btn_uninstall");
   $("refreshLogsBtn").textContent = t("btn_refresh_logs");
   $("clearActionOutputBtn").textContent = t("btn_clear");
+  $("closeCameraBtn").textContent = t("btn_close_camera");
   $("backendModeText").textContent = state.liteMode ? t("mode_lite") : t("mode_termux");
 
   $("guideQuickList").innerHTML = t("quick_list_html");
@@ -680,6 +725,8 @@ function applyTranslations() {
   $("guideLanBody").innerHTML = t("lan_body_html");
   $("qrPlaceholder").textContent = t("qr_placeholder");
   $("qrPayload").placeholder = t("qr_payload_label");
+  $("logSearchInput").placeholder = t("log_filter_placeholder");
+  $("cameraStatus").textContent = t("camera_starting");
 }
 
 function enableTab(name) {
@@ -822,6 +869,25 @@ function renderDocs(docs) {
   });
 }
 
+function loadNotifications() {
+  state.notifications = storageGetJson(STORAGE_KEYS.notifications, []);
+}
+
+function renderNotifications() {
+  const list = $("notificationsList");
+  list.innerHTML = "";
+  if (!state.notifications.length) {
+    list.innerHTML = `<div class="notification-card"><p>${escapeHtml(t("notif_empty"))}</p></div>`;
+    return;
+  }
+  state.notifications.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = `notification-card ${item.kind || "info"}`;
+    card.innerHTML = `<strong>${escapeHtml(item.message)}</strong><div class="notification-meta"><span>${escapeHtml(new Date(item.createdAt).toLocaleString(state.lang === "fa" ? "fa-IR" : "en-US"))}</span></div>`;
+    list.appendChild(card);
+  });
+}
+
 function renderHistory() {
   const list = $("historyList");
   list.innerHTML = "";
@@ -900,7 +966,12 @@ function buildShareLink(payload = buildQrPayload(gatherConfig())) {
 }
 
 function applyPayload(payload) {
-  const config = payloadToConfig(payload);
+  let value = String(payload || "").trim();
+  if (/^https?:\/\//i.test(value) && value.includes("#cfg=")) {
+    const url = new URL(value);
+    value = decodeURIComponent(url.hash.replace(/^#cfg=/, ""));
+  }
+  const config = payloadToConfig(value);
   fillConfig(config);
   updatePreviewFromForm();
   saveBackup("qr", gatherConfig());
@@ -925,6 +996,65 @@ async function scanQrFromFile(file) {
   const results = await detector.detect(bitmap);
   if (!results.length || !results[0].rawValue) throw new Error(t("qr_scan_failed"));
   return results[0].rawValue;
+}
+
+async function stopCameraScan() {
+  if (state.cameraStream) {
+    state.cameraStream.getTracks().forEach((track) => track.stop());
+    state.cameraStream = null;
+  }
+  if (state.cameraFrame) {
+    cancelAnimationFrame(state.cameraFrame);
+    state.cameraFrame = null;
+  }
+  $("cameraModal").classList.add("hidden");
+  $("cameraVideo").srcObject = null;
+}
+
+async function startCameraScan() {
+  if (!("BarcodeDetector" in window) || !navigator.mediaDevices?.getUserMedia) {
+    $("qrImportFile").click();
+    return;
+  }
+
+  const detector = new BarcodeDetector({ formats: ["qr_code"] });
+  $("cameraStatus").textContent = t("camera_starting");
+  $("cameraModal").classList.remove("hidden");
+
+  try {
+    state.cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+    const video = $("cameraVideo");
+    video.srcObject = state.cameraStream;
+    await video.play();
+    $("cameraStatus").textContent = t("camera_point");
+
+    const tick = async () => {
+      try {
+        const results = await detector.detect(video);
+        if (results.length && results[0].rawValue) {
+          $("cameraStatus").textContent = t("camera_found");
+          const raw = results[0].rawValue;
+          await stopCameraScan();
+          if (/^https?:\/\//i.test(raw) && raw.includes("#cfg=")) {
+            const url = new URL(raw);
+            const payload = url.hash.replace(/^#cfg=/, "");
+            applyPayload(decodeURIComponent(payload));
+          } else {
+            applyPayload(raw);
+          }
+          return;
+        }
+      } catch {
+        // ignore and continue scanning
+      }
+      state.cameraFrame = requestAnimationFrame(tick);
+    };
+
+    state.cameraFrame = requestAnimationFrame(tick);
+  } catch (error) {
+    await stopCameraScan();
+    showToast(error.message || t("qr_scan_failed"), "error");
+  }
 }
 
 function importPayloadFromHash() {
@@ -1006,22 +1136,35 @@ function stripAnsi(text) {
 }
 
 function renderLogs(text) {
-  state.rawLogs = text || "";
+  state.rawLogs = text || state.rawLogs || "";
   const box = $("logsBox");
-  if (!text) {
+  const search = ($("logSearchInput")?.value || "").trim().toLowerCase();
+  const filter = state.logFilter || "all";
+  if (!state.rawLogs) {
     box.innerHTML = escapeHtml(t("no_logs"));
     return;
   }
-  const lines = stripAnsi(text).split("\n").map((line) => {
+
+  const rows = stripAnsi(state.rawLogs).split("\n").map((line) => {
     const lowered = line.toLowerCase();
-    let cls = "log-dim";
-    if (/(error|failed|panic|fatal|cannot)/.test(lowered)) cls = "log-error";
-    else if (/(warn|warning)/.test(lowered)) cls = "log-warn";
-    else if (/(success|installed|ready|started|running|ok)/.test(lowered)) cls = "log-success";
-    else if (/(info|debug|trace|scan|proxy|listen)/.test(lowered)) cls = "log-info";
-    return `<span class="log-line ${cls}">${escapeHtml(line || " ")}</span>`;
+    let level = "dim";
+    if (/(error|failed|panic|fatal|cannot)/.test(lowered)) level = "error";
+    else if (/(warn|warning)/.test(lowered)) level = "warn";
+    else if (/(success|installed|ready|started|running|ok)/.test(lowered)) level = "success";
+    else if (/(info|debug|trace|scan|proxy|listen)/.test(lowered)) level = "info";
+    return { line, level };
+  }).filter((row) => {
+    const matchesFilter = filter === "all" ? true : row.level === filter;
+    const matchesSearch = !search || row.line.toLowerCase().includes(search);
+    return matchesFilter && matchesSearch;
   });
-  box.innerHTML = lines.join("");
+
+  if (!rows.length) {
+    box.innerHTML = escapeHtml(t("no_logs"));
+    return;
+  }
+
+  box.innerHTML = rows.map((row) => `<span class="log-line log-${row.level}">${escapeHtml(row.line || " ")}</span>`).join("");
   box.scrollTop = box.scrollHeight;
 }
 
@@ -1086,6 +1229,7 @@ function renderAll() {
   renderStatus();
   renderActionOutput();
   renderDiagnostics();
+  renderNotifications();
   renderHistory();
   renderBackups();
   renderLogs(state.rawLogs || "");
@@ -1304,6 +1448,12 @@ function bindButtons() {
     state.actionText = "";
     renderActionOutput();
   });
+  $("clearNotificationsBtn").addEventListener("click", () => {
+    state.notifications = [];
+    storageSetJson(STORAGE_KEYS.notifications, []);
+    renderNotifications();
+    showToast(t("notifications_cleared"));
+  });
   $("refreshLogsBtn").addEventListener("click", () => refreshLogs(true));
   $("copyCommandBtn").addEventListener("click", () => copyText($("commandPreview").textContent).catch((e) => showToast(e.message, "error")));
   $("copyLogsBtn").addEventListener("click", () => copyText(stripAnsi(state.rawLogs || "")).catch((e) => showToast(e.message, "error")));
@@ -1327,7 +1477,14 @@ function bindButtons() {
       showToast(error.message || t("qr_scan_failed"), "error");
     }
   });
-  $("scanQrBtn").addEventListener("click", () => $("qrImportFile").click());
+  $("scanQrBtn").addEventListener("click", () => startCameraScan());
+  $("closeCameraBtn").addEventListener("click", () => stopCameraScan());
+  $("cameraModal").addEventListener("click", (event) => {
+    if (event.target.id === "cameraModal") stopCameraScan();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("cameraModal").classList.contains("hidden")) stopCameraScan();
+  });
   $("createBackupBtn").addEventListener("click", () => {
     saveBackup("manual", gatherConfig());
     renderBackups();
@@ -1374,6 +1531,14 @@ function bindButtons() {
 
   $("langSwitcher").addEventListener("change", (event) => setLanguage(event.target.value));
   $("viewModeBtn").addEventListener("click", () => setViewMode(state.viewMode === "simple" ? "advanced" : "simple", true));
+  $("logSearchInput").addEventListener("input", () => renderLogs());
+  document.querySelectorAll("#logFilterChips .chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      state.logFilter = chip.dataset.logFilter || "all";
+      document.querySelectorAll("#logFilterChips .chip").forEach((btn) => btn.classList.toggle("active", btn === chip));
+      renderLogs();
+    });
+  });
   $("installPwaBtn").addEventListener("click", async () => {
     if (!state.deferredPrompt) return;
     state.deferredPrompt.prompt();
@@ -1491,6 +1656,7 @@ async function init() {
   setViewMode(state.viewMode);
   loadHistory();
   loadBackups();
+  loadNotifications();
   setActionOutput(t("no_action_yet"));
   renderLogs("");
   enableTab("overview");

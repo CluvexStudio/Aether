@@ -135,6 +135,19 @@
             <div id="historyList" class="history-list"></div>
           </section>
 
+          <section class="panel notifications-panel card">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="notif_title">تاریخچه اعلان‌ها</h2>
+                <p data-i18n="notif_desc">تست‌ها، آپدیت‌ها و خطاهای اخیر اینجا ذخیره می‌شوند.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="clearNotificationsBtn" class="btn ghost">پاک کردن اعلان‌ها</button>
+              </div>
+            </div>
+            <div id="notificationsList" class="notifications-list"></div>
+          </section>
+
           <section class="panel action-panel card wide-panel">
             <div class="panel-head with-actions">
               <div>
@@ -424,6 +437,16 @@
                 <button id="refreshLogsBtn" class="btn ghost">Refresh logs</button>
               </div>
             </div>
+            <div class="logs-toolbar">
+              <div class="filter-chips" id="logFilterChips">
+                <button class="chip active" data-log-filter="all">All</button>
+                <button class="chip" data-log-filter="success">Success</button>
+                <button class="chip" data-log-filter="info">Info</button>
+                <button class="chip" data-log-filter="warn">Warn</button>
+                <button class="chip" data-log-filter="error">Error</button>
+              </div>
+              <input id="logSearchInput" type="text" placeholder="Search logs" />
+            </div>
             <div id="logsBox" class="logbox rich-log">Loading logs...</div>
           </section>
         </div>
@@ -467,6 +490,25 @@
         </div>
       </section>
     </main>
+
+    <div id="cameraModal" class="camera-modal hidden">
+      <div class="camera-card card">
+        <div class="panel-head with-actions">
+          <div>
+            <h2 data-i18n="camera_title">اسکن زنده QR</h2>
+            <p data-i18n="camera_desc">دوربین را روبه‌روی QR بگیر تا کانفیگ خودکار خوانده شود.</p>
+          </div>
+          <div class="inline-actions">
+            <button id="closeCameraBtn" class="btn ghost">بستن</button>
+          </div>
+        </div>
+        <div class="camera-stage">
+          <video id="cameraVideo" autoplay playsinline muted></video>
+          <div class="camera-overlay"></div>
+        </div>
+        <p id="cameraStatus" class="camera-status">در حال آماده‌سازی دوربین...</p>
+      </div>
+    </div>
 
     <div id="toast" class="toast hidden"></div>
     <script src="/app.js"></script>

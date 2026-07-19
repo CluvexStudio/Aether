@@ -233,14 +233,14 @@ h1 {
   grid-template-columns: repeat(12, minmax(0,1fr));
   gap: 20px;
 }
-.presets-panel, .diagnostics-panel, .history-panel { grid-column: span 4; }
+.presets-panel, .diagnostics-panel, .history-panel, .notifications-panel { grid-column: span 4; }
 .action-panel, .config-panel, .preview-panel, .logs-panel, .guide-panel, .backups-panel, .qr-panel, .wide-panel { grid-column: span 8; }
 .panel { padding: 22px; }
 .panel-head h2 { margin: 0 0 8px; }
 .panel-head p { margin: 0; color: var(--muted); line-height: 1.7; }
 
-.preset-grid, .diagnostics-list, .accordion-list, .history-list, .backup-list { display: grid; gap: 12px; margin-top: 16px; }
-.preset-card, .diag-card, .history-card, .backup-card {
+.preset-grid, .diagnostics-list, .accordion-list, .history-list, .backup-list, .notifications-list { display: grid; gap: 12px; margin-top: 16px; }
+.preset-card, .diag-card, .history-card, .backup-card, .notification-card {
   border: 1px solid rgba(129, 175, 255, 0.14);
   border-radius: 18px;
   background: rgba(9, 20, 34, 0.72);
@@ -249,10 +249,10 @@ h1 {
   transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
 }
 .preset-card:hover { transform: translateY(-1px); border-color: rgba(91,180,255,.4); box-shadow: 0 14px 30px rgba(29,75,145,.18); }
-.preset-card strong, .diag-card strong, .history-card strong, .backup-card strong { display: block; margin-bottom: 8px; }
-.preset-card p, .diag-card p, .history-card p, .backup-card p { margin: 0; color: var(--muted); line-height: 1.7; }
-.history-card, .backup-card { cursor: default; }
-.history-meta, .backup-meta {
+.preset-card strong, .diag-card strong, .history-card strong, .backup-card strong, .notification-card strong { display: block; margin-bottom: 8px; }
+.preset-card p, .diag-card p, .history-card p, .backup-card p, .notification-card p { margin: 0; color: var(--muted); line-height: 1.7; }
+.history-card, .backup-card, .notification-card { cursor: default; }
+.history-meta, .backup-meta, .notification-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -266,6 +266,10 @@ h1 {
   gap: 8px;
   margin-top: 12px;
 }
+.notification-card.success { border-color: rgba(43,230,168,.24); }
+.notification-card.warn { border-color: rgba(255,200,97,.24); }
+.notification-card.error { border-color: rgba(255,107,136,.24); }
+.notification-card.info { border-color: rgba(91,180,255,.24); }
 .diag-card.success { border-color: rgba(43,230,168,.24); }
 .diag-card.warn { border-color: rgba(255,200,97,.24); }
 .diag-card.error { border-color: rgba(255,107,136,.24); }
@@ -390,6 +394,70 @@ input[type="checkbox"] { width: auto; }
   min-height: 280px;
 }
 
+.logs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin: 14px 0 12px;
+}
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chip {
+  border: 1px solid rgba(120,177,255,.14);
+  background: rgba(255,255,255,.04);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.chip.active {
+  color: white;
+  border-color: rgba(91,180,255,.32);
+  background: rgba(91,180,255,.16);
+}
+
+.camera-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(4,10,18,.8);
+  padding: 18px;
+}
+.camera-card {
+  width: min(760px, 100%);
+  padding: 18px;
+}
+.camera-stage {
+  margin-top: 14px;
+  position: relative;
+  border-radius: 20px;
+  overflow: hidden;
+  background: #000;
+  aspect-ratio: 16 / 10;
+}
+.camera-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.camera-overlay {
+  position: absolute;
+  inset: 14% 18%;
+  border: 2px solid rgba(91,180,255,.8);
+  border-radius: 22px;
+  box-shadow: 0 0 0 9999px rgba(7,17,31,.25);
+}
+.camera-status {
+  margin: 12px 0 0;
+  color: var(--muted);
+}
+
 .toast {
   position: fixed;
   left: 50%;
@@ -424,5 +492,7 @@ code {
   .tabs { overflow: auto; }
   .tab-btn { min-width: 148px; }
   .form-grid, .subgrid, .status-grid, .mini-grid, .qr-layout { grid-template-columns: 1fr; }
+  .logs-toolbar { flex-direction: column; align-items: stretch; }
+  .camera-overlay { inset: 12% 10%; }
   .toast { min-width: calc(100% - 16px); }
 }
