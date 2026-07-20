@@ -137,13 +137,13 @@ fn spawn_reader(sock: Arc<UdpSocket>, local: SocketAddr, tx: mpsc::Sender<NetPac
         loop {
             match sock.recv_from(&mut buf).await {
                 Ok((n, from)) => {
-                    log::debug!("recv {n} bytes from {from}");
+                    log::trace!("recv {n} bytes from {from}");
                     if tx.send((local, from, buf[..n].to_vec())).await.is_err() {
                         break;
                     }
                 },
                 Err(e) => {
-                    log::debug!("recv error: {e}");
+                    log::trace!("recv error: {e}");
                     break;
                 }
             }
@@ -258,11 +258,11 @@ pub async fn run(
             Some((to_local, from, mut data)) = net_rx.recv() => {
                 let mut hdr_buf = data.clone();
                 if let Ok(hdr) = quiche::Header::from_slice(&mut hdr_buf, quiche::MAX_CONN_ID_LEN) {
-                    log::debug!("recv {} bytes type={:?} version=0x{:x} from {}", data.len(), hdr.ty, hdr.version, from);
+                    log::trace!("recv {} bytes type={:?} version=0x{:x} from {}", data.len(), hdr.ty, hdr.version, from);
                 }
                 let info = quiche::RecvInfo { from, to: to_local };
                 if let Err(e) = conn.recv(&mut data, info) {
-                    log::debug!("recv error: {e}");
+                    log::trace!("recv error: {e}");
                 }
             }
 
@@ -286,10 +286,10 @@ pub async fn run(
                             match masque::encode_ip_datagram(sid, &ip_packet) {
                                 Ok(framed) => {
                                     if let Err(e) = conn.dgram_send(&framed) {
-                                        log::debug!("dgram_send: {e}");
+                                        log::trace!("dgram_send: {e}");
                                     }
                                 }
-                                Err(e) => log::debug!("encap: {e}"),
+                                Err(e) => log::trace!("encap: {e}"),
                             }
                         }
                     }
@@ -525,11 +525,11 @@ async fn drain_datagrams(
                     }
                 }
                 Ok(None) => {}
-                Err(e) => log::debug!("decap: {e}"),
+                Err(e) => log::trace!("decap: {e}"),
             },
             Err(quiche::Error::Done) => break,
             Err(e) => {
-                log::debug!("dgram_recv: {e}");
+                log::trace!("dgram_recv: {e}");
                 break;
             }
         }
@@ -671,11 +671,11 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
                     Ok(n) => {
                         let mut hdr_buf = buf[..n].to_vec();
                         if let Ok(hdr) = quiche::Header::from_slice(&mut hdr_buf, quiche::MAX_CONN_ID_LEN) {
-                            log::debug!("verify recv {} bytes type={:?} version=0x{:x} from {}", n, hdr.ty, hdr.version, p.peer);
+                            log::trace!("verify recv {} bytes type={:?} version=0x{:x} from {}", n, hdr.ty, hdr.version, p.peer);
                         }
                         let info = quiche::RecvInfo { from: p.peer, to: local };
                         if let Err(e) = conn.recv(&mut buf[..n], info) {
-                            log::debug!("verify recv error from {}: {e}", p.peer);
+                            log::trace!("verify recv error from {}: {e}", p.peer);
                         }
                     }
                     Err(e) => return Err(AetherError::Io(e)),
