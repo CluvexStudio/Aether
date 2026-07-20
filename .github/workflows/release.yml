@@ -272,6 +272,64 @@ jobs:
           name: aether-linux-armv7-musl.tar.gz
           path: aether/aether-linux-armv7-musl.tar.gz
           if-no-files-found: error
+  # ------------------------------------------------------------------
+  # x86_64 musl, fully static (any x86_64 musl-based Linux system,
+  # including OpenWrt). Follows the same pattern as the
+  # armv7-musl job: AmanoTeam/musl-gcc-cross toolchain, bindgen
+  # sysroot, and modern musl time_t flag.
+  # ------------------------------------------------------------------
+  linux-x86_64-musl:
+    name: Build aether-linux-x86_64-musl.tar.gz
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aether
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: /opt/musl-cross/bin/x86_64-unknown-linux-musl-gcc
+      CC_x86_64_unknown_linux_musl: /opt/musl-cross/bin/x86_64-unknown-linux-musl-gcc
+      CXX_x86_64_unknown_linux_musl: /opt/musl-cross/bin/x86_64-unknown-linux-musl-g++
+      AR_x86_64_unknown_linux_musl: /opt/musl-cross/bin/x86_64-unknown-linux-musl-ar
+      BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl: --target=x86_64-unknown-linux-musl --sysroot=/opt/musl-cross/x86_64-unknown-linux-musl
+      RUST_LIBC_UNSTABLE_MUSL_V1_2_3: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install musl cross toolchain
+        run: |
+          curl -fsSL https://github.com/AmanoTeam/musl-gcc-cross/releases/download/gcc-15/x86_64-unknown-linux-gnu.tar.xz -o /tmp/musl-cross.tar.xz
+          sudo mkdir -p /opt/musl-cross
+          sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Package archive
+        run: |
+          cd target/x86_64-unknown-linux-musl/release
+          tar -czf ../../../aether-linux-x86_64-musl.tar.gz aether
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-linux-x86_64-musl.tar.gz
+          path: aether/aether-linux-x86_64-musl.tar.gz
+          if-no-files-found: error
+
+
 
   # ------------------------------------------------------------------
   # Android / Termux targets, built with the NDK via cargo-ndk on the
@@ -348,7 +406,7 @@ jobs:
   # ------------------------------------------------------------------
   release:
     name: Publish release
-    needs: [desktop, linux, linux-armv7, linux-armv7-musl, android]
+    needs: [desktop, linux, linux-armv7, linux-armv7-musl, linux-x86_64-musl, android]
     runs-on: ubuntu-latest
     if: ${{ always() }} && startsWith(github.ref, 'refs/tags/') 
     steps:
@@ -397,6 +455,7 @@ jobs:
             - Linux arm64 / aarch64, built on Fedora latest (aether-linux-arm64.tar.gz)
             - Linux armv7 / 32-bit ARM, e.g. Raspberry Pi 2/3 (aether-linux-armv7.tar.gz)
             - Linux armv7 musl / 32-bit ARM, fully static, for OpenWrt routers and other musl-based systems (aether-linux-armv7-musl.tar.gz)
+            - Linux x86_64 musl / 64-bit x86, fully static, for OpenWrt routers and other musl-based systems (aether-linux-x86_64-musl.tar.gz)
             - macOS arm64 / Apple Silicon (aether-macos-arm64.tar.gz)
             - macOS x86_64 / Intel (aether-macos-x86_64.tar.gz)
             - Windows x86_64 (aether-windows-x86_64.zip)

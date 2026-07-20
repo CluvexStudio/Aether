@@ -1,4 +1,7 @@
-# Building Aether for OpenWrt (musl)
+# Building Aether for OpenWrt (musl) — Manual Build
+
+> **Note:** CI builds this automatically via the `linux-x86_64-musl` job in `release.yml`.
+> This guide is for building manually on your own machine.
 
 OpenWrt uses **musl libc**, but the official Aether release binaries are
 compiled against **glibc**. This guide explains how to build a fully
@@ -20,17 +23,13 @@ OpenWrt uses musl (`ld-musl-x86_64.so.1`), so this binary fails with
 `./aether: not found` even though the file exists — the dynamic linker
 doesn't exist on the router.
 
-Additionally, BoringSSL (used by quiche) references `fopen64`, which is
-a glibc extension. musl doesn't provide this symbol because all musl
-functions are inherently large-file-safe.
-
-## Solution: Static musl build with a compatibility shim
+## Solution: Static musl build with cross-compilation toolchain
 
 ### Prerequisites (Ubuntu/Debian host)
 
 ```bash
 # Build tools
-apt install cmake clang llvm musl-tools build-essential pkg-config
+apt install cmake ninja-build
 
 # Rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -38,38 +37,32 @@ source ~/.cargo/env
 rustup target add x86_64-unknown-linux-musl
 ```
 
-### The fopen64 Compatibility Shim
+### Install musl cross toolchain
 
-BoringSSL's `file.c` calls `fopen64()`, which doesn't exist in musl.
-Create a tiny shim that provides the symbol:
+The CI uses AmanoTeam/musl-gcc-cross, which avoids issues with
+GitHub Actions runners blocking downloads from musl.cc:
 
-**`openwrt/musl-compat/musl_compat.c`**:
-```c
-/* musl doesn't expose fopen64 — it's always large-file-safe.
-   Provide a symbol so BoringSSL can link. */
-#include <stdio.h>
-FILE *fopen64(const char *path, const char *mode) {
-    return fopen(path, mode);
-}
-```
-
-Build it into a static archive:
 ```bash
-musl-gcc -c -o musl_compat.o musl_compat.c
-ar rcs musl_compat.a musl_compat.o
+# Download the musl cross toolchain
+curl -fsSL https://github.com/AmanoTeam/musl-gcc-cross/releases/download/gcc-15/x86_64-unknown-linux-gnu.tar.xz -o /tmp/musl-cross.tar.xz
+sudo mkdir -p /opt/musl-cross
+sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
 ```
 
 ### Build Command
 
 ```bash
 # Compiler configuration for musl
-export CC_x86_64_unknown_linux_musl=musl-gcc
-export CXX_x86_64_unknown_linux_musl=clang++
-export AR_x86_64_unknown_linux_musl=llvm-ar
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=clang
+export CC_x86_64_unknown_linux_musl=/opt/musl-cross/bin/x86_64-unknown-linux-musl-gcc
+export CXX_x86_64_unknown_linux_musl=/opt/musl-cross/bin/x86_64-unknown-linux-musl-g++
+export AR_x86_64_unknown_linux_musl=/opt/musl-cross/bin/x86_64-unknown-linux-musl-ar
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=/opt/musl-cross/bin/x86_64-unknown-linux-musl-gcc
 
-# Link the fopen64 compat shim into the final binary
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C link-arg=/path/to/musl_compat.a"
+# Bindgen needs to find musl headers (for boring-sys / BoringSSL bindings)
+export BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl="--target=x86_64-unknown-linux-musl --sysroot=/opt/musl-cross/x86_64-unknown-linux-musl"
+
+# Modern musl 1.2.x time_t support (avoids type mismatches in boring)
+export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1
 
 # Build
 cd aether/
@@ -88,14 +81,15 @@ ldd target/x86_64-unknown-linux-musl/release/aether
 
 ### Automated build script
 
-See `openwrt/build-musl.sh` for a complete automated build.
+See `build-musl.sh` in this directory for a complete automated build
+that handles all of the above.
 
 ## Why this approach
 
 | Issue | Solution |
 |-------|----------|
-| glibc binary won't run on musl | Cross-compile with musl-gcc + musl target |
-| `fopen64` undefined in musl | Small C shim compiled into the binary |
-| BoringSSL cmake needs `x86_64-linux-musl-g++` | Symlink `clang` as `x86_64-linux-musl-g++` |
-| `ring` crate needs `llvm-ar` | Install `llvm` package on build host |
-| Cross-compilation needs proper linker | Use `clang` as the linker (handles musl natively) |
+| glibc binary won't run on musl | Cross-compile with musl-gcc-cross toolchain |
+| bindgen needs musl headers | `BINDGEN_EXTRA_CLANG_ARGS` points clang at musl sysroot |
+| libc crate assumes old musl time_t | `RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1` tells it to use modern musl |
+| musl.cc blocks GitHub Actions | Use AmanoTeam/musl-gcc-cross releases instead |
+| boring-sys uses bindgen (clang) | Proper sysroot avoids host glibc header leakage |

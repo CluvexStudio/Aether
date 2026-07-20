@@ -1,0 +1,6 @@
+# Build artifacts
+aether-openwrt-musl
+aether-openwrt-*.tar.gz
+*.o
+*.a
+.pack-stage-*

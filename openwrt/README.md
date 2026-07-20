@@ -12,13 +12,53 @@ Features:
 - CLI: `aether-ctl`
 - LuCI: **Services → Aether** (status + Start/Stop + settings)
 
+## How the binary is built
+
+The OpenWrt binary is **not** shipped in this directory. It is built from source by CI (GitHub Actions) every time the release workflow runs. The `linux-openwrt` job in `release.yml`:
+
+1. Checks out the Aether source
+2. Installs the AmanoTeam/musl-gcc-cross toolchain
+3. Cross-compiles Aether with `cargo build --release --target x86_64-unknown-linux-musl`
+4. Uploads `aether-linux-x86_64-musl.tar.gz` as a build artifact
+
+The build uses the same musl cross-compilation approach as the existing `linux-armv7-musl` job, with bindgen sysroot configuration and modern musl time_t support.
+
+See `release.yml` (the `linux-openwrt` job) for the full CI workflow, or `BUILD-MUSL.md` for the manual build steps.
+
+## Getting the binary
+
+### Option A: Download from CI (recommended)
+
+1. Go to the [Actions](../../actions) tab
+2. Click the latest workflow run
+3. Download `aether-linux-x86_64-musl.tar.gz` from the artifacts
+4. Extract it:
+
+```sh
+tar xzf aether-linux-x86_64-musl.tar.gz
+# The extracted "aether" binary goes into this openwrt/ directory
+cp aether ./aether-openwrt-musl
+```
+
+### Option B: Build locally
+
+On a Linux/WSL host (not on the router):
+
+```sh
+cd openwrt/
+./build-musl.sh
+# Binary is placed as ./aether-openwrt-musl
+```
+
+See `BUILD-MUSL.md` for full prerequisites and details.
+
 ## Install (on the router)
 
-1. Copy/download this whole package folder to the router (USB, scp, wget, etc.).
+1. Place this package folder (with the binary) on the router (USB, scp, wget, etc.)
 2. SSH into the router and install:
 
 ```sh
-cd /path/to/aether-openwrt   # folder that contains install.sh + files/ + binary
+cd /path/to/openwrt   # folder that contains install.sh + files/ + binary
 chmod +x install.sh uninstall.sh
 ./install.sh
 ```
@@ -37,21 +77,22 @@ aether-ctl start
 aether-ctl status
 ```
 
-LuCI: open the router web UI → **Services → Aether**  
+LuCI: open the router web UI → **Services → Aether**
 Hard-refresh the browser once (`Ctrl+F5`).
 
 ## Package contents
 
 ```text
-aether-openwrt/
-  install.sh                 # run ON the router
+openwrt/
+  release.yml             # CI workflow (musl cross-compile job)
+  install.sh              # run ON the router
   uninstall.sh
-  aether-openwrt-musl        # static binary (or name it "aether")
+  build-musl.sh           # local build script (alternative to CI)
+  musl-compat/
+    musl_compat.c         # fopen64 shim source (for manual builds)
   README.md
-  BUILD-MUSL.md
-  build-musl.sh
-  CLEAN-TEST.md
-  musl-compat/musl_compat.c
+  BUILD-MUSL.md           # detailed build guide
+  CLEAN-TEST.md           # quick retest guide
   files/
     etc/config/aether
     etc/init.d/aether
@@ -62,10 +103,9 @@ aether-openwrt/
     www/luci-static/resources/view/aether.js
 ```
 
-The binary may be named any of:
-- `aether-openwrt-musl` (preferred)
+The binary (built by CI or locally) should be placed alongside `install.sh` as:
+- `aether-openwrt-musl` (preferred), or
 - `aether`
-- `aether-linux-x86_64`
 
 ## Uninstall
 
@@ -104,17 +144,6 @@ cd /tmp/aether-openwrt
 chmod +x install.sh
 ./install.sh --start
 ```
-
-## Build the musl binary (developer)
-
-On a Linux/WSL host (not required on the router):
-
-```sh
-./build-musl.sh
-# place result as ./aether-openwrt-musl in this package
-```
-
-See `BUILD-MUSL.md`.
 
 ## Notes
 

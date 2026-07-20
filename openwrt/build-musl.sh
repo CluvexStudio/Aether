@@ -6,9 +6,9 @@ set -e
 export PATH="${HOME}/.cargo/bin:${PATH}"
 
 # --- Check prerequisites ---
-for cmd in musl-gcc clang llvm-ar; do
+for cmd in cmake ninja-build; do
     command -v "$cmd" >/dev/null 2>&1 || {
-        echo "ERROR: $cmd not found. Install: apt install cmake clang llvm musl-tools" >&2
+        echo "ERROR: $cmd not found. Install: apt install cmake ninja-build" >&2
         exit 1
     }
 done
@@ -22,31 +22,26 @@ echo "=== Rust: $(rustc --version) ==="
 # --- Ensure musl target is installed ---
 rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
 
-# --- Build the fopen64 compatibility shim ---
-BUILD_DIR=$(mktemp -d)
-trap 'rm -rf "$BUILD_DIR"' EXIT
-
-cat > "$BUILD_DIR/musl_compat.c" << 'SHIM'
-/* musl doesn't expose fopen64 — it's always large-file-safe.
-   Provide a symbol so BoringSSL (used by quiche) can link. */
-#include <stdio.h>
-FILE *fopen64(const char *path, const char *mode) {
-    return fopen(path, mode);
-}
-SHIM
-
-echo "=== Building musl fopen64 shim ==="
-musl-gcc -c -o "$BUILD_DIR/musl_compat.o" "$BUILD_DIR/musl_compat.c"
-ar rcs "$BUILD_DIR/musl_compat.a" "$BUILD_DIR/musl_compat.o"
+# --- Install musl cross toolchain (if not already present) ---
+MUSL_CROSS=/opt/musl-cross
+if [ ! -d "$MUSL_CROSS" ]; then
+    echo "=== Installing musl cross toolchain ==="
+    curl -fsSL https://github.com/AmanoTeam/musl-gcc-cross/releases/download/gcc-15/x86_64-unknown-linux-gnu.tar.xz -o /tmp/musl-cross.tar.xz
+    sudo mkdir -p "$MUSL_CROSS"
+    sudo tar -C "$MUSL_CROSS" --strip-components=1 -xJf /tmp/musl-cross.tar.xz
+    rm -f /tmp/musl-cross.tar.xz
+fi
 
 # --- Set cross-compilation environment ---
-export CC_x86_64_unknown_linux_musl=musl-gcc
-export CXX_x86_64_unknown_linux_musl=clang++
-export AR_x86_64_unknown_linux_musl=llvm-ar
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=clang
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C link-arg=$BUILD_DIR/musl_compat.a"
+export CC_x86_64_unknown_linux_musl="$MUSL_CROSS/bin/x86_64-unknown-linux-musl-gcc"
+export CXX_x86_64_unknown_linux_musl="$MUSL_CROSS/bin/x86_64-unknown-linux-musl-g++"
+export AR_x86_64_unknown_linux_musl="$MUSL_CROSS/bin/x86_64-unknown-linux-musl-ar"
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$MUSL_CROSS/bin/x86_64-unknown-linux-musl-gcc"
+export BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl="--target=x86_64-unknown-linux-musl --sysroot=$MUSL_CROSS/x86_64-unknown-linux-musl"
+export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1
 
 echo "=== Building Aether (x86_64-unknown-linux-musl, release) ==="
+cd aether/
 cargo build --release --target x86_64-unknown-linux-musl
 
 # --- Output ---
