@@ -165,9 +165,9 @@ pub fn parse_args(args: &[String]) -> crate::error::Result<()> {
 
     if verbose_count > 0 && std::env::var("AETHER_LOG").is_err() {
         if verbose_count == 1 {
-            set("AETHER_LOG", "debug");
+            set("AETHER_LOG", "info,aether=debug");
         } else {
-            set("AETHER_LOG", "trace");
+            set("AETHER_LOG", "info,aether=trace");
         }
     }
 
@@ -186,15 +186,15 @@ mod tests {
     fn test_cli_parse_log_levels() {
         std::env::remove_var("AETHER_LOG");
         parse_args(&["--verbose".to_string()]).unwrap();
-        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "debug");
+        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "info,aether=debug");
 
         std::env::remove_var("AETHER_LOG");
         parse_args(&["-v".to_string()]).unwrap();
-        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "debug");
+        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "info,aether=debug");
 
         std::env::remove_var("AETHER_LOG");
         parse_args(&["-vv".to_string()]).unwrap();
-        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "trace");
+        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "info,aether=trace");
 
         std::env::remove_var("AETHER_LOG");
         parse_args(&["-l".to_string(), "warn".to_string()]).unwrap();
@@ -205,4 +205,5 @@ mod tests {
         assert_eq!(std::env::var("AETHER_LOG").unwrap(), "trace");
     }
 }
+
 
