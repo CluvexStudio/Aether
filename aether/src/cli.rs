@@ -191,11 +191,17 @@ mod tests {
     fn test_resolve_config_path_with_data_dir() {
         assert_eq!(
             resolve_config_path(Some("/var/lib/aether"), None, "aether.toml"),
-            format!("{}/aether.toml", std::path::Path::new("/var/lib/aether").display())
+            std::path::Path::new("/var/lib/aether")
+                .join("aether.toml")
+                .to_string_lossy()
+                .to_string()
         );
         assert_eq!(
             resolve_config_path(Some("/var/lib/aether"), Some("custom.toml"), "aether.toml"),
-            format!("{}/custom.toml", std::path::Path::new("/var/lib/aether").display())
+            std::path::Path::new("/var/lib/aether")
+                .join("custom.toml")
+                .to_string_lossy()
+                .to_string()
         );
         assert_eq!(
             resolve_config_path(Some("/var/lib/aether"), Some("/abs/path.toml"), "aether.toml"),
@@ -203,9 +209,30 @@ mod tests {
         );
     }
 
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     #[test]
     fn test_cli_parse_data_dir() {
-        let prev = std::env::var("AETHER_DATA_DIR").ok();
+        let _guard = EnvGuard::new("AETHER_DATA_DIR");
 
         std::env::remove_var("AETHER_DATA_DIR");
         parse_args(&["-d".to_string(), "/tmp/aether-data-1".to_string()]).unwrap();
@@ -214,11 +241,6 @@ mod tests {
         std::env::remove_var("AETHER_DATA_DIR");
         parse_args(&["--data-dir".to_string(), "/tmp/aether-data-2".to_string()]).unwrap();
         assert_eq!(std::env::var("AETHER_DATA_DIR").unwrap(), "/tmp/aether-data-2");
-
-        match prev {
-            Some(val) => std::env::set_var("AETHER_DATA_DIR", val),
-            None => std::env::remove_var("AETHER_DATA_DIR"),
-        }
     }
 }
 

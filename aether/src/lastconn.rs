@@ -13,8 +13,13 @@ pub fn load(path: &str) -> Option<LastConnection> {
 }
 
 pub fn save(path: &str, peer: &str, profile: &str) {
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = std::path::Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::debug!("[lastconn] failed to create parent dir {}: {e}", parent.display());
+        }
     }
     let conn = LastConnection {
         peer: peer.to_string(),

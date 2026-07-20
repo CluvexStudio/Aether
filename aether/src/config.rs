@@ -88,8 +88,12 @@ pub fn load(path: &str) -> Result<Option<Identity>> {
 }
 
 pub fn save(path: &str, identity: &Identity) -> Result<()> {
-    if let Some(parent) = Path::new(path).parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AetherError::Other(format!("config dir create {}: {e}", parent.display())))?;
     }
     let persisted = PersistedIdentity::from(identity);
     let text = toml::to_string_pretty(&persisted)
