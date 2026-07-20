@@ -33,6 +33,19 @@ DEFAULT_BINARY = Path(os.environ.get("AETHER_BINARY", str(Path(_DEFAULT_PREFIX) 
 INSTALLER = BASE_DIR / "bin" / "aether-installer.sh"
 PANEL_UPDATER = Path(os.environ.get("AETHER_WEB_PANEL_UPDATER", str(BASE_DIR / "bin" / "aether-web-selfupdate.sh")))
 
+SITE_CHECK_TARGETS: List[Tuple[str, str]] = [
+    ("Cloudflare Trace", "https://www.cloudflare.com/cdn-cgi/trace"),
+    ("GitHub", "https://github.com/"),
+    ("Google 204", "https://www.google.com/generate_204"),
+    ("YouTube 204", "https://www.youtube.com/generate_204"),
+    ("Telegram Web", "https://web.telegram.org/"),
+]
+
+DIRECT_CHECK_TARGETS: List[Tuple[str, str]] = [
+    ("Cloudflare 204", "https://cp.cloudflare.com/generate_204"),
+    ("Google 204", "https://www.google.com/generate_204"),
+]
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "bind_address": "127.0.0.1:1819",
     "protocol": "masque",
@@ -599,6 +612,51 @@ def run_proxy_health_test(data_dir: Path) -> Dict[str, Any]:
     }
 
 
+def run_direct_connectivity_check() -> Dict[str, Any]:
+    results: List[Dict[str, Any]] = []
+    for name, url in DIRECT_CHECK_TARGETS:
+        cmd = [
+            "curl", "-sS", "-L", "-o", "/dev/null", "-w", "%{http_code} %{time_total}", "-m", "8", url,
+        ]
+        started = time.perf_counter()
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=12, check=False)
+            output = (proc.stdout or "").strip()
+            parts = output.split()
+            code = parts[0] if parts else "000"
+            seconds = float(parts[1]) if len(parts) > 1 else (time.perf_counter() - started)
+            ok = proc.returncode == 0 and code != "000"
+            results.append({"name": name, "url": url, "ok": ok, "http_code": code, "latency_ms": round(seconds * 1000), "output": output})
+            if ok:
+                return {"ok": True, "name": name, "latency_ms": round(seconds * 1000), "http_code": code, "results": results, "message": f"direct internet ok via {name}"}
+        except Exception as exc:
+            results.append({"name": name, "url": url, "ok": False, "http_code": "000", "latency_ms": None, "output": str(exc)})
+    return {"ok": False, "latency_ms": None, "http_code": "000", "results": results, "message": "direct internet check failed"}
+
+
+def run_site_checks(data_dir: Path) -> Dict[str, Any]:
+    cfg = load_config(data_dir)
+    proxy = str(cfg.get("bind_address") or "127.0.0.1:1819")
+    results: List[Dict[str, Any]] = []
+    for name, url in SITE_CHECK_TARGETS:
+        cmd = [
+            "curl", "-sS", "-L", "-o", "/dev/null", "-w", "%{http_code} %{time_total}", "-m", "12", "-x", f"socks5h://{proxy}", url,
+        ]
+        started = time.perf_counter()
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=16, check=False)
+            output = (proc.stdout or "").strip()
+            parts = output.split()
+            code = parts[0] if parts else "000"
+            seconds = float(parts[1]) if len(parts) > 1 else (time.perf_counter() - started)
+            ok = proc.returncode == 0 and code != "000"
+            results.append({"name": name, "url": url, "ok": ok, "http_code": code, "latency_ms": round(seconds * 1000), "output": output})
+        except Exception as exc:
+            results.append({"name": name, "url": url, "ok": False, "http_code": "000", "latency_ms": None, "output": str(exc)})
+    success_count = sum(1 for item in results if item["ok"])
+    return {"ok": success_count > 0, "proxy": proxy, "success_count": success_count, "total": len(results), "results": results, "message": f"{success_count}/{len(results)} site checks passed"}
+
+
 def trigger_panel_update(data_dir: Path) -> Dict[str, Any]:
     if not PANEL_UPDATER.exists():
         return {"ok": False, "message": f"panel updater not found: {PANEL_UPDATER}"}
@@ -874,6 +932,11 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/api/health":
             result = run_proxy_health_test(self.app.data_dir)
+            self._json(result, 200 if result.get("ok") else 503)
+            return
+
+        if path == "/api/direct-health":
+            result = run_direct_connectivity_check()
             self._json(result, 200 if result.get("ok") else 503)
             return
 

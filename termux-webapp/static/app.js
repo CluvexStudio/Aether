@@ -52,6 +52,9 @@ const state = {
   backups: [],
   notifications: [],
   siteChecks: [],
+  selectedCategory: "auto",
+  smartBusy: false,
+  menuOpen: false,
   liteMode: false,
   backendReady: false,
   proxyHealth: null,
@@ -117,6 +120,52 @@ const FALLBACK_PRESETS = [
   },
 ];
 
+
+const CATEGORY_PROFILES = [
+  {
+    id: "auto",
+    label_fa: "هوشمند",
+    label_en: "Smart Auto",
+    description_fa: "با توجه به وضعیت شبکه، بهترین حالت را پیشنهاد می‌دهد.",
+    description_en: "Picks a practical mode based on current network conditions.",
+  },
+  {
+    id: "gaming",
+    label_fa: "گیم",
+    label_en: "Gaming",
+    description_fa: "تا حد ممکن کم‌سربار و سریع؛ مناسب بازی اگر شبکه اجازه بدهد.",
+    description_en: "Low-overhead and fast; good for games when the network allows it.",
+  },
+  {
+    id: "streaming",
+    label_fa: "استریم",
+    label_en: "Streaming",
+    description_fa: "پایداری و throughput بهتر برای ویدیو و استریم.",
+    description_en: "Better stability and throughput for video and streaming.",
+  },
+  {
+    id: "social",
+    label_fa: "وب و سوشیال",
+    label_en: "Web & Social",
+    description_fa: "برای وب‌گردی، تلگرام وب و شبکه‌های اجتماعی؛ h2 را ترجیح می‌دهد.",
+    description_en: "For browsing, Telegram Web, and social apps; prefers h2 when useful.",
+  },
+  {
+    id: "strict",
+    label_fa: "ضد DPI",
+    label_en: "Anti-DPI",
+    description_fa: "سخت‌گیرانه‌تر؛ h2 + fragmentation + gfw برای شبکه‌های خیلی بدقلق.",
+    description_en: "Stricter mode; h2 + fragmentation + gfw for very hostile networks.",
+  },
+  {
+    id: "stable",
+    label_fa: "پایدار",
+    label_en: "Stable",
+    description_fa: "اگر تک‌لایه جواب نداد، GOOL / حالت پایدارتر را ترجیح می‌دهد.",
+    description_en: "Prefers a more resilient path like GOOL when simpler modes fail.",
+  },
+];
+
 const noiseOptions = {
   masque: ["firewall", "gfw", "off"],
   wg: ["balanced", "aggressive", "light", "off"],
@@ -139,6 +188,31 @@ const translations = {
     tab_help: "راهنما",
     presets_title: "پریست‌های آماده",
     presets_desc: "برای شروع سریع، یکی از این پروفایل‌ها را انتخاب کن.",
+    smart_title: "اتصال هوشمند",
+    smart_desc: "یک کلیک برای اتصال، توقف و اعمال بهترین تنظیمات بر اساس وضعیت شبکه و دسته‌بندی استفاده.",
+    smart_idle_title: "غیرفعال",
+    smart_idle_sub: "برای شروع، دسته‌بندی را انتخاب کن.",
+    smart_stop_sub: "برای توقف اتصال کلیک کن.",
+    smart_start_sub: "برای اتصال هوشمند کلیک کن.",
+    smart_failed_title: "عدم اتصال",
+    smart_failed_sub: "تنظیمات سخت‌گیرانه‌تر یا دسته‌بندی دیگر را امتحان کن.",
+    smart_stopped_title: "متوقف",
+    smart_stopped_sub: "آخرین اتصال متوقف شده؛ برای وصل شدن دوباره کلیک کن.",
+    smart_ready_title: "وصل",
+    smart_ready_sub: "اتصال تأیید شده و آماده استفاده است.",
+    smart_scanning_title: "در حال اتصال",
+    smart_scanning_sub: "در حال اسکن و اعتبارسنجی مسیر...",
+    network_title_online: "اینترنت سیستم",
+    network_title_connection: "نوع اتصال",
+    network_title_proxy: "سلامت پراکسی",
+    network_title_hint: "پیشنهاد هوشمند",
+    network_online: "آنلاین",
+    network_offline: "آفلاین",
+    network_unknown: "نامشخص",
+    hint_h3: "UDP/QUIC باز به‌نظر می‌رسد؛ h3 یا استریم مناسب است.",
+    hint_h2: "برای وب و سوشیال یا شبکه‌های سخت‌گیر، h2 مناسب‌تر است.",
+    hint_strict: "با توجه به خطاهای اخیر، حالت ضد DPI پیشنهاد می‌شود.",
+    hint_gaming: "اگر بازی مهم است، اول WireGuard را امتحان کن. اگر ناپایدار بود برگرد روی MASQUE.",
     diag_title: "تشخیص سریع",
     diag_desc: "این بخش با توجه به وضعیت فعلی، پیشنهادهای سریع می‌دهد.",
     action_title: "خروجی آخرین عملیات",
@@ -331,6 +405,31 @@ const translations = {
     tab_help: "Help",
     presets_title: "Ready-made presets",
     presets_desc: "Pick one of these profiles for a fast start.",
+    smart_title: "Smart connect",
+    smart_desc: "One click to connect, stop, and apply sensible settings based on network conditions and usage category.",
+    smart_idle_title: "Idle",
+    smart_idle_sub: "Choose a category and tap to connect.",
+    smart_stop_sub: "Tap to stop the current tunnel.",
+    smart_start_sub: "Tap for a smart connection attempt.",
+    smart_failed_title: "Failed",
+    smart_failed_sub: "Try a stricter profile or another category.",
+    smart_stopped_title: "Stopped",
+    smart_stopped_sub: "The previous tunnel was stopped. Tap to connect again.",
+    smart_ready_title: "Connected",
+    smart_ready_sub: "The tunnel is validated and ready for use.",
+    smart_scanning_title: "Connecting",
+    smart_scanning_sub: "Scanning and validating a working route...",
+    network_title_online: "System internet",
+    network_title_connection: "Connection type",
+    network_title_proxy: "Proxy health",
+    network_title_hint: "Smart hint",
+    network_online: "Online",
+    network_offline: "Offline",
+    network_unknown: "Unknown",
+    hint_h3: "UDP/QUIC looks available; h3 or streaming mode is a good first try.",
+    hint_h2: "For web/social or stricter networks, h2 is usually the safer choice.",
+    hint_strict: "Recent failures suggest a stricter anti-DPI profile.",
+    hint_gaming: "If gaming is the priority, try WireGuard first. If it becomes unstable, fall back to MASQUE.",
     diag_title: "Quick diagnostics",
     diag_desc: "This section gives fast suggestions based on your current state.",
     action_title: "Latest action output",
@@ -938,6 +1037,135 @@ function renderSiteChecks() {
   });
 }
 
+function currentConnectionLabel() {
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  return conn?.effectiveType || conn?.type || t("network_unknown");
+}
+
+function smartHintText() {
+  if (!navigator.onLine) return t("network_offline");
+  if (state.status?.last_exit_note && state.status.last_exit_note !== "stopped") return t("hint_strict");
+  if (state.selectedCategory === "gaming") return t("hint_gaming");
+  if (state.selectedCategory === "social") return t("hint_h2");
+  const conn = currentConnectionLabel();
+  if (String(conn).includes("2g") || String(conn).includes("3g")) return t("hint_h2");
+  return t("hint_h3");
+}
+
+function renderCategories() {
+  const grid = $("categoryGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  CATEGORY_PROFILES.forEach((category) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `category-card ${state.selectedCategory === category.id ? "active" : ""}`;
+    card.innerHTML = `<strong>${escapeHtml(state.lang === "en" ? category.label_en : category.label_fa)}</strong><p>${escapeHtml(state.lang === "en" ? category.description_en : category.description_fa)}</p>`;
+    card.addEventListener("click", () => {
+      state.selectedCategory = category.id;
+      renderCategories();
+      renderSmartPanel();
+    });
+    grid.appendChild(card);
+  });
+}
+
+function renderNetworkMonitor() {
+  const wrap = $("networkMonitor");
+  if (!wrap) return;
+  const proxyText = state.proxyHealth === true ? t("health_ok") : state.proxyHealth === false ? t("health_fail") : t("health_unknown");
+  const onlineText = navigator.onLine ? t("network_online") : t("network_offline");
+  const cards = [
+    [t("network_title_online"), onlineText],
+    [t("network_title_connection"), String(currentConnectionLabel())],
+    [t("network_title_proxy"), proxyText],
+    [t("network_title_hint"), smartHintText()],
+  ];
+  wrap.innerHTML = cards.map(([title, value]) => `<div class="network-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(value)}</span></div>`).join("");
+}
+
+function smartStateDescriptor() {
+  if (state.smartBusy) return { cls: "smart-stopped", title: t("smart_scanning_title"), sub: t("smart_scanning_sub") };
+  if (state.liteMode) return { cls: "smart-idle", title: t("smart_idle_title"), sub: t("diag_lite_body") };
+  if (state.status?.running && state.proxyHealth === true) return { cls: "smart-ready", title: t("smart_ready_title"), sub: t("smart_stop_sub") };
+  if (state.status?.running && state.proxyHealth === false) return { cls: "smart-failed", title: t("smart_failed_title"), sub: t("smart_failed_sub") };
+  if (state.status?.last_exit_note === "stopped") return { cls: "smart-stopped", title: t("smart_stopped_title"), sub: t("smart_stopped_sub") };
+  if (state.status?.last_exit_note && state.status?.last_exit_note !== "stopped") return { cls: "smart-failed", title: t("smart_failed_title"), sub: t("smart_failed_sub") };
+  return { cls: "smart-idle", title: t("smart_idle_title"), sub: t("smart_start_sub") };
+}
+
+function renderSmartPanel() {
+  const btn = $("smartConnectBtn");
+  if (!btn) return;
+  const desc = smartStateDescriptor();
+  btn.className = `smart-connect ${desc.cls}`;
+  $("smartStateLabel").textContent = desc.title;
+  $("smartStateSub").textContent = desc.sub;
+  renderCategories();
+  renderNetworkMonitor();
+}
+
+function smartConfigForCategory(id) {
+  const base = deepMerge(DEFAULT_CONFIG, {});
+  base.quick_reconnect = "on";
+  base.ip_mode = "v4";
+  switch (id) {
+    case "gaming":
+      return deepMerge(base, { protocol: "wg", scan_mode: "balanced", noise_profile: "balanced", wireguard: { keepalive: "5", reconnect_secs: "2", no_profile_retry: false } });
+    case "streaming":
+      return deepMerge(base, { protocol: "masque", scan_mode: "balanced", noise_profile: "firewall", masque: { transport: "h3", fragment: false } });
+    case "social":
+      return deepMerge(base, { protocol: "masque", scan_mode: "balanced", noise_profile: "firewall", masque: { transport: "h2", fragment: true, fragment_size: "8-24", fragment_delay: "5-15" } });
+    case "strict":
+      return deepMerge(base, { protocol: "masque", scan_mode: "ironclad", noise_profile: "gfw", masque: { transport: "h2", fragment: true, fragment_size: "8-24", fragment_delay: "5-15" } });
+    case "stable":
+      return deepMerge(base, { protocol: "gool", scan_mode: "thorough", noise_profile: "aggressive", wireguard: { keepalive: "5", reconnect_secs: "2" } });
+    case "auto":
+    default:
+      if (!navigator.onLine) return deepMerge(base, { protocol: "masque", scan_mode: "balanced", noise_profile: "firewall", masque: { transport: "h2", fragment: true, fragment_size: "8-24", fragment_delay: "5-15" } });
+      if (state.status?.last_exit_note && state.status.last_exit_note !== "stopped") return smartConfigForCategory("strict");
+      const conn = String(currentConnectionLabel());
+      if (conn.includes("2g") || conn.includes("3g")) return smartConfigForCategory("social");
+      return smartConfigForCategory("streaming");
+  }
+}
+
+async function smartConnectToggle() {
+  if (state.liteMode) {
+    showToast(t("lite_mode_toast"), "warn");
+    return;
+  }
+  state.smartBusy = true;
+  renderSmartPanel();
+  try {
+    if (state.status?.running) {
+      const result = await api("/api/stop", { method: "POST", body: JSON.stringify({}) });
+      setActionOutput(`${t("action_ok_prefix")} ${t("stop_success")}`, result?.output || result?.message || "");
+      showToast(t("stop_success"));
+    } else {
+      const smartConfig = smartConfigForCategory(state.selectedCategory || "auto");
+      fillConfig(deepMerge(gatherConfig(), smartConfig));
+      const config = await saveConfig(false);
+      const result = await api("/api/start", { method: "POST", body: JSON.stringify({ config }) });
+      pushHistory("start", config);
+      renderHistory();
+      setActionOutput(`${t("action_ok_prefix")} ${t("start_success")}`, result?.output || result?.message || "");
+      showToast(t("start_success"));
+    }
+    renderActionOutput();
+    await refreshStatus();
+    await refreshLogs(true);
+    await refreshHealth();
+  } catch (error) {
+    setActionOutput(`${t("action_err_prefix")} ${error.message || t("op_failed")}`, error.fullOutput || error.message || t("op_failed"));
+    renderActionOutput();
+    showToast(error.message || t("op_failed"), "error");
+  } finally {
+    state.smartBusy = false;
+    renderSmartPanel();
+  }
+}
+
 function renderHistory() {
   const list = $("historyList");
   list.innerHTML = "";
@@ -1276,6 +1504,7 @@ function renderDiagnostics() {
 
 function renderAll() {
   applyTranslations();
+  renderSmartPanel();
   renderPresets(state.lastPresets);
   renderDocs(state.docs);
   renderStatus();
@@ -1492,6 +1721,25 @@ async function runSiteChecks() {
   };
 }
 
+function setMenu(open) {
+  state.menuOpen = !!open;
+  $("hamburgerMenu").classList.toggle("hidden", !state.menuOpen);
+  $("hamburgerMenu").classList.toggle("open", state.menuOpen);
+}
+
+function buildSmartSummaryText() {
+  const desc = smartStateDescriptor();
+  const bind = state.status?.config?.bind_address || state.config.bind_address || "127.0.0.1:1819";
+  return [
+    `State: ${desc.title}`,
+    `Category: ${state.selectedCategory}`,
+    `Proxy: ${bind}`,
+    `System online: ${navigator.onLine ? t("network_online") : t("network_offline")}`,
+    `Connection: ${currentConnectionLabel()}`,
+    `Hint: ${smartHintText()}`,
+  ].join("\n");
+}
+
 function bindButtons() {
   $("installBtn").addEventListener("click", () => handleAction($("installBtn"), () => api("/api/install", { method: "POST", body: JSON.stringify({}) }), t("install_success")));
   $("startBtn").addEventListener("click", () => handleAction($("startBtn"), async () => {
@@ -1658,7 +1906,17 @@ function bindButtons() {
     }
   });
 
+  $("smartConnectBtn").addEventListener("click", () => smartConnectToggle());
+  $("copySmartSummaryBtn").addEventListener("click", () => copyText(buildSmartSummaryText()).catch((e) => showToast(e.message, "error")));
+  $("menuToggleBtn").addEventListener("click", () => setMenu(!state.menuOpen));
+  $("closeMenuBtn").addEventListener("click", () => setMenu(false));
+  document.querySelectorAll("[data-tab-jump]").forEach((btn) => btn.addEventListener("click", () => {
+    enableTab(btn.dataset.tabJump);
+    setMenu(false);
+  }));
   document.querySelectorAll(".tab-btn").forEach((btn) => btn.addEventListener("click", () => enableTab(btn.dataset.tab)));
+  window.addEventListener("online", () => { renderSmartPanel(); renderStatus(); });
+  window.addEventListener("offline", () => { renderSmartPanel(); renderStatus(); });
 }
 
 async function initializeBackend() {
@@ -1729,6 +1987,7 @@ function startPolling() {
 async function init() {
   state.lang = preferredLanguage();
   state.viewMode = preferredViewMode();
+  state.selectedCategory = "auto";
   bindFormUpdates();
   bindButtons();
   await registerPwa();

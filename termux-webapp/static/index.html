@@ -42,6 +42,7 @@
             </label>
             <button id="viewModeBtn" class="btn ghost compact">حالت پیشرفته</button>
             <button id="installPwaBtn" class="btn ghost compact hidden">Install App</button>
+            <button id="menuToggleBtn" class="btn ghost compact hamburger-btn">☰</button>
           </div>
         </div>
         <p class="lead" data-i18n="hero_lead">بدون نیاز به حفظ کردن فلگ‌ها، از داخل مرورگر Aether را نصب، اجرا و پایش کن.</p>
@@ -98,15 +99,50 @@
     </header>
 
     <main class="container app-shell">
-      <nav class="tabs card">
+      <nav id="topTabs" class="tabs card">
         <button class="tab-btn active" data-tab="overview" data-i18n="tab_overview">نمای کلی</button>
         <button class="tab-btn" data-tab="settings" data-i18n="tab_settings">تنظیمات</button>
         <button class="tab-btn" data-tab="logs" data-i18n="tab_logs">لاگ‌ها</button>
         <button class="tab-btn" data-tab="help" data-i18n="tab_help">راهنما</button>
       </nav>
 
+      <aside id="hamburgerMenu" class="hamburger-menu hidden card">
+        <div class="hamburger-menu-head">
+          <strong>Aether Web</strong>
+          <button id="closeMenuBtn" class="btn ghost compact">✕</button>
+        </div>
+        <div class="hamburger-menu-body">
+          <button class="menu-link" data-tab-jump="overview" data-i18n="tab_overview">نمای کلی</button>
+          <button class="menu-link" data-tab-jump="settings" data-i18n="tab_settings">تنظیمات</button>
+          <button class="menu-link" data-tab-jump="logs" data-i18n="tab_logs">لاگ‌ها</button>
+          <button class="menu-link" data-tab-jump="help" data-i18n="tab_help">راهنما</button>
+        </div>
+      </aside>
+
       <section id="tab-overview" class="tab-panel active">
         <div class="main-grid">
+          <section class="panel smart-panel card wide-panel">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="smart_title">اتصال هوشمند</h2>
+                <p data-i18n="smart_desc">یک کلیک برای اتصال، توقف و اعمال بهترین تنظیمات بر اساس وضعیت شبکه و دسته‌بندی استفاده.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="copySmartSummaryBtn" class="btn ghost">کپی خلاصه</button>
+              </div>
+            </div>
+            <div class="smart-layout">
+              <button id="smartConnectBtn" class="smart-connect smart-idle">
+                <span id="smartStateLabel">غیرفعال</span>
+                <small id="smartStateSub">برای شروع، دسته‌بندی را انتخاب کن.</small>
+              </button>
+              <div class="smart-side">
+                <div id="categoryGrid" class="category-grid"></div>
+                <div id="networkMonitor" class="network-monitor"></div>
+              </div>
+            </div>
+          </section>
+
           <section class="panel presets-panel card">
             <div class="panel-head">
               <h2 data-i18n="presets_title">پریست‌های آماده</h2>
@@ -152,6 +188,19 @@
               </div>
             </div>
             <div id="notificationsList" class="notifications-list"></div>
+          </section>
+
+          <section class="panel sitechecks-panel card wide-panel">
+            <div class="panel-head with-actions">
+              <div>
+                <h2 data-i18n="sitechecks_title">تست سایت‌های مهم</h2>
+                <p data-i18n="sitechecks_desc">چند سایت مهم و معمولاً فیلترشده از داخل همین SOCKS5 تست می‌شوند تا بفهمی تونل واقعاً کار می‌کند یا نه.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="copySiteChecksBtn" class="btn ghost">کپی نتیجه</button>
+              </div>
+            </div>
+            <div id="siteChecksList" class="sitechecks-list"></div>
           </section>
 
           <section class="panel action-panel card wide-panel">
@@ -502,6 +551,25 @@
         <div class="panel-head with-actions">
           <div>
             <h2 data-i18n="camera_title">اسکن زنده QR</h2>
+            <p data-i18n="camera_desc">دوربین را روبه‌روی QR بگیر تا کانفیگ خودکار خوانده شود.</p>
+          </div>
+          <div class="inline-actions">
+            <button id="closeCameraBtn" class="btn ghost">بستن</button>
+          </div>
+        </div>
+        <div class="camera-stage">
+          <video id="cameraVideo" autoplay playsinline muted></video>
+          <div class="camera-overlay"></div>
+        </div>
+        <p id="cameraStatus" class="camera-status">در حال آماده‌سازی دوربین...</p>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
+="camera_title">اسکن زنده QR</h2>
             <p data-i18n="camera_desc">دوربین را روبه‌روی QR بگیر تا کانفیگ خودکار خوانده شود.</p>
           </div>
           <div class="inline-actions">
