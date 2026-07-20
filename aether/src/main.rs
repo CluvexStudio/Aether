@@ -41,12 +41,12 @@ const DEFAULT_CONFIG: &str = "aether.toml";
 async fn main() -> Result<()> {
     cli::parse_and_apply()?;
 
-    let default_filter = if std::env::var("AETHER_VERBOSE").is_ok() {
-        "info,aether=debug"
+    let log_env = if std::env::var("AETHER_LOG").is_ok() {
+        env_logger::Env::default().filter("AETHER_LOG")
     } else {
-        "info"
+        env_logger::Env::default().default_filter_or("info")
     };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
+    env_logger::Builder::from_env(log_env)
         .format_timestamp_millis()
         .init();
 
