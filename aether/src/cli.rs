@@ -224,6 +224,7 @@ mod tests {
         std::env::remove_var("AETHER_LOG");
         parse_args(&["--log-level".to_string(), "trace".to_string()]).unwrap();
         assert_eq!(std::env::var("AETHER_LOG").unwrap(), "trace");
+        std::env::remove_var("AETHER_LOG");
     }
 
     #[test]
@@ -252,8 +253,16 @@ mod tests {
         );
         assert_eq!(std::env::var("AETHER_MASQUE_RECONNECT_SECS").unwrap(), "5");
         assert_eq!(std::env::var("AETHER_WG_RECONNECT_SECS").unwrap(), "5");
+
+        std::env::remove_var("AETHER_HEALTH_INTERVAL");
+        std::env::remove_var("AETHER_HEALTH_MAX_FAILS");
+        std::env::remove_var("AETHER_HEALTH_TIMEOUT");
+        std::env::remove_var("AETHER_HEALTH_PROBE_URL");
+        std::env::remove_var("AETHER_MASQUE_RECONNECT_SECS");
+        std::env::remove_var("AETHER_WG_RECONNECT_SECS");
     }
 }
+
 
 
 

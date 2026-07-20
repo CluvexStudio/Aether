@@ -32,9 +32,10 @@ fn http_probe_port() -> u16 {
 }
 
 pub async fn http_probe(stack: &netstack::StackHandle) -> Result<()> {
-    let target = parse_probe_url("");
+    let target = parse_probe_url("")?;
     http_probe_target(stack, &target).await.map(|_| ())
 }
+
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeTarget {
@@ -43,7 +44,7 @@ pub struct ProbeTarget {
     pub path: String,
 }
 
-pub fn parse_probe_url(url: &str) -> ProbeTarget {
+pub fn parse_probe_url(url: &str) -> Result<ProbeTarget> {
     let default_port = http_probe_port();
     let default_target = ProbeTarget {
         host: HTTP_PROBE_HOST.to_string(),
@@ -53,12 +54,16 @@ pub fn parse_probe_url(url: &str) -> ProbeTarget {
 
     let s = url.trim();
     if s.is_empty() {
-        return default_target;
+        return Ok(default_target);
+    }
+
+    if s.to_lowercase().starts_with("https://") {
+        return Err(AetherError::Other(
+            "https:// health probe URLs are not supported; please use an http:// URL".into(),
+        ));
     }
 
     let s = if let Some(stripped) = s.strip_prefix("http://") {
-        stripped
-    } else if let Some(stripped) = s.strip_prefix("https://") {
         stripped
     } else {
         s
@@ -78,11 +83,12 @@ pub fn parse_probe_url(url: &str) -> ProbeTarget {
     };
 
     if host.is_empty() {
-        return default_target;
+        return Ok(default_target);
     }
 
-    ProbeTarget { host, port, path }
+    Ok(ProbeTarget { host, port, path })
 }
+
 
 pub async fn http_probe_target(
     stack: &netstack::StackHandle,
@@ -193,7 +199,17 @@ pub fn spawn_health_monitor(
         return None;
     }
 
-    let target = parse_probe_url(&config.probe_url);
+    let target = match parse_probe_url(&config.probe_url) {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!(
+                "[-] invalid health probe URL ('{}'): {e}; disabling continuous health monitor",
+                config.probe_url
+            );
+            return None;
+        }
+    };
+
 
     log::info!(
         "[+] starting background tunnel health monitoring (url='http://{}:{}{}', interval={:?}, max_fails={}, timeout={:?})",
@@ -405,21 +421,26 @@ mod tests {
 
     #[test]
     fn test_parse_probe_url() {
-        let t1 = parse_probe_url("http://cp.cloudflare.com/generate_204");
+        let t1 = parse_probe_url("http://cp.cloudflare.com/generate_204").unwrap();
         assert_eq!(t1.host, "cp.cloudflare.com");
         assert_eq!(t1.port, 80);
         assert_eq!(t1.path, "/generate_204");
 
-        let t2 = parse_probe_url("http://1.1.1.1:8080/check");
+        let t2 = parse_probe_url("http://1.1.1.1:8080/check").unwrap();
         assert_eq!(t2.host, "1.1.1.1");
         assert_eq!(t2.port, 8080);
         assert_eq!(t2.path, "/check");
 
-        let t3 = parse_probe_url("");
+        let t3 = parse_probe_url("").unwrap();
         assert_eq!(t3.host, HTTP_PROBE_HOST);
         assert_eq!(t3.port, 80);
         assert_eq!(t3.path, HTTP_PROBE_PATH);
+
+        let err = parse_probe_url("https://cp.cloudflare.com/generate_204");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("https:// health probe URLs are not supported"));
     }
+
 
     #[tokio::test]
     async fn test_spawn_health_monitor_failure_trigger() {
