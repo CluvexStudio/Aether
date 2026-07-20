@@ -26,6 +26,8 @@ It is designed for users who prefer a visual panel instead of manually typing co
 - Automatic local config backups with quick restore
 - History of recent successful profiles
 - In-UI notification/event history
+- Direct SOCKS5 profile copy for using the local proxy in other apps
+- Multi-site tunnel verification against important / commonly blocked sites
 - QR, text payload, and local share-link export for moving config to another device
 - QR import from camera / gallery on supported browsers
 - Log-level filters (all / success / info / warn / error)

@@ -51,6 +51,7 @@ const state = {
   histories: [],
   backups: [],
   notifications: [],
+  siteChecks: [],
   liteMode: false,
   backendReady: false,
   proxyHealth: null,
@@ -171,6 +172,7 @@ const translations = {
     label_uptime: "Uptime",
     label_panel: "Panel",
     label_mode: "Mode",
+    label_ready: "آماده برای استفاده",
     label_binary: "Aether binary",
     label_log_file: "Log file",
     version_prefix: "نسخه:",
@@ -180,6 +182,9 @@ const translations = {
     btn_stop: "توقف",
     btn_restart: "ری‌استارت",
     btn_test: "تست پراکسی",
+    btn_copy_socks: "کپی SOCKS",
+    btn_run_site_checks: "تست سایت‌ها",
+    btn_copy_sitechecks: "کپی نتیجه",
     btn_save: "ذخیره تنظیمات",
     btn_update_core: "آپدیت هسته",
     btn_update_panel: "آپدیت پنل",
@@ -209,6 +214,8 @@ const translations = {
     btn_delete: "حذف",
     history_title: "پروفایل‌های موفق اخیر",
     history_desc: "آخرین اجراها و تست‌های موفق اینجا ذخیره می‌شوند تا سریع دوباره برگردی.",
+    sitechecks_title: "تست سایت‌های مهم",
+    sitechecks_desc: "چند سایت مهم و معمولاً فیلترشده از داخل همین SOCKS5 تست می‌شوند تا بفهمی تونل واقعاً کار می‌کند یا نه.",
     notif_title: "تاریخچه اعلان‌ها",
     notif_desc: "تست‌ها، آپدیت‌ها و خطاهای اخیر اینجا ذخیره می‌شوند.",
     backup_title: "نسخه‌های پشتیبان کانفیگ",
@@ -216,6 +223,7 @@ const translations = {
     qr_title: "انتقال کانفیگ با QR",
     qr_desc: "کانفیگ فعلی را به‌صورت QR و متن فشرده برای دستگاه دیگر آماده کن.",
     qr_payload_label: "متن فشرده‌ی کانفیگ",
+    sitechecks_empty: "هنوز تست سایتی اجرا نشده است.",
     notif_empty: "هنوز هیچ اعلانی ذخیره نشده است.",
     history_empty: "هنوز هیچ اجرای موفقی ثبت نشده است.",
     backup_empty: "هنوز هیچ بکاپی ساخته نشده است.",
@@ -231,6 +239,8 @@ const translations = {
     qr_link_copied: "لینک اشتراک کانفیگ کپی شد.",
     qr_applied: "کانفیگ از روی payload اعمال شد.",
     qr_scan_failed: "اسکن QR روی این دستگاه یا مرورگر پشتیبانی نشد یا چیزی پیدا نشد.",
+    socks_copied: "پروفایل SOCKS5 کپی شد.",
+    sitechecks_done: "تست سایت‌ها انجام شد.",
     installed_text: "نصب شده",
     not_installed: "نصب نشده",
     mode_termux: "Termux / Live",
@@ -298,6 +308,9 @@ const translations = {
     splash_loading: "در حال آماده‌سازی پنل...",
     splash_lite: "در حال ورود به حالت Lite...",
     splash_ready: "پنل آماده است.",
+    ready_yes: "بله",
+    ready_no: "نه",
+    ready_scanning: "در حال اسکن",
     camera_title: "اسکن زنده QR",
     camera_desc: "دوربین را روبه‌روی QR بگیر تا کانفیگ خودکار خوانده شود.",
     camera_starting: "در حال آماده‌سازی دوربین...",
@@ -351,6 +364,7 @@ const translations = {
     label_uptime: "Uptime",
     label_panel: "Panel",
     label_mode: "Mode",
+    label_ready: "Ready",
     label_binary: "Aether binary",
     label_log_file: "Log file",
     version_prefix: "Version:",
@@ -389,6 +403,8 @@ const translations = {
     btn_delete: "Delete",
     history_title: "Recent successful profiles",
     history_desc: "Your latest successful starts and proxy tests are kept here for quick reuse.",
+    sitechecks_title: "Important site checks",
+    sitechecks_desc: "A few important and commonly filtered sites are tested through this SOCKS5 proxy so you can confirm the tunnel really works.",
     notif_title: "Notification history",
     notif_desc: "Recent updates, proxy tests, and errors are stored here.",
     backup_title: "Config backup versions",
@@ -396,6 +412,7 @@ const translations = {
     qr_title: "Transfer config with QR",
     qr_desc: "Prepare the current config as a QR code and compact text for another device.",
     qr_payload_label: "Compressed config payload",
+    sitechecks_empty: "No site test has been run yet.",
     notif_empty: "No notifications have been stored yet.",
     history_empty: "No successful runs have been saved yet.",
     backup_empty: "No backups have been created yet.",
@@ -411,6 +428,8 @@ const translations = {
     qr_link_copied: "Share link copied.",
     qr_applied: "Config was applied from payload.",
     qr_scan_failed: "QR scanning is not supported on this device/browser or no code was detected.",
+    socks_copied: "SOCKS5 profile copied.",
+    sitechecks_done: "Site checks completed.",
     installed_text: "installed",
     not_installed: "not installed",
     mode_termux: "Termux / Live",
@@ -478,6 +497,11 @@ const translations = {
     splash_loading: "Preparing dashboard...",
     splash_lite: "Switching to Lite mode...",
     splash_ready: "Dashboard is ready.",
+    ready_yes: "Yes",
+    ready_no: "No",
+    ready_scanning: "Scanning",
+    ready_no: "No",
+    ready_scanning: "Scanning",
     camera_title: "Live QR scanner",
     camera_desc: "Point the camera at a QR code to read and apply the config automatically.",
     camera_starting: "Preparing camera...",
@@ -693,6 +717,9 @@ function applyTranslations() {
   $("stopBtn").textContent = t("btn_stop");
   $("restartBtn").textContent = t("btn_restart");
   $("testBtn").textContent = t("btn_test");
+  $("copySocksBtn").textContent = t("btn_copy_socks");
+  $("runSiteChecksBtn").textContent = t("btn_run_site_checks");
+  $("copySiteChecksBtn").textContent = t("btn_copy_sitechecks");
   $("saveBtn").textContent = t("btn_save");
   $("updateBtn").textContent = t("btn_update_core");
   $("updatePanelBtn").textContent = t("btn_update_panel");
@@ -884,6 +911,29 @@ function renderNotifications() {
     const card = document.createElement("div");
     card.className = `notification-card ${item.kind || "info"}`;
     card.innerHTML = `<strong>${escapeHtml(item.message)}</strong><div class="notification-meta"><span>${escapeHtml(new Date(item.createdAt).toLocaleString(state.lang === "fa" ? "fa-IR" : "en-US"))}</span></div>`;
+    list.appendChild(card);
+  });
+}
+
+function renderSiteChecks() {
+  const list = $("siteChecksList");
+  list.innerHTML = "";
+  if (!state.siteChecks.length) {
+    list.innerHTML = `<div class="sitecheck-card"><p>${escapeHtml(t("sitechecks_empty"))}</p></div>`;
+    return;
+  }
+  state.siteChecks.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = `sitecheck-card ${item.ok ? "success" : "warn"}`;
+    const latency = item.latency_ms != null ? `${item.latency_ms}ms` : "--";
+    card.innerHTML = `
+      <strong>${escapeHtml(item.name)}</strong>
+      <p>${escapeHtml(item.url)}</p>
+      <div class="sitecheck-meta">
+        <span>HTTP ${escapeHtml(String(item.http_code || "000"))}</span>
+        <span>${escapeHtml(latency)}</span>
+      </div>
+    `;
     list.appendChild(card);
   });
 }
@@ -1084,6 +1134,8 @@ function renderStatus() {
   $("logPathView").textContent = status?.log_file || "--";
   $("serverUrls").textContent = (status?.urls || [window.location.origin]).join("  |  ");
   $("backendModeText").textContent = state.liteMode ? t("mode_lite") : t("mode_termux");
+  const readyText = state.liteMode ? t("ready_no") : status?.running ? (state.proxyHealth === true ? t("ready_yes") : t("ready_scanning")) : t("ready_no");
+  $("readyStateText").textContent = readyText;
 
   const runBadge = $("runningBadge");
   runBadge.className = "badge";
@@ -1229,6 +1281,7 @@ function renderAll() {
   renderStatus();
   renderActionOutput();
   renderDiagnostics();
+  renderSiteChecks();
   renderNotifications();
   renderHistory();
   renderBackups();
@@ -1415,6 +1468,30 @@ async function copyText(text) {
   showToast(t("copy_success"));
 }
 
+function buildSocksProfileText() {
+  const bind = state.status?.config?.bind_address || state.config.bind_address || "127.0.0.1:1819";
+  const [host, ...portParts] = bind.split(":");
+  const port = portParts.length ? portParts.join(":") : "1819";
+  return [
+    "SOCKS5",
+    `Host: ${host}`,
+    `Port: ${port}`,
+    "DNS through proxy: yes",
+    `URI: socks5://${bind}`,
+    "For v2rayNG or other apps: create a manual SOCKS5 outbound/profile with the values above.",
+  ].join("\n");
+}
+
+async function runSiteChecks() {
+  const result = await api("/api/site-checks");
+  state.siteChecks = result.results || [];
+  renderSiteChecks();
+  return {
+    ...result,
+    output: (result.results || []).map((item) => `${item.ok ? "OK" : "FAIL"} | ${item.name} | HTTP ${item.http_code} | ${item.latency_ms ?? "--"}ms | ${item.url}`).join("\n"),
+  };
+}
+
 function bindButtons() {
   $("installBtn").addEventListener("click", () => handleAction($("installBtn"), () => api("/api/install", { method: "POST", body: JSON.stringify({}) }), t("install_success")));
   $("startBtn").addEventListener("click", () => handleAction($("startBtn"), async () => {
@@ -1435,6 +1512,9 @@ function bindButtons() {
     renderHistory();
     return result;
   }, t("test_success")));
+  $("copySocksBtn").addEventListener("click", () => copyText(buildSocksProfileText()).then(() => showToast(t("socks_copied"))).catch((e) => showToast(e.message, "error")));
+  $("runSiteChecksBtn").addEventListener("click", () => handleAction($("runSiteChecksBtn"), runSiteChecks, t("sitechecks_done")));
+  $("copySiteChecksBtn").addEventListener("click", () => copyText((state.siteChecks || []).map((item) => `${item.ok ? "OK" : "FAIL"} | ${item.name} | HTTP ${item.http_code} | ${item.latency_ms ?? "--"}ms | ${item.url}`).join("\n") || t("sitechecks_empty")).catch((e) => showToast(e.message, "error")));
   $("saveBtn").addEventListener("click", () => handleAction($("saveBtn"), () => saveConfig(), t("save_success")));
   $("updateBtn").addEventListener("click", () => handleAction($("updateBtn"), () => api("/api/update", { method: "POST", body: JSON.stringify({}) }), t("core_update_success")));
   $("updatePanelBtn").addEventListener("click", () => handleAction($("updatePanelBtn"), () => api("/api/update-panel", { method: "POST", body: JSON.stringify({}) }), t("panel_update_success")));

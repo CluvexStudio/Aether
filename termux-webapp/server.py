@@ -877,6 +877,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._json(result, 200 if result.get("ok") else 503)
             return
 
+        if path == "/api/site-checks":
+            result = run_site_checks(self.app.data_dir)
+            self._json(result, 200 if result.get("ok") else 503)
+            return
+
         if path == "/api/docs":
             self._json({"ok": True, "docs": read_docs_index()})
             return

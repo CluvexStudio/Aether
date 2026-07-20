@@ -266,10 +266,10 @@ h1 {
   gap: 8px;
   margin-top: 12px;
 }
-.notification-card.success { border-color: rgba(43,230,168,.24); }
-.notification-card.warn { border-color: rgba(255,200,97,.24); }
-.notification-card.error { border-color: rgba(255,107,136,.24); }
-.notification-card.info { border-color: rgba(91,180,255,.24); }
+.notification-card.success, .sitecheck-card.success { border-color: rgba(43,230,168,.24); }
+.notification-card.warn, .sitecheck-card.warn { border-color: rgba(255,200,97,.24); }
+.notification-card.error, .sitecheck-card.error { border-color: rgba(255,107,136,.24); }
+.notification-card.info, .sitecheck-card.info { border-color: rgba(91,180,255,.24); }
 .diag-card.success { border-color: rgba(43,230,168,.24); }
 .diag-card.warn { border-color: rgba(255,200,97,.24); }
 .diag-card.error { border-color: rgba(255,107,136,.24); }
