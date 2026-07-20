@@ -40,6 +40,13 @@ MASQUE transport:
   --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
   --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
 
+Health monitoring:
+  --health-interval <n>    background tunnel health check interval in seconds (default 20, 0 to disable)
+  --health-fails <n>       consecutive failed health checks before reconnect (default 2)
+  --health-timeout <n>     timeout for each health check probe in seconds (default 5)
+  --health-url <url>       custom probe URL for health check (default http://www.gstatic.com/generate_204)
+
+
 WireGuard:
   --keepalive <n>          persistent keepalive interval in seconds (default 5)
   --no-profile-retry       don't retry other obfuscation profiles during scan
@@ -139,10 +146,20 @@ pub fn parse_args(args: &[String]) -> crate::error::Result<()> {
                 set("AETHER_WG_NO_DATA_CHECK", "1");
             }
             "--validate-secs" => set("AETHER_MASQUE_VALIDATE_SECS", next_value!()),
-            "--reconnect-secs" => set("AETHER_MASQUE_RECONNECT_SECS", next_value!()),
+            "--reconnect-secs" => {
+                let val = next_value!();
+                set("AETHER_MASQUE_RECONNECT_SECS", val);
+                set("AETHER_WG_RECONNECT_SECS", val);
+            }
             "--fragment" => set("AETHER_MASQUE_H2_FRAGMENT", "1"),
             "--fragment-size" => set("AETHER_MASQUE_H2_FRAGMENT_SIZE", next_value!()),
             "--fragment-delay" => set("AETHER_MASQUE_H2_FRAGMENT_DELAY", next_value!()),
+
+            "--health-interval" => set("AETHER_HEALTH_INTERVAL", next_value!()),
+            "--health-fails" => set("AETHER_HEALTH_MAX_FAILS", next_value!()),
+            "--health-timeout" => set("AETHER_HEALTH_TIMEOUT", next_value!()),
+            "--health-url" => set("AETHER_HEALTH_PROBE_URL", next_value!()),
+
 
             "--keepalive" => set("AETHER_WG_KEEPALIVE", next_value!()),
             "--no-profile-retry" => set("AETHER_WG_NO_PROFILE_RETRY", "1"),
@@ -179,11 +196,15 @@ fn set(key: &str, value: &str) {
 }
 
 #[cfg(test)]
+pub static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_cli_parse_log_levels() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("AETHER_LOG");
         parse_args(&["--verbose".to_string()]).unwrap();
         assert_eq!(std::env::var("AETHER_LOG").unwrap(), "info,aether=debug");
@@ -204,6 +225,37 @@ mod tests {
         parse_args(&["--log-level".to_string(), "trace".to_string()]).unwrap();
         assert_eq!(std::env::var("AETHER_LOG").unwrap(), "trace");
     }
+
+    #[test]
+    fn test_cli_parse_health_options() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        parse_args(&[
+            "--health-interval".to_string(),
+            "10".to_string(),
+            "--health-fails".to_string(),
+            "4".to_string(),
+            "--health-timeout".to_string(),
+            "3".to_string(),
+            "--health-url".to_string(),
+            "http://cp.cloudflare.com/generate_204".to_string(),
+            "--reconnect-secs".to_string(),
+            "5".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(std::env::var("AETHER_HEALTH_INTERVAL").unwrap(), "10");
+        assert_eq!(std::env::var("AETHER_HEALTH_MAX_FAILS").unwrap(), "4");
+        assert_eq!(std::env::var("AETHER_HEALTH_TIMEOUT").unwrap(), "3");
+        assert_eq!(
+            std::env::var("AETHER_HEALTH_PROBE_URL").unwrap(),
+            "http://cp.cloudflare.com/generate_204"
+        );
+        assert_eq!(std::env::var("AETHER_MASQUE_RECONNECT_SECS").unwrap(), "5");
+        assert_eq!(std::env::var("AETHER_WG_RECONNECT_SECS").unwrap(), "5");
+    }
 }
+
+
+
 
 

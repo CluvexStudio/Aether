@@ -557,21 +557,38 @@ async fn run_masque_tunnel(
         }
     }
 
+    let health_cfg = tunnelping::HealthConfig::from_env();
+    let health_task = tunnelping::spawn_health_monitor(stack.clone(), health_cfg);
+
     let socks_stack = stack.clone();
     let socks_task = tokio::spawn(async move {
         log::info!("[+] socks5 server listening on {listen}");
         socks::serve(listen, socks_stack).await
     });
 
-    let tunnel_result = tunnel_task.await;
-    socks_task.abort();
+    let tunnel_result = tokio::select! {
+        res = tunnel_task => match res {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(AetherError::Other(format!("tunnel exited: {e}"))),
+            Err(e) => Err(AetherError::Other(format!("tunnel task join error: {e}"))),
+        },
+        health_res = async {
+            if let Some(h) = health_task {
+                h.await
+            } else {
+                std::future::pending().await
+            }
+        } => match health_res {
+            Ok(Err(e)) => Err(AetherError::Other(format!("health check failure: {e}"))),
+            Ok(Ok(())) => Err(AetherError::Other("health monitor exited unexpectedly".into())),
+            Err(e) => Err(AetherError::Other(format!("health monitor join error: {e}"))),
+        }
+    };
 
-    match tunnel_result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(AetherError::Other(format!("tunnel exited: {e}"))),
-        Err(e) => Err(AetherError::Other(format!("tunnel task join error: {e}"))),
-    }
+    socks_task.abort();
+    tunnel_result
 }
+
 
 fn wg_keepalive_secs() -> u16 {
     std::env::var("AETHER_WG_KEEPALIVE")
@@ -851,20 +868,40 @@ async fn run_wireguard_tunnel(
 
     let stack = netstack::spawn(&identity.ipv4, &identity.ipv6, TUNNEL_MTU, inbound_rx, outbound_tx)?;
 
+    let health_cfg = tunnelping::HealthConfig::from_env();
+    let health_task = tunnelping::spawn_health_monitor(stack.clone(), health_cfg);
+
     let socks_stack = stack.clone();
     let socks_task = tokio::spawn(async move {
         log::info!("[+] socks5 server listening on {listen}");
         socks::serve(listen, socks_stack).await
     });
 
-    let tunnel_result = tunnel.run(outbound_rx).await;
-    socks_task.abort();
+    let tunnel_task = tokio::spawn(tunnel.run(outbound_rx));
 
-    match tunnel_result {
-        Ok(()) => Ok(()),
-        Err(e) => Err(AetherError::Other(format!("wireguard tunnel exited: {e}"))),
-    }
+    let res = tokio::select! {
+        tunnel_res = tunnel_task => match tunnel_res {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(AetherError::Other(format!("wireguard tunnel exited: {e}"))),
+            Err(e) => Err(AetherError::Other(format!("wireguard tunnel task join error: {e}"))),
+        },
+        health_res = async {
+            if let Some(h) = health_task {
+                h.await
+            } else {
+                std::future::pending().await
+            }
+        } => match health_res {
+            Ok(Err(e)) => Err(AetherError::Other(format!("health check failure: {e}"))),
+            Ok(Ok(())) => Err(AetherError::Other("health monitor exited unexpectedly".into())),
+            Err(e) => Err(AetherError::Other(format!("health monitor join error: {e}"))),
+        }
+    };
+
+    socks_task.abort();
+    res
 }
+
 
 async fn establish_wg(
     identity: &account::Identity,
@@ -979,10 +1016,35 @@ async fn run_warp_in_warp(
 
     log::info!("[*] establishing inner WARP tunnel (warp-in-warp)...");
     let inner_stack = establish_wg(&secondary, forwarder, INNER_MTU, false, 20, "inner").await?;
+    let health_cfg = tunnelping::HealthConfig::from_env();
+    let health_task = tunnelping::spawn_health_monitor(inner_stack.clone(), health_cfg);
 
-    log::info!("[+] socks5 server listening on {listen}");
-    socks::serve(listen, inner_stack).await
+    let socks_task = tokio::spawn(async move {
+        log::info!("[+] socks5 server listening on {listen}");
+        socks::serve(listen, inner_stack).await
+    });
+
+    let res = tokio::select! {
+        socks_res = socks_task => match socks_res {
+            Ok(res) => res,
+            Err(e) => Err(AetherError::Other(format!("socks server join error: {e}"))),
+        },
+        health_res = async {
+            if let Some(h) = health_task {
+                h.await
+            } else {
+                std::future::pending().await
+            }
+        } => match health_res {
+            Ok(Err(e)) => Err(AetherError::Other(format!("health check failure: {e}"))),
+            Ok(Ok(())) => Err(AetherError::Other("health monitor exited unexpectedly".into())),
+            Err(e) => Err(AetherError::Other(format!("health monitor join error: {e}"))),
+        }
+    };
+
+    res
 }
+
 
 async fn prompt_line(prompt: &str) -> Option<String> {
     use std::io::IsTerminal;
