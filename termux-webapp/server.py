@@ -573,6 +573,92 @@ def run_installer(action: str, data_dir: Path, extra: str = "") -> Dict[str, Any
     }
 
 
+
+
+def parse_cf_trace(text: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for line in (text or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        out[key.strip()] = value.strip()
+    return out
+
+
+def run_cf_trace(proxy: str | None = None, timeout: int = 12) -> Dict[str, Any]:
+    cmd = ["curl", "-sS", "-L", "-m", str(timeout)]
+    if proxy:
+        cmd.extend(["-x", f"socks5h://{proxy}"])
+    cmd.append("https://www.cloudflare.com/cdn-cgi/trace")
+    started = time.perf_counter()
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout + 4, check=False)
+    except Exception as exc:
+        return {"ok": False, "message": str(exc), "latency_ms": None, "trace": {}, "output": ""}
+
+    output = proc.stdout or ""
+    trace = parse_cf_trace(output)
+    return {
+        "ok": proc.returncode == 0 and bool(trace),
+        "latency_ms": round((time.perf_counter() - started) * 1000),
+        "trace": trace,
+        "output": output,
+        "message": "ok" if proc.returncode == 0 and trace else "trace failed",
+    }
+
+
+def run_speed_probe(url: str, proxy: str | None = None, timeout: int = 18) -> Dict[str, Any]:
+    cmd = ["curl", "-sS", "-L", "-o", "/dev/null", "-w", "%{size_download} %{time_total} %{speed_download}", "-m", str(timeout)]
+    if proxy:
+        cmd.extend(["-x", f"socks5h://{proxy}"])
+    cmd.append(url)
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout + 4, check=False)
+        output = (proc.stdout or "").strip()
+        parts = output.split()
+        size_download = int(float(parts[0])) if len(parts) > 0 else 0
+        time_total = float(parts[1]) if len(parts) > 1 else 0.0
+        speed_download = float(parts[2]) if len(parts) > 2 else 0.0
+        return {
+            "ok": proc.returncode == 0 and size_download > 0,
+            "bytes": size_download,
+            "seconds": round(time_total, 3),
+            "bytes_per_sec": round(speed_download, 2),
+            "mbps": round((speed_download * 8) / 1_000_000, 2) if speed_download else 0.0,
+            "output": output,
+        }
+    except Exception as exc:
+        return {"ok": False, "bytes": 0, "seconds": None, "bytes_per_sec": 0, "mbps": 0.0, "output": str(exc)}
+
+
+def run_ip_info(data_dir: Path) -> Dict[str, Any]:
+    cfg = load_config(data_dir)
+    proxy = str(cfg.get("bind_address") or "127.0.0.1:1819")
+    direct = run_cf_trace()
+    proxied = run_cf_trace(proxy=proxy)
+    return {
+        "ok": direct.get("ok") or proxied.get("ok"),
+        "direct": direct,
+        "proxy": proxied,
+        "proxy_bind": proxy,
+    }
+
+
+def run_speed_test(data_dir: Path) -> Dict[str, Any]:
+    cfg = load_config(data_dir)
+    proxy = str(cfg.get("bind_address") or "127.0.0.1:1819")
+    url = "https://speed.cloudflare.com/__down?bytes=2000000"
+    direct = run_speed_probe(url)
+    proxied = run_speed_probe(url, proxy=proxy)
+    return {
+        "ok": direct.get("ok") or proxied.get("ok"),
+        "direct": direct,
+        "proxy": proxied,
+        "proxy_bind": proxy,
+        "url": url,
+    }
+
+
 def run_proxy_health_test(data_dir: Path) -> Dict[str, Any]:
     cfg = load_config(data_dir)
     proxy = str(cfg.get("bind_address") or "127.0.0.1:1819")
@@ -937,6 +1023,16 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/api/direct-health":
             result = run_direct_connectivity_check()
+            self._json(result, 200 if result.get("ok") else 503)
+            return
+
+        if path == "/api/ip-info":
+            result = run_ip_info(self.app.data_dir)
+            self._json(result, 200 if result.get("ok") else 503)
+            return
+
+        if path == "/api/speed-test":
+            result = run_speed_test(self.app.data_dir)
             self._json(result, 200 if result.get("ok") else 503)
             return
 

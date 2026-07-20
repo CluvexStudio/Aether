@@ -52,6 +52,9 @@ const state = {
   backups: [],
   notifications: [],
   siteChecks: [],
+  ipInfo: null,
+  speedInfo: null,
+  directHealth: null,
   selectedCategory: "auto",
   smartBusy: false,
   menuOpen: false,
@@ -205,10 +208,17 @@ const translations = {
     network_title_online: "اینترنت سیستم",
     network_title_connection: "نوع اتصال",
     network_title_proxy: "سلامت پراکسی",
+    network_title_direct_health: "سلامت اینترنت مستقیم",
+    network_title_direct_ip: "IP مستقیم",
+    network_title_exit_ip: "IP خروجی تونل",
+    network_title_speed: "سرعت تقریبی",
     network_title_hint: "پیشنهاد هوشمند",
     network_online: "آنلاین",
     network_offline: "آفلاین",
     network_unknown: "نامشخص",
+    direct_ok: "سالم",
+    direct_fail: "مشکل دارد",
+    direct_checking: "در حال بررسی",
     hint_h3: "UDP/QUIC باز به‌نظر می‌رسد؛ h3 یا استریم مناسب است.",
     hint_h2: "برای وب و سوشیال یا شبکه‌های سخت‌گیر، h2 مناسب‌تر است.",
     hint_strict: "با توجه به خطاهای اخیر، حالت ضد DPI پیشنهاد می‌شود.",
@@ -259,6 +269,8 @@ const translations = {
     btn_copy_socks: "کپی SOCKS",
     btn_run_site_checks: "تست سایت‌ها",
     btn_copy_sitechecks: "کپی نتیجه",
+    btn_detect_ip: "تشخیص IP",
+    btn_speed_test: "اسپید تست",
     btn_save: "ذخیره تنظیمات",
     btn_update_core: "آپدیت هسته",
     btn_update_panel: "آپدیت پنل",
@@ -315,6 +327,8 @@ const translations = {
     qr_scan_failed: "اسکن QR روی این دستگاه یا مرورگر پشتیبانی نشد یا چیزی پیدا نشد.",
     socks_copied: "پروفایل SOCKS5 کپی شد.",
     sitechecks_done: "تست سایت‌ها انجام شد.",
+    ipinfo_done: "تشخیص IP انجام شد.",
+    speedtest_done: "اسپید تست انجام شد.",
     installed_text: "نصب شده",
     not_installed: "نصب نشده",
     mode_termux: "Termux / Live",
@@ -422,10 +436,17 @@ const translations = {
     network_title_online: "System internet",
     network_title_connection: "Connection type",
     network_title_proxy: "Proxy health",
+    network_title_direct_health: "Direct internet",
+    network_title_direct_ip: "Direct IP",
+    network_title_exit_ip: "Tunnel exit IP",
+    network_title_speed: "Estimated speed",
     network_title_hint: "Smart hint",
     network_online: "Online",
     network_offline: "Offline",
     network_unknown: "Unknown",
+    direct_ok: "OK",
+    direct_fail: "Fail",
+    direct_checking: "Checking",
     hint_h3: "UDP/QUIC looks available; h3 or streaming mode is a good first try.",
     hint_h2: "For web/social or stricter networks, h2 is usually the safer choice.",
     hint_strict: "Recent failures suggest a stricter anti-DPI profile.",
@@ -529,6 +550,8 @@ const translations = {
     qr_scan_failed: "QR scanning is not supported on this device/browser or no code was detected.",
     socks_copied: "SOCKS5 profile copied.",
     sitechecks_done: "Site checks completed.",
+    ipinfo_done: "IP detection completed.",
+    speedtest_done: "Speed test completed.",
     installed_text: "installed",
     not_installed: "not installed",
     mode_termux: "Termux / Live",
@@ -819,6 +842,8 @@ function applyTranslations() {
   $("copySocksBtn").textContent = t("btn_copy_socks");
   $("runSiteChecksBtn").textContent = t("btn_run_site_checks");
   $("copySiteChecksBtn").textContent = t("btn_copy_sitechecks");
+  $("detectIpBtn").textContent = t("btn_detect_ip");
+  $("speedTestBtn").textContent = t("btn_speed_test");
   $("saveBtn").textContent = t("btn_save");
   $("updateBtn").textContent = t("btn_update_core");
   $("updatePanelBtn").textContent = t("btn_update_panel");
@@ -1075,10 +1100,19 @@ function renderNetworkMonitor() {
   if (!wrap) return;
   const proxyText = state.proxyHealth === true ? t("health_ok") : state.proxyHealth === false ? t("health_fail") : t("health_unknown");
   const onlineText = navigator.onLine ? t("network_online") : t("network_offline");
+  const directHealthText = state.directHealth == null ? t("direct_checking") : (state.directHealth ? t("direct_ok") : t("direct_fail"));
+  const directIp = state.ipInfo?.direct?.trace?.ip || "--";
+  const exitIp = state.ipInfo?.proxy?.trace?.ip || "--";
+  const directSpeed = state.speedInfo?.direct?.mbps ? `${state.speedInfo.direct.mbps} Mbps` : "--";
+  const proxySpeed = state.speedInfo?.proxy?.mbps ? `${state.speedInfo.proxy.mbps} Mbps` : "--";
   const cards = [
     [t("network_title_online"), onlineText],
     [t("network_title_connection"), String(currentConnectionLabel())],
+    [t("network_title_direct_health"), directHealthText],
     [t("network_title_proxy"), proxyText],
+    [t("network_title_direct_ip"), directIp],
+    [t("network_title_exit_ip"), exitIp],
+    [t("network_title_speed"), `${directSpeed} / ${proxySpeed}`],
     [t("network_title_hint"), smartHintText()],
   ];
   wrap.innerHTML = cards.map(([title, value]) => `<div class="network-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(value)}</span></div>`).join("");
@@ -1130,6 +1164,42 @@ function smartConfigForCategory(id) {
   }
 }
 
+function smartPlanForCategory(id) {
+  switch (id) {
+    case "gaming": return ["gaming", "streaming", "social", "strict", "stable"];
+    case "streaming": return ["streaming", "social", "strict", "stable"];
+    case "social": return ["social", "strict", "streaming", "stable"];
+    case "strict": return ["strict", "social", "stable", "streaming"];
+    case "stable": return ["stable", "strict", "social"];
+    case "auto":
+    default:
+      return [smartHintText() === t("hint_h2") ? "social" : "streaming", "strict", "stable", "gaming"];
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForHealthy(timeoutMs = 45000, intervalMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await refreshStatus().catch(() => {});
+    try {
+      const data = await api("/api/health");
+      state.proxyHealth = !!data.ok;
+      state.proxyHealthDetail = data;
+      renderStatus();
+      renderDiagnostics();
+      if (data.ok) return true;
+    } catch {
+      state.proxyHealth = false;
+    }
+    await sleep(intervalMs);
+  }
+  return false;
+}
+
 async function smartConnectToggle() {
   if (state.liteMode) {
     showToast(t("lite_mode_toast"), "warn");
@@ -1142,15 +1212,42 @@ async function smartConnectToggle() {
       const result = await api("/api/stop", { method: "POST", body: JSON.stringify({}) });
       setActionOutput(`${t("action_ok_prefix")} ${t("stop_success")}`, result?.output || result?.message || "");
       showToast(t("stop_success"));
-    } else {
-      const smartConfig = smartConfigForCategory(state.selectedCategory || "auto");
+      renderActionOutput();
+      await refreshStatus();
+      await refreshHealth();
+      return;
+    }
+
+    const plan = smartPlanForCategory(state.selectedCategory || "auto");
+    const attemptLines = [];
+    let connected = false;
+
+    for (const categoryId of plan) {
+      const smartConfig = smartConfigForCategory(categoryId);
       fillConfig(deepMerge(gatherConfig(), smartConfig));
       const config = await saveConfig(false);
+      attemptLines.push(`TRY ${categoryId} -> ${protocolSummary(config)}`);
       const result = await api("/api/start", { method: "POST", body: JSON.stringify({ config }) });
-      pushHistory("start", config);
-      renderHistory();
-      setActionOutput(`${t("action_ok_prefix")} ${t("start_success")}`, result?.output || result?.message || "");
-      showToast(t("start_success"));
+      setActionOutput(`${t("action_ok_prefix")} ${t("smart_scanning_title")}`, [...attemptLines, result?.message || ""].join("\n"));
+      renderActionOutput();
+      const healthy = await waitForHealthy(32000, 3000);
+      if (healthy) {
+        pushHistory("start", config);
+        renderHistory();
+        attemptLines.push(`OK ${categoryId}`);
+        setActionOutput(`${t("action_ok_prefix")} ${t("start_success")}`, attemptLines.join("\n"));
+        showToast(t("start_success"));
+        connected = true;
+        break;
+      }
+      attemptLines.push(`FAIL ${categoryId}`);
+      await api("/api/stop", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
+      await sleep(900);
+    }
+
+    if (!connected) {
+      setActionOutput(`${t("action_err_prefix")} ${t("smart_failed_title")}`, attemptLines.join("\n"));
+      showToast(t("smart_failed_title"), "error");
     }
     renderActionOutput();
     await refreshStatus();
@@ -1395,11 +1492,11 @@ function renderStatus() {
   }
 
   const disabled = state.liteMode;
-  ["installBtn", "startBtn", "stopBtn", "restartBtn", "testBtn", "saveBtn", "updateBtn", "updatePanelBtn", "uninstallBtn"].forEach((id) => {
+  ["installBtn", "startBtn", "stopBtn", "restartBtn", "testBtn", "saveBtn", "updateBtn", "updatePanelBtn", "uninstallBtn", "smartConnectBtn", "detectIpBtn", "speedTestBtn", "runSiteChecksBtn", "copySocksBtn"].forEach((id) => {
     $(id).disabled = false;
   });
   if (disabled) {
-    ["installBtn", "startBtn", "stopBtn", "restartBtn", "testBtn", "updateBtn", "updatePanelBtn", "uninstallBtn"].forEach((id) => {
+    ["installBtn", "startBtn", "stopBtn", "restartBtn", "testBtn", "updateBtn", "updatePanelBtn", "uninstallBtn", "smartConnectBtn", "detectIpBtn", "speedTestBtn", "runSiteChecksBtn", "copySocksBtn"].forEach((id) => {
       $(id).disabled = true;
     });
   }
@@ -1634,8 +1731,10 @@ async function refreshHealth() {
     state.proxyHealth = false;
     state.proxyHealthDetail = null;
   }
+  await refreshDirectHealth().catch(() => {});
   renderStatus();
   renderDiagnostics();
+  renderNetworkMonitor();
 }
 
 async function handleAction(button, work, successMessage) {
@@ -1719,6 +1818,47 @@ async function runSiteChecks() {
     ...result,
     output: (result.results || []).map((item) => `${item.ok ? "OK" : "FAIL"} | ${item.name} | HTTP ${item.http_code} | ${item.latency_ms ?? "--"}ms | ${item.url}`).join("\n"),
   };
+}
+
+async function runIpInfo() {
+  const result = await api("/api/ip-info");
+  state.ipInfo = result;
+  renderNetworkMonitor();
+  return {
+    ...result,
+    output: [
+      `Direct IP: ${result.direct?.trace?.ip || "--"}`,
+      `Direct LOC: ${result.direct?.trace?.loc || "--"}`,
+      `Proxy IP: ${result.proxy?.trace?.ip || "--"}`,
+      `Proxy LOC: ${result.proxy?.trace?.loc || "--"}`,
+    ].join("\n"),
+  };
+}
+
+async function runSpeedTest() {
+  const result = await api("/api/speed-test");
+  state.speedInfo = result;
+  renderNetworkMonitor();
+  return {
+    ...result,
+    output: [
+      `Direct: ${result.direct?.mbps ?? 0} Mbps`,
+      `Proxy: ${result.proxy?.mbps ?? 0} Mbps`,
+    ].join("\n"),
+  };
+}
+
+async function refreshDirectHealth() {
+  if (state.liteMode) return;
+  try {
+    const result = await api("/api/direct-health");
+    state.directHealth = !!result.ok;
+    state.directHealthDetail = result;
+  } catch {
+    state.directHealth = false;
+    state.directHealthDetail = null;
+  }
+  renderNetworkMonitor();
 }
 
 function setMenu(open) {
@@ -1908,6 +2048,8 @@ function bindButtons() {
 
   $("smartConnectBtn").addEventListener("click", () => smartConnectToggle());
   $("copySmartSummaryBtn").addEventListener("click", () => copyText(buildSmartSummaryText()).catch((e) => showToast(e.message, "error")));
+  $("detectIpBtn").addEventListener("click", () => handleAction($("detectIpBtn"), runIpInfo, t("ipinfo_done")));
+  $("speedTestBtn").addEventListener("click", () => handleAction($("speedTestBtn"), runSpeedTest, t("speedtest_done")));
   $("menuToggleBtn").addEventListener("click", () => setMenu(!state.menuOpen));
   $("closeMenuBtn").addEventListener("click", () => setMenu(false));
   document.querySelectorAll("[data-tab-jump]").forEach((btn) => btn.addEventListener("click", () => {
@@ -2007,6 +2149,7 @@ async function init() {
   if (!state.liteMode) {
     await refreshLogs(true).catch(() => {});
     await refreshHealth().catch(() => {});
+    await runIpInfo().catch(() => {});
   }
   setSplash(t("splash_ready"));
   hideSplash();
