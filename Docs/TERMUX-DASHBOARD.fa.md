@@ -53,6 +53,41 @@ http://127.0.0.1:8787
 http://127.0.0.1:8787/?v=latest
 ```
 
+یا بهتر از آن، برای دور زدن کش مرورگر:
+
+```text
+http://127.0.0.1:8787/?v=$(date +%s)
+```
+
+---
+
+## نصب خیلی تمیزِ آخرین نسخه با حذف کش و نسخه قبلی
+
+اگر حس کردی پنل هنوز نسخهٔ قدیمی را نشان می‌دهد، این روش از همه قطعی‌تر است:
+
+```bash
+aether-web stop 2>/dev/null || true
+rm -rf $PREFIX/opt/aether-web ~/.config/aether-web
+
+pkg update -y && pkg install -y curl tar python git && \
+TMP=$(mktemp -d) && cd "$TMP" && \
+curl -L -H 'Accept: application/vnd.github+json' \
+https://api.github.com/repos/noob-coder-clude/Aether/tarball/arena/019f7b56-aether \
+-o aether-web.tar.gz && \
+mkdir src && tar -xzf aether-web.tar.gz -C src && \
+cd "$(find src -maxdepth 2 -type d -name termux-webapp | head -n1)" && \
+chmod +x install.sh && \
+AETHER_WEB_REPO=noob-coder-clude/Aether \
+AETHER_WEB_REF=arena/019f7b56-aether \
+./install.sh
+```
+
+بعدش پنل را این‌طوری باز کن تا کش قدیمی مرورگر هم دور زده شود:
+
+```text
+http://127.0.0.1:8787/?v=latest
+```
+
 ---
 
 ## فایل تنظیم سورس‌ها

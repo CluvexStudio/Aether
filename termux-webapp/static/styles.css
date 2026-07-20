@@ -27,6 +27,23 @@ html, body {
 body { position: relative; }
 body.lang-en { direction: ltr; }
 body.simple-mode .advanced-only { display: none !important; }
+body.simple-mode .history-panel,
+body.simple-mode .notifications-panel,
+body.simple-mode .action-panel,
+body.simple-mode .backups-panel,
+body.simple-mode .qr-panel {
+  display: none !important;
+}
+body.simple-mode .smart-panel {
+  grid-column: span 8;
+}
+body.simple-mode .presets-panel,
+body.simple-mode .diagnostics-panel {
+  grid-column: span 4;
+}
+body.simple-mode .sitechecks-panel {
+  grid-column: span 8;
+}
 
 .bg-grid {
   position: fixed;
