@@ -434,7 +434,7 @@ pub async fn run(
                     Some(ip_packet) => {
                         let framed = masque::encode_datagram_capsule(&ip_packet);
                         if let Err(e) = send_capsule(&mut send_stream, Bytes::from(framed)).await {
-                            log::debug!("[h2] send: {e}");
+                            log::trace!("[h2] send: {e}");
                             return Err(e);
                         }
                     }
@@ -545,7 +545,7 @@ async fn drain_capsules(
             Ok(Some(_)) => {}
             Ok(None) => break,
             Err(e) => {
-                log::debug!("[h2] capsule parse: {e}");
+                log::trace!("[h2] capsule parse: {e}");
                 break;
             }
         }

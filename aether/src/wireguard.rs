@@ -137,7 +137,7 @@ impl WgTunnel {
                         match tunn.decapsulate(None, &buf[..n], &mut tmp) {
                             TunnResult::Done => {}
                             TunnResult::Err(e) => {
-                                log::debug!("decapsulate error: {e:?}");
+                                log::trace!("decapsulate error: {e:?}");
                             }
                             TunnResult::WriteToNetwork(pkt) => {
                                 let mut pkt_vec = pkt.to_vec();
@@ -168,7 +168,7 @@ impl WgTunnel {
                 match tunn.encapsulate(&ip_packet, &mut out_buf) {
                     TunnResult::Done => {}
                     TunnResult::Err(e) => {
-                        log::debug!("encapsulate error: {e:?}");
+                        log::trace!("encapsulate error: {e:?}");
                     }
                     TunnResult::WriteToNetwork(pkt) => {
                         let mut pkt_vec = pkt.to_vec();
@@ -516,10 +516,10 @@ pub async fn verify_endpoint_keep_session(
                         }));
                     }
                     TunnResult::Err(e) => {
-                        log::debug!("[wg] decap error: {:?}", e);
+                        log::trace!("[wg] decap error: {:?}", e);
                     }
                     other => {
-                        log::debug!("[wg] unexpected decap: {:?}", other);
+                        log::trace!("[wg] unexpected decap: {:?}", other);
                     }
                 }
             }
