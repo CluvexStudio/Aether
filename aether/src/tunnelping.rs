@@ -420,7 +420,34 @@ mod tests {
         assert_eq!(t3.port, 80);
         assert_eq!(t3.path, HTTP_PROBE_PATH);
     }
+
+    #[tokio::test]
+    async fn test_spawn_health_monitor_failure_trigger() {
+        let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(128);
+        let (_inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(128);
+
+        let stack = netstack::spawn("172.16.0.2", "fd00::2", 1500, inbound_rx, outbound_tx)
+            .expect("spawn netstack");
+
+        let config = HealthConfig {
+            interval: Duration::from_millis(20),
+            max_fails: 2,
+            timeout: Duration::from_millis(50),
+            probe_url: "http://1.1.1.1/generate_204".to_string(),
+        };
+
+        let handle = spawn_health_monitor(stack, config).expect("spawn health monitor");
+        let result = handle.await.expect("join handle");
+
+        assert!(result.is_err(), "expected health monitor to fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("failed 2 consecutive times"),
+            "unexpected error message: {err_msg}"
+        );
+    }
 }
+
 
 
 
