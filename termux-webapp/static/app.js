@@ -2213,5 +2213,5 @@ init().catch((error) => {
   setActionOutput(`${t("action_err_prefix")} ${t("op_failed")}`, error?.message || String(error));
   renderActionOutput();
   setSplash(t("op_failed"));
-  setTimeout(hideSplash, 600);
+  setTimeout(hideSplash, 1200);
 });

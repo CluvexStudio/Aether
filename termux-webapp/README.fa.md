@@ -111,3 +111,7 @@ aether-web --host 0.0.0.0 --port 8787
 
 - `guide.fa.md`
 - `guide.en.md`
+
+و در ریشه ریپو هم این فایل برای راهنمای کامل نصب/اجرا/آپدیت داشبورد در Termux اضافه شده:
+
+- `Docs/TERMUX-DASHBOARD.fa.md`
