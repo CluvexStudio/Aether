@@ -1085,18 +1085,27 @@ mod main_tests {
             None,
             DEFAULT_CONFIG,
         );
-        let expected_base = format!("{}/aether.toml", std::path::Path::new(data_dir).display());
+        let expected_base = std::path::Path::new(data_dir)
+            .join("aether.toml")
+            .to_string_lossy()
+            .to_string();
         assert_eq!(base, expected_base);
 
         let wg = warp_config_path(&base);
         assert_eq!(wg, expected_base);
 
         let masque = masque_config_path(&base);
-        let expected_masque = format!("{}/aether-masque.toml", std::path::Path::new(data_dir).display());
+        let expected_masque = std::path::Path::new(data_dir)
+            .join("aether-masque.toml")
+            .to_string_lossy()
+            .to_string();
         assert_eq!(masque, expected_masque);
 
         let lastconn = lastconn_path(&masque);
-        let expected_lastconn = format!("{}/aether-masque-lastconn.toml", std::path::Path::new(data_dir).display());
+        let expected_lastconn = std::path::Path::new(data_dir)
+            .join("aether-masque-lastconn.toml")
+            .to_string_lossy()
+            .to_string();
         assert_eq!(lastconn, expected_lastconn);
     }
 }
