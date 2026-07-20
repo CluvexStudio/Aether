@@ -482,6 +482,40 @@ input[type="checkbox"] { width: auto; }
   border-radius: 12px;
 }
 .mini-card { padding: 16px; background: var(--card-2); }
+.command-center {
+  margin-top: 18px;
+}
+.command-cards {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.command-card {
+  border: 1px solid rgba(120,177,255,.14);
+  border-radius: 16px;
+  background: rgba(255,255,255,.04);
+  padding: 14px;
+}
+.command-card strong {
+  display: block;
+  margin-bottom: 8px;
+}
+.command-card p {
+  margin: 0 0 10px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.command-code {
+  display: block;
+  direction: ltr;
+  text-align: left;
+  background: rgba(4,10,18,.8);
+  border: 1px solid rgba(120,177,255,.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  overflow: auto;
+}
 .qr-layout {
   display: grid;
   grid-template-columns: 280px 1fr;

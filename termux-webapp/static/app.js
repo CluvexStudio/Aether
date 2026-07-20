@@ -240,6 +240,19 @@ const translations = {
     guide_tls_title: "اگر TLS ClientHello بسته می‌شود",
     guide_browser_title: "تنظیم پراکسی مرورگر",
     guide_lan_title: "دسترسی از لپ‌تاپ یا دستگاه دیگر",
+    commands_title: "دستورهای سریع ترموکس",
+    commands_desc: "اگر خواستی بیرون از UI هم سریع عمل کنی، این دستورها را یک‌کلیکی کپی کن.",
+    cmd_start_title: "اجرای پنل",
+    cmd_start_desc: "پنل وب را باز می‌کند.",
+    cmd_update_panel_title: "آپدیت پنل",
+    cmd_update_panel_desc: "فقط خود UI را آپدیت می‌کند.",
+    cmd_update_core_title: "آپدیت هسته",
+    cmd_update_core_desc: "هسته Aether را از ریپوی اصلی آپدیت می‌کند.",
+    cmd_open_title: "باز کردن پنل",
+    cmd_open_desc: "اگر پنل در حال اجراست، مرورگر را باز می‌کند.",
+    cmd_restart_title: "ری‌استارت پنل",
+    cmd_restart_desc: "اگر UI گیر کرد، سریع ری‌استارتش کن.",
+    btn_copy_all_commands: "کپی همه",
     lite_title: "حالت بدون Termux / Lite Mode",
     lite_body: "اگر پنل بدون بک‌اند Termux باز شود، همچنان می‌توانی پریست‌ها را ببینی، کانفیگ را ویرایش و export/import کنی، ولی اجرای واقعی هسته Aether نیاز به Termux یا یک بک‌اند سازگار دارد.",
     field_bind: "Bind address",
@@ -468,6 +481,19 @@ const translations = {
     guide_tls_title: "If TLS ClientHello gets blocked",
     guide_browser_title: "Browser proxy setup",
     guide_lan_title: "Access from a laptop or another device",
+    commands_title: "Quick Termux commands",
+    commands_desc: "If you want to act outside the UI, copy these commands with one tap.",
+    cmd_start_title: "Start panel",
+    cmd_start_desc: "Opens the web dashboard.",
+    cmd_update_panel_title: "Update panel",
+    cmd_update_panel_desc: "Updates only the UI/dashboard layer.",
+    cmd_update_core_title: "Update core",
+    cmd_update_core_desc: "Updates the Aether core from the original repo.",
+    cmd_open_title: "Open panel",
+    cmd_open_desc: "Opens the browser if the panel is already running.",
+    cmd_restart_title: "Restart panel",
+    cmd_restart_desc: "Use this when the UI gets stuck.",
+    btn_copy_all_commands: "Copy all",
     lite_title: "Lite mode / no-Termux capability",
     lite_body: "If the dashboard is opened without a Termux backend, you can still browse presets, edit config, and export/import settings, but real Aether execution still needs Termux or a compatible backend.",
     field_bind: "Bind address",
@@ -863,6 +889,7 @@ function applyTranslations() {
   $("clearHistoryBtn").textContent = t("btn_clear_history");
   $("clearNotificationsBtn").textContent = t("btn_clear_notifications");
   $("installPwaBtn").textContent = t("btn_install_pwa");
+  $("copyAllCommandsBtn").textContent = t("btn_copy_all_commands");
   $("uninstallBtn").textContent = t("btn_uninstall");
   $("refreshLogsBtn").textContent = t("btn_refresh_logs");
   $("clearActionOutputBtn").textContent = t("btn_clear");
@@ -1447,6 +1474,31 @@ function importPayloadFromHash() {
   }
 }
 
+const QUICK_COMMANDS = [
+  { key: "cmd_start", command: "aether-web start" },
+  { key: "cmd_update_panel", command: "aether-web update-panel" },
+  { key: "cmd_update_core", command: "aether-web update-core" },
+  { key: "cmd_open", command: "aether-web open" },
+  { key: "cmd_restart", command: "aether-web stop && aether-web start" },
+];
+
+function renderCommandCards() {
+  const wrap = $("commandCards");
+  if (!wrap) return;
+  wrap.innerHTML = QUICK_COMMANDS.map((item) => `
+    <div class="command-card">
+      <strong>${escapeHtml(t(`${item.key}_title`))}</strong>
+      <p>${escapeHtml(t(`${item.key}_desc`))}</p>
+      <code class="command-code">${escapeHtml(item.command)}</code>
+      <button class="btn ghost compact cmd-copy-single" data-command="${escapeHtml(item.command)}">${escapeHtml(t("copy_success"))}</button>
+    </div>
+  `).join("");
+  wrap.querySelectorAll('.cmd-copy-single').forEach((btn) => {
+    btn.textContent = t("btn_copy_command");
+    btn.addEventListener('click', () => copyText(btn.dataset.command).catch((e) => showToast(e.message, 'error')));
+  });
+}
+
 function renderStatus() {
   const status = state.status;
   const bind = status?.config?.bind_address || state.config.bind_address;
@@ -1604,6 +1656,7 @@ function renderAll() {
   renderSmartPanel();
   renderPresets(state.lastPresets);
   renderDocs(state.docs);
+  renderCommandCards();
   renderStatus();
   renderActionOutput();
   renderDiagnostics();
@@ -1926,6 +1979,7 @@ function bindButtons() {
   $("copyCommandBtn").addEventListener("click", () => copyText($("commandPreview").textContent).catch((e) => showToast(e.message, "error")));
   $("copyLogsBtn").addEventListener("click", () => copyText(stripAnsi(state.rawLogs || "")).catch((e) => showToast(e.message, "error")));
   $("copyDiagBtn").addEventListener("click", () => copyText(Array.from(document.querySelectorAll("#diagnosticsList .diag-card")).map((el) => el.innerText).join("\n\n")).catch((e) => showToast(e.message, "error")));
+  $("copyAllCommandsBtn").addEventListener("click", () => copyText(QUICK_COMMANDS.map((item) => item.command).join("\n")).catch((e) => showToast(e.message, "error")));
 
   $("exportConfigBtn").addEventListener("click", exportConfig);
   $("importConfigBtn").addEventListener("click", () => $("importConfigFile").click());
