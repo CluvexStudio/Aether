@@ -51,16 +51,23 @@ Config files:
 
 Advanced:
   --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
-  --verbose                detailed debug logs: tunnel stages, validation, reconnects, retries
-                           (equivalent to RUST_LOG=info,aether=debug; RUST_LOG overrides this)
 
-  -v, --version            show version and exit
+Logging:
+  -v, --verbose            detailed debug logs (use -vv for trace)
+  -l, --log-level <level>  set log level (error, warn, info, debug, trace)
+
+  -V, --version            show version and exit
   -h, --help               show this help and exit
 ";
 
 pub fn parse_and_apply() -> crate::error::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
+    parse_args(&args)
+}
+
+pub fn parse_args(args: &[String]) -> crate::error::Result<()> {
     let mut i = 0;
+    let mut verbose_count = 0;
 
     while i < args.len() {
         let arg = args[i].as_str();
@@ -75,7 +82,7 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
         }
 
         match arg {
-            "-v" | "--version" => {
+            "-V" | "--version" => {
                 println!("aether {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
@@ -83,6 +90,19 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
+            }
+
+            "-v" | "--verbose" => {
+                verbose_count += 1;
+            }
+            "-vv" => {
+                verbose_count += 2;
+            }
+            "-vvv" => {
+                verbose_count += 3;
+            }
+            "-l" | "--log-level" => {
+                set("AETHER_LOG", next_value!());
             }
 
             "--bind" => set("AETHER_SOCKS", next_value!()),
@@ -132,7 +152,6 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
-            "--verbose" => set("AETHER_VERBOSE", "1"),
 
             other => {
                 return Err(crate::error::AetherError::Other(format!(
@@ -144,9 +163,46 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
         i += 1;
     }
 
+    if verbose_count > 0 && std::env::var("AETHER_LOG").is_err() {
+        if verbose_count == 1 {
+            set("AETHER_LOG", "debug");
+        } else {
+            set("AETHER_LOG", "trace");
+        }
+    }
+
     Ok(())
 }
 
 fn set(key: &str, value: &str) {
     std::env::set_var(key, value);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cli_parse_log_levels() {
+        std::env::remove_var("AETHER_LOG");
+        parse_args(&["--verbose".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "debug");
+
+        std::env::remove_var("AETHER_LOG");
+        parse_args(&["-v".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "debug");
+
+        std::env::remove_var("AETHER_LOG");
+        parse_args(&["-vv".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "trace");
+
+        std::env::remove_var("AETHER_LOG");
+        parse_args(&["-l".to_string(), "warn".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "warn");
+
+        std::env::remove_var("AETHER_LOG");
+        parse_args(&["--log-level".to_string(), "trace".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_LOG").unwrap(), "trace");
+    }
+}
+
