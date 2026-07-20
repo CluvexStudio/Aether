@@ -4,7 +4,7 @@
 
 ### اینترنت آزاد برای همه :))
 
-**[🇬🇧 English README](README.md)** · **[📖 مستندات کامل](Docs/GUIDE.fa.md)** · **[🧩 راهنمای داشبورد Termux](Docs/TERMUX-DASHBOARD.fa.md)**
+**[🇬🇧 English README](README.md)** · **[📖 مستندات کامل](Docs/GUIDE.fa.md)** · **[🧩 راهنمای داشبورد Termux](Docs/TERMUX-DASHBOARD.fa.md)** · **[📦 راهنمای Codemagic برای Aether_app](Docs/CODEMAGIC-Aether_app.fa.md)**
 
 Aether یک کلاینت دور زدن سانسور اینترنت است که برای شبکه‌های به‌شدت محدود و فیلترشده طراحی شده است. این برنامه به‌صورت خودکار مسیرهای قابل‌دسترس را پیدا می‌کند، یک تونل رمزنگاری‌شده برقرار می‌کند و یک پراکسی محلی SOCKS5 در اختیار برنامه‌های شما قرار می‌دهد.
 

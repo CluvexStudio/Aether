@@ -1,0 +1,87 @@
+workflows:
+  aether_android_release:
+    name: Aether Android Release
+    max_build_duration: 60
+
+    environment:
+      flutter: 3.22.0
+      java: 17
+      vars:
+        PACKAGE_NAME: "com.cluvex.aether"
+
+    cache:
+      cache_paths:
+        - ~/.pub-cache
+        - ~/.gradle/caches
+        - ~/.gradle/wrapper
+
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+
+    scripts:
+      - name: Show tool versions
+        script: |
+          flutter --version
+          dart --version
+          java -version
+
+      - name: Disable Flutter analytics
+        script: |
+          flutter config --no-analytics
+
+      - name: Create temporary Flutter project
+        script: |
+          cd /tmp
+          flutter create --org com.cluvex --project-name aether_app temp_flutter
+
+      - name: Overlay Aether_app source
+        script: |
+          rm -rf /tmp/temp_flutter/lib
+          rm -rf /tmp/temp_flutter/assets
+
+          cp -r $CM_BUILD_DIR/lib /tmp/temp_flutter/
+          cp -r $CM_BUILD_DIR/assets /tmp/temp_flutter/
+          cp $CM_BUILD_DIR/pubspec.yaml /tmp/temp_flutter/
+
+          mkdir -p /tmp/temp_flutter/scripts
+          cp $CM_BUILD_DIR/scripts/*.sh /tmp/temp_flutter/scripts/
+
+          cp $CM_BUILD_DIR/android/build.gradle.kts /tmp/temp_flutter/android/build.gradle.kts
+          cp $CM_BUILD_DIR/android/settings.gradle.kts /tmp/temp_flutter/android/settings.gradle.kts
+          cp $CM_BUILD_DIR/android/app/build.gradle.kts /tmp/temp_flutter/android/app/build.gradle.kts
+          cp $CM_BUILD_DIR/android/app/proguard-rules.pro /tmp/temp_flutter/android/app/proguard-rules.pro
+
+          mkdir -p /tmp/temp_flutter/android/app/src/main
+          rsync -a $CM_BUILD_DIR/android/app/src/main/ /tmp/temp_flutter/android/app/src/main/
+
+      - name: Bundle native Aether binaries
+        script: |
+          cd /tmp/temp_flutter
+          chmod +x scripts/download_aether_binaries.sh
+          bash scripts/download_aether_binaries.sh
+
+      - name: Install Flutter dependencies
+        script: |
+          cd /tmp/temp_flutter
+          flutter pub get
+
+      - name: Build split APKs
+        script: |
+          cd /tmp/temp_flutter
+          flutter build apk --release --split-per-abi
+
+    artifacts:
+      - /tmp/temp_flutter/build/app/outputs/flutter-apk/*.apk
+
+    publishing:
+      email:
+        recipients:
+          - your-email@example.com
+        notify:
+          success: true
+          failure: true
