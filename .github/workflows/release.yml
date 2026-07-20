@@ -196,6 +196,84 @@ jobs:
           if-no-files-found: error
 
   # ------------------------------------------------------------------
+  # 32-bit ARM musl, fully static (OpenWrt routers and other musl-based
+  # Linux systems). Built directly on the runner rather than with
+  # `cross`/Docker: this repo isn't a single cargo workspace (aether
+  # depends on ../quiche via path deps, and quiche has its own
+  # [workspace]), and cross's container only mounts the crate being
+  # built, so it can't see the referenced workspace root. Building on
+  # the runner avoids that entirely.
+  #
+  # The musl toolchain comes from AmanoTeam/musl-gcc-cross's GitHub
+  # release, not musl.cc, which blocks all requests from GitHub
+  # Actions runners. Note the release asset is named by *host*
+  # architecture, not target: x86_64-unknown-linux-gnu.tar.xz is the
+  # x86_64-hosted toolchain that contains cross-compilers for every
+  # target musl-gcc-cross supports, including armv7-musleabihf.
+  #
+  # boring-sys uses bindgen (backed by clang) to generate BoringSSL
+  # bindings. Without BINDGEN_EXTRA_CLANG_ARGS pointing it at the musl
+  # sysroot, clang falls back to the host's glibc headers, which don't
+  # exist in the same layout musl expects (missing bits/libc-header-start.h).
+  #
+  # RUST_LIBC_UNSTABLE_MUSL_V1_2_3 tells the libc crate that this is a
+  # modern musl (1.2.x, 64-bit time_t on 32-bit targets). Without it,
+  # libc assumes the old 32-bit time_t, which doesn't match what
+  # bindgen sees in the real (1.2.x) sysroot headers, and boring fails
+  # to build with type mismatches on ASN1_TIME_set/X509_VERIFY_PARAM_set_time.
+  # ------------------------------------------------------------------
+  linux-armv7-musl:
+    name: Build aether-linux-armv7-musl.tar.gz
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aether
+    env:
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: /opt/musl-cross/bin/armv7-unknown-linux-musleabihf-gcc
+      CC_armv7_unknown_linux_musleabihf: /opt/musl-cross/bin/armv7-unknown-linux-musleabihf-gcc
+      CXX_armv7_unknown_linux_musleabihf: /opt/musl-cross/bin/armv7-unknown-linux-musleabihf-g++
+      AR_armv7_unknown_linux_musleabihf: /opt/musl-cross/bin/armv7-unknown-linux-musleabihf-ar
+      BINDGEN_EXTRA_CLANG_ARGS_armv7_unknown_linux_musleabihf: --target=armv7-unknown-linux-musleabihf --sysroot=/opt/musl-cross/armv7-unknown-linux-musleabihf
+      RUST_LIBC_UNSTABLE_MUSL_V1_2_3: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-musleabihf
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install musl cross toolchain
+        run: |
+          curl -fsSL https://github.com/AmanoTeam/musl-gcc-cross/releases/download/gcc-15/x86_64-unknown-linux-gnu.tar.xz -o /tmp/musl-cross.tar.xz
+          sudo mkdir -p /opt/musl-cross
+          sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
+
+      - name: Build release binary
+        run: cargo build --release --target armv7-unknown-linux-musleabihf
+
+      - name: Package archive
+        run: |
+          cd target/armv7-unknown-linux-musleabihf/release
+          tar -czf ../../../aether-linux-armv7-musl.tar.gz aether
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-linux-armv7-musl.tar.gz
+          path: aether/aether-linux-armv7-musl.tar.gz
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
   # Android / Termux targets, built with the NDK via cargo-ndk on the
   # latest Ubuntu runner (the NDK cross toolchain, not the host libc,
   # determines the output).
@@ -270,7 +348,7 @@ jobs:
   # ------------------------------------------------------------------
   release:
     name: Publish release
-    needs: [desktop, linux, linux-armv7, android]
+    needs: [desktop, linux, linux-armv7, linux-armv7-musl, android]
     runs-on: ubuntu-latest
     if: ${{ always() }} && startsWith(github.ref, 'refs/tags/') 
     steps:
@@ -301,20 +379,24 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v1.2.0
+            Aether v1.3.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            What's new in v1.2.0:
+            What's new in v1.3.0:
 
-            - Fixed a false-positive in the data-plane check for MASQUE and WireGuard. The probe packet used to be sent to 1.1.1.1, which is inside Cloudflare's own network, so a gateway could pass just by routing internally without ever reaching the real internet. It now targets an external resolver, and needs two successful round-trips in a row instead of one. This was the cause behind reports of a tunnel showing as "connected" while actual traffic just hung.
-            - MASQUE now lets you pick HTTP/3 (QUIC) or HTTP/2 (TCP) up front, with a short note on when each helps: HTTP/3 for the fastest handshake on healthy networks, HTTP/2 for networks that block or throttle UDP.
+            - New "ironclad" scan mode. The existing scan modes only check that a candidate gateway answers a handshake; ironclad goes further and opens a real tunnel through each candidate, then sends a real HTTP request end to end before trusting it. Slower than the other modes, but it's the only one that guarantees the gateway actually works before you connect.
+            - MASQUE and WireGuard both reconnect smarter after a drop. Instead of always kicking off a full rescan (which can take minutes in ironclad mode), Aether now first re-checks the gateway that was working a moment ago, and only falls back to a fresh scan if that one is actually dead.
+            - Fixed a bug where probe tunnels opened during scanning could keep running in the background after their timeout, which showed up as a wall of "connection closed" log lines during a scan.
+            - Fixed UDP over SOCKS5 not working when exposing the proxy to your local network (AETHER_SOCKS set to a non-loopback address). The UDP relay was always binding to 127.0.0.1 regardless of what address SOCKS5 was actually listening on, so TCP worked from other devices on the network but UDP silently dropped everything.
+            - New fully static armv7 musl build, meant for OpenWrt routers and other musl-based Linux systems that can't run the regular glibc binary.
 
             This release includes prebuilt binaries for:
 
             - Linux x86_64, built on Fedora latest (aether-linux-x86_64.tar.gz)
             - Linux arm64 / aarch64, built on Fedora latest (aether-linux-arm64.tar.gz)
             - Linux armv7 / 32-bit ARM, e.g. Raspberry Pi 2/3 (aether-linux-armv7.tar.gz)
+            - Linux armv7 musl / 32-bit ARM, fully static, for OpenWrt routers and other musl-based systems (aether-linux-armv7-musl.tar.gz)
             - macOS arm64 / Apple Silicon (aether-macos-arm64.tar.gz)
             - macOS x86_64 / Intel (aether-macos-x86_64.tar.gz)
             - Windows x86_64 (aether-windows-x86_64.zip)
