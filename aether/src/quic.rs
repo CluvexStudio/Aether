@@ -54,6 +54,7 @@ pub struct TunnelConfig {
     pub ech_config_list: Option<Vec<u8>>,
     pub noize: NoizeConfig,
     pub local_ipv4: Ipv4Addr,
+    pub quiet: bool,
 }
 
 fn validation_timeout() -> Duration {
@@ -157,6 +158,7 @@ pub async fn run(
     ready_tx: Option<oneshot::Sender<()>>,
 ) -> Result<()> {
     let peer = cfg.peer;
+    let quiet = cfg.quiet;
     let data_check = data_check_enabled();
     let probe_packet = masque::build_dns_probe_packet(cfg.local_ipv4);
     let mut ready_tx = ready_tx;
@@ -304,20 +306,20 @@ pub async fn run(
 
         if conn.is_established() && h3_conn.is_none() {
             established_ever = true;
-            log::info!(
+            log_or_debug(quiet, format!(
                 "quic handshake established; alpn={}",
                 String::from_utf8_lossy(conn.application_proto())
-            );
+            ));
             let mut h3c = h3::Connection::with_transport(&mut conn, &h3_config)?;
             let headers = masque::connect_ip_request(&cfg.authority, &cfg.path);
             let sid = h3c.send_request(&mut conn, &headers, false)?;
-            log::info!("connect-ip request sent on stream {sid}");
+            log_or_debug(quiet, format!("connect-ip request sent on stream {sid}"));
             req_stream = Some(sid);
             h3_conn = Some(h3c);
 
             if data_check {
                 validate_deadline = Some(Instant::now() + validation_timeout());
-                log::info!("[*] validating masque data-plane before exposing socks5");
+                log_or_debug(quiet, "[*] validating masque data-plane before exposing socks5".to_string());
             } else if !ready_fired {
                 ready_fired = true;
                 if let Some(tx) = ready_tx.take() {
@@ -327,7 +329,7 @@ pub async fn run(
         }
 
         if let (Some(h3c), Some(sid)) = (h3_conn.as_mut(), req_stream) {
-            poll_h3(&mut conn, h3c, sid, &mut capsules, &addr_tx)?;
+            poll_h3(&mut conn, h3c, sid, &mut capsules, &addr_tx, quiet)?;
         }
 
         let got_data =
@@ -345,7 +347,7 @@ pub async fn run(
                 if let Some(tx) = ready_tx.take() {
                     let _ = tx.send(());
                 }
-                log::info!("[+] masque tunnel validated (end-to-end data confirmed); exposing socks5");
+                log_or_debug(quiet, "[+] masque tunnel validated (end-to-end data confirmed); exposing socks5".to_string());
             }
         }
 
@@ -376,22 +378,22 @@ pub async fn run(
                 }
             }
 
-            log::info!("connection closed: {:?}", conn.stats());
+            log_or_debug(quiet, format!("connection closed: {:?}", conn.stats()));
             if let Some(e) = conn.peer_error() {
-                log::warn!(
+                log_or_debug(quiet, format!(
                     "peer closed: code=0x{:x} app={} reason={}",
                     e.error_code,
                     e.is_app,
                     String::from_utf8_lossy(&e.reason)
-                );
+                ));
             }
             if let Some(e) = conn.local_error() {
-                log::warn!(
+                log_or_debug(quiet, format!(
                     "local closed: code=0x{:x} app={} reason={}",
                     e.error_code,
                     e.is_app,
                     String::from_utf8_lossy(&e.reason)
-                );
+                ));
             }
             return Ok(());
         }
@@ -405,12 +407,21 @@ async fn sleep_opt(timeout: Option<Duration>) {
     }
 }
 
+fn log_or_debug(quiet: bool, msg: String) {
+    if quiet {
+        log::debug!("{msg}");
+    } else {
+        log::info!("{msg}");
+    }
+}
+
 fn poll_h3(
     conn: &mut quiche::Connection,
     h3c: &mut h3::Connection,
     req_stream: u64,
     capsules: &mut CapsuleParser,
     addr_tx: &Option<mpsc::Sender<AssignedAddr>>,
+    quiet: bool,
 ) -> Result<()> {
     let mut body = vec![0u8; 65535];
 
@@ -419,7 +430,7 @@ fn poll_h3(
             Ok((_stream_id, h3::Event::Headers { list, .. })) => {
                 for h in &list {
                     if h.name() == b":status" {
-                        log::info!("connect-ip status: {}", String::from_utf8_lossy(h.value()));
+                        log_or_debug(quiet, format!("connect-ip status: {}", String::from_utf8_lossy(h.value())));
                     }
                 }
             }

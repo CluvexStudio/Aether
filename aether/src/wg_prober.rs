@@ -24,6 +24,7 @@ pub enum WgScanMode {
     Balanced,
     Thorough,
     Stealth,
+    Ironclad,
 }
 
 impl WgScanMode {
@@ -32,6 +33,7 @@ impl WgScanMode {
             "turbo" | "fast" => WgScanMode::Turbo,
             "thorough" | "deep" | "pro" => WgScanMode::Thorough,
             "stealth" | "quiet" => WgScanMode::Stealth,
+            "ironclad" | "real" | "verify" | "guaranteed" => WgScanMode::Ironclad,
             _ => WgScanMode::Balanced,
         }
     }
@@ -42,6 +44,7 @@ impl WgScanMode {
             WgScanMode::Balanced => "balanced",
             WgScanMode::Thorough => "thorough",
             WgScanMode::Stealth => "stealth",
+            WgScanMode::Ironclad => "ironclad",
         }
     }
 
@@ -87,9 +90,21 @@ impl WgScanMode {
                 full_subnet: false,
                 sample_per_cidr: 50,
             },
+            WgScanMode::Ironclad => WgStrategy {
+                concurrency: 4,
+                per_probe_timeout: Duration::from_millis(15000),
+                overall_deadline: Duration::from_secs(180),
+                quiet_after_first: Duration::from_secs(15),
+                target_successes: 3,
+                early_exit_first: false,
+                full_subnet: false,
+                sample_per_cidr: 120,
+            },
         }
     }
 }
+
+const WG_IRONCLAD_TCPING_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct WgStrategy {
     concurrency: usize,
@@ -139,10 +154,12 @@ pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<
         st.overall_deadline,
     );
 
+    let ironclad = mode == WgScanMode::Ironclad;
+
     let stream = futures::stream::iter(
         candidates
             .into_iter()
-            .map(|(ip, port)| verify_one_wg(probe, ip, port, timeout)),
+            .map(|(ip, port)| verify_one_wg(probe, ip, port, timeout, ironclad)),
     )
     .buffer_unordered(st.concurrency);
     tokio::pin!(stream);
@@ -187,7 +204,7 @@ pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<
                         });
                         found += 1;
 
-                        if st.target_successes > 0 && found >= st.target_successes {
+                        if st.target_successes > 0 && found >= st.target_successes && quiet_until.is_none() {
                             log::info!("[+] reached target of {} endpoints, selecting best", st.target_successes);
                             if !st.quiet_after_first.is_zero() {
                                 quiet_until = Some(Instant::now() + st.quiet_after_first);
@@ -227,10 +244,11 @@ async fn verify_one_wg(
     ip: IpAddr,
     port: u16,
     timeout: Duration,
+    ironclad: bool,
 ) -> Option<WgProbeResult> {
     let peer = SocketAddr::new(ip, port);
 
-    match wireguard::verify_endpoint(
+    let (rtt, session) = match wireguard::verify_endpoint_keep_session(
         peer,
         *probe.private_key,
         *probe.peer_public_key,
@@ -241,9 +259,32 @@ async fn verify_one_wg(
     )
     .await
     {
-        Ok(rtt) => Some(WgProbeResult { ip, port, rtt }),
+        Ok(v) => v,
         Err(e) => {
             log::debug!("wg probe {ip}:{port} -> {e}");
+            return None;
+        }
+    };
+
+    if !ironclad {
+        return Some(WgProbeResult { ip, port, rtt });
+    }
+
+    let params = crate::tunnelping::WgPingParams {
+        local_ipv4: probe.local_ipv4,
+        local_ipv6: "::1".parse().unwrap(),
+        aethernoize: probe.aethernoize.clone(),
+    };
+    match crate::tunnelping::wg_http_ping_established(session, &params, WG_IRONCLAD_TCPING_TIMEOUT).await {
+        Ok(http_rtt) => {
+            log::info!(
+                "[+] ironclad verified wg {ip}:{port} real http round trip rtt={:?}",
+                http_rtt
+            );
+            Some(WgProbeResult { ip, port, rtt: http_rtt })
+        }
+        Err(e) => {
+            log::debug!("[-] ironclad wg {ip}:{port} failed real http check: {e}");
             None
         }
     }

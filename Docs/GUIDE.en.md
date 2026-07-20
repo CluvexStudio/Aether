@@ -31,8 +31,8 @@ Run `./aether --help` to see the full list. The most common ones:
 -4 / -6 / --dual          scan IPv4 only / IPv6 only / both
 --peer <ip:port>          force a peer and skip scanning
 --masque / --wg / --gool  choose the transport
---scan <mode>             turbo | balanced | thorough | stealth
---turbo/--balanced/--thorough/--stealth  shortcuts for --scan
+--scan <mode>             turbo | balanced | thorough | stealth | ironclad
+--turbo/--balanced/--thorough/--stealth/--ironclad  shortcuts for --scan
 --noize <profile>         obfuscation profile
 --h2, --http2             use HTTP/2 instead of HTTP/3 for MASQUE
 --fragment                fragment the TLS ClientHello (HTTP/2 only)
@@ -62,12 +62,13 @@ Here one WireGuard session is wrapped inside another WireGuard session. That mea
 
 Aether does not nail any address inside itself. The reason is simple: every network and every operator is different, and an address that works on one network today may not respond at all on another. So instead of guessing, it runs a scan: it tries a set of different addresses and ports, measures the real response and the response time (ping), and picks the best one it finds.
 
-At startup it asks how serious the scan should be. You have four modes:
+At startup it asks how serious the scan should be. You have five modes:
 
 - **turbo** — fast, satisfied with the first answer it catches. For when you just want to connect quickly.
 - **balanced** — the default, balanced mode. Good for most situations.
 - **thorough** — deep, looks for the best ping. Slower but a higher-quality result.
 - **stealth** — calm and patient. Scans slowly to make less noise on the network.
+- **ironclad** — the slowest but the most certain. All other modes decide a candidate is good based on a handshake and a small data-plane probe. Ironclad goes further: it first gathers a shortlist of handshake-verified candidates the same way balanced does, then for each one it opens a full, real tunnel, sends a genuine HTTP request through it, and waits for a real response — the same kind of check tools like v2ray/xray use to confirm a proxy actually works end to end, not just that it answers a probe. The candidate with the fastest real round trip wins. Use this when you've been burned by a gateway that looked fine during scanning but didn't pass real traffic once connected.
 
 It also asks whether to look on IPv4 addresses, IPv6, or both. If your network has no IPv6, stay on IPv4.
 
@@ -160,7 +161,7 @@ Aether now pushes a small end-to-end probe packet through the tunnel and waits f
 
 A tunnel can appear to be open while in practice it is dead; that is, the proxy is still open but no data is being exchanged. This happened mostly on gool, when the outer layer was cut by the network but the proxy did not know.
 
-If a MASQUE tunnel drops or fails its data-plane validation, Aether now reconnects on its own: it waits a short delay (default 2 seconds, `AETHER_MASQUE_RECONNECT_SECS`) and scans again for a fresh gateway, instead of exiting.
+If a MASQUE or WireGuard tunnel drops or fails its data-plane validation, Aether now reconnects on its own: it waits a short delay (default 2 seconds, `AETHER_MASQUE_RECONNECT_SECS` / `AETHER_WG_RECONNECT_SECS`) and retries, instead of exiting. On reconnect it first re-verifies the last gateway that was actually working — only if that gateway no longer responds does it fall back to a fresh full scan, so a dropped connection does not always mean sitting through another complete scan (especially noticeable in `ironclad` mode, which is slow by design).
 
 ## Reconnecting quickly with your last known-good gateway
 
@@ -188,7 +189,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_PROTOCOL` — protocol: `masque`, `wg`, or `gool`.
 - `AETHER_SOCKS` — the proxy listen address. Default `127.0.0.1:1819`.
 - `AETHER_NOIZE` — obfuscation profile (explained above).
-- `AETHER_SCAN` — scan mode: `turbo`, `balanced`, `thorough`, `stealth`.
+- `AETHER_SCAN` — scan mode: `turbo`, `balanced`, `thorough`, `stealth`, `ironclad`.
 - `AETHER_IP` — IP version for scanning: IPv4, IPv6, or both.
 
 ### Specific to MASQUE
@@ -200,7 +201,8 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — delay between fragments in ms, `n` or `a-b`. Default `2-10`.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — if set, a `:status 200` alone is enough; the end-to-end data-plane probe is skipped.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — seconds to wait for the data-plane probe to succeed before giving up on a gateway. Default `10`.
-- `AETHER_MASQUE_RECONNECT_SECS` (`--reconnect-secs`) — delay before automatically reconnecting after the tunnel drops or fails validation. Default `2`.
+- `AETHER_MASQUE_RECONNECT_SECS` (`--reconnect-secs`) — delay before automatically reconnecting after the MASQUE tunnel drops or fails validation. Default `2`.
+- `AETHER_WG_RECONNECT_SECS` — delay before automatically reconnecting after the WireGuard tunnel drops. Default `2`.
 
 ### Specific to WireGuard and gool
 

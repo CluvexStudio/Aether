@@ -1,5 +1,7 @@
 # Aether
 
+![Aether](Docs/Aether.png)
+
 ### اینترنت آزاد برای همه :))
 
 **[🇬🇧 English README](README.md)** · **[📖 مستندات کامل](Docs/GUIDE.fa.md)**

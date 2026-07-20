@@ -28,6 +28,15 @@ pub struct H2TunnelConfig {
     pub cert_pem: Vec<u8>,
     pub key_pem: Vec<u8>,
     pub local_ipv4: Ipv4Addr,
+    pub quiet: bool,
+}
+
+fn log_or_debug(quiet: bool, msg: String) {
+    if quiet {
+        log::debug!("{msg}");
+    } else {
+        log::info!("{msg}");
+    }
 }
 
 fn data_check_enabled() -> bool {
@@ -251,6 +260,7 @@ pub async fn run(
     ready_tx: Option<oneshot::Sender<()>>,
 ) -> Result<()> {
     let (mut outbound_rx, inbound_tx, mut ctrl_rx) = internals.into_parts();
+    let quiet = cfg.quiet;
     let data_check = data_check_enabled();
     let probe_packet = masque::build_dns_probe_packet(cfg.local_ipv4);
     let mut ready_tx = ready_tx;
@@ -259,26 +269,26 @@ pub async fn run(
 
     let tls_config = build_tls(&cfg)?;
 
-    log::info!("[h2] connecting tcp to {}", cfg.peer);
+    log_or_debug(quiet, format!("[h2] connecting tcp to {}", cfg.peer));
     let tcp = TcpStream::connect(cfg.peer).await.map_err(AetherError::Io)?;
     let _ = tcp.set_nodelay(true);
 
     let frag_cfg = FragmentConfig::from_env();
     if frag_cfg.enabled {
-        log::info!(
+        log_or_debug(quiet, format!(
             "[h2] fragmenting client hello: size={}..{} delay={}..{}ms",
             frag_cfg.size_min, frag_cfg.size_max, frag_cfg.delay_min_ms, frag_cfg.delay_max_ms
-        );
+        ));
     }
     let fragment = FragmentingStream::new(tcp, frag_cfg);
 
     let tls = tokio_boring::connect(tls_config, &cfg.sni, fragment)
         .await
         .map_err(|e| AetherError::Tls(format!("h2 tls handshake: {e}")))?;
-    log::info!(
+    log_or_debug(quiet, format!(
         "[h2] tls established; alpn={}",
         String::from_utf8_lossy(tls.ssl().selected_alpn_protocol().unwrap_or(b""))
-    );
+    ));
 
     let (h2, mut connection) = h2::client::handshake(tls)
         .await
@@ -304,13 +314,13 @@ pub async fn run(
     let (resp_fut, mut send_stream) = h2
         .send_request(req, false)
         .map_err(|e| AetherError::Masque(format!("send_request: {e}")))?;
-    log::info!("[h2] connect-ip request sent to {}", cfg.authority);
+    log_or_debug(quiet, format!("[h2] connect-ip request sent to {}", cfg.authority));
 
     let response = resp_fut
         .await
         .map_err(|e| AetherError::Masque(format!("await response: {e}")))?;
     let status = response.status();
-    log::info!("[h2] connect-ip status: {}", status.as_u16());
+    log_or_debug(quiet, format!("[h2] connect-ip status: {}", status.as_u16()));
     if !status.is_success() {
         return Err(AetherError::Masque(format!(
             "h2 connect-ip status {}",
@@ -328,7 +338,7 @@ pub async fn run(
             log::debug!("[h2] initial data-plane probe: {e}");
         }
         validate_deadline = Some(Instant::now() + validation_timeout());
-        log::info!("[h2] validating data-plane (end-to-end probe) before exposing socks5");
+        log_or_debug(quiet, "[h2] validating data-plane (end-to-end probe) before exposing socks5".to_string());
     } else if !ready_fired {
         ready_fired = true;
         if let Some(tx) = ready_tx.take() {
@@ -412,7 +422,7 @@ pub async fn run(
                 match ctrl {
                     Some(Control::Close) | None => {
                         let _ = send_stream.send_data(Bytes::new(), true);
-                        log::info!("[h2] closing tunnel");
+                        log_or_debug(quiet, "[h2] closing tunnel".to_string());
                         return Ok(());
                     }
                     Some(Control::Migrate) => {}
@@ -453,7 +463,7 @@ pub async fn run(
                                 if let Some(tx) = ready_tx.take() {
                                     let _ = tx.send(());
                                 }
-                                log::info!("[h2] tunnel validated (end-to-end data confirmed); exposing socks5");
+                                log_or_debug(quiet, "[h2] tunnel validated (end-to-end data confirmed); exposing socks5".to_string());
                             } else {
                                 let framed = masque::encode_datagram_capsule(&probe_packet);
                                 if let Err(e) =
@@ -469,7 +479,7 @@ pub async fn run(
                         return Err(AetherError::Masque(format!("h2 body: {e}")));
                     }
                     None => {
-                        log::info!("[h2] server closed stream");
+                        log_or_debug(quiet, "[h2] server closed stream".to_string());
                         return Ok(());
                     }
                 }

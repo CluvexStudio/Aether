@@ -24,6 +24,7 @@ Scan mode:
   --balanced               shortcut for --scan balanced
   --thorough               shortcut for --scan thorough
   --stealth                shortcut for --scan stealth
+  --ironclad               shortcut for --scan ironclad (real tunnel + real HTTP check per candidate)
 
 Obfuscation:
   --noize <profile>        obfuscation profile (off, light/firewall, balanced, gfw/aggressive, ...)
@@ -50,6 +51,8 @@ Config files:
 
 Advanced:
   --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
+  --verbose                detailed debug logs: tunnel stages, validation, reconnects, retries
+                           (equivalent to RUST_LOG=info,aether=debug; RUST_LOG overrides this)
 
   -v, --version            show version and exit
   -h, --help               show this help and exit
@@ -104,6 +107,7 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "--balanced" => set("AETHER_SCAN", "balanced"),
             "--thorough" => set("AETHER_SCAN", "thorough"),
             "--stealth" => set("AETHER_SCAN", "stealth"),
+            "--ironclad" => set("AETHER_SCAN", "ironclad"),
 
             "--noize" => set("AETHER_NOIZE", next_value!()),
 
@@ -128,6 +132,7 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
+            "--verbose" => set("AETHER_VERBOSE", "1"),
 
             other => {
                 return Err(crate::error::AetherError::Other(format!(

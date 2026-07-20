@@ -92,6 +92,7 @@ pub enum ScanMode {
     Balanced,
     Thorough,
     Stealth,
+    Ironclad,
 }
 
 impl ScanMode {
@@ -100,6 +101,7 @@ impl ScanMode {
             "turbo" | "fast" => ScanMode::Turbo,
             "thorough" | "deep" | "pro" => ScanMode::Thorough,
             "stealth" | "quiet" => ScanMode::Stealth,
+            "ironclad" | "real" | "verify" | "guaranteed" => ScanMode::Ironclad,
             _ => ScanMode::Balanced,
         }
     }
@@ -110,6 +112,7 @@ impl ScanMode {
             ScanMode::Balanced => "balanced",
             ScanMode::Thorough => "thorough",
             ScanMode::Stealth => "stealth",
+            ScanMode::Ironclad => "ironclad",
         }
     }
 
@@ -155,9 +158,21 @@ impl ScanMode {
                 full_subnet: false,
                 sample_per_cidr: 64,
             },
+            ScanMode::Ironclad => Strategy {
+                concurrency: 4,
+                per_probe_timeout: Duration::from_millis(15000),
+                overall_deadline: Duration::from_secs(180),
+                quiet_after_first: Duration::from_secs(15),
+                target_successes: 3,
+                early_exit_first: false,
+                full_subnet: false,
+                sample_per_cidr: 140,
+            },
         }
     }
 }
+
+const IRONCLAD_TCPING_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Strategy {
     concurrency: usize,
@@ -217,10 +232,12 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
         st.overall_deadline,
     );
 
+    let ironclad = mode == ScanMode::Ironclad;
+
     let stream = futures::stream::iter(
         candidates
             .into_iter()
-            .map(|(ip, port)| verify_one(probe, ip, port, timeout)),
+            .map(|(ip, port)| verify_one(probe, ip, port, timeout, ironclad)),
     )
     .buffer_unordered(st.concurrency);
     tokio::pin!(stream);
@@ -265,7 +282,7 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
                         });
                         found += 1;
                         
-                        if st.target_successes > 0 && found >= st.target_successes {
+                        if st.target_successes > 0 && found >= st.target_successes && quiet_until.is_none() {
                             log::info!("[+] reached target of {} gateways, selecting best", st.target_successes);
                             if !st.quiet_after_first.is_zero() {
                                 quiet_until = Some(Instant::now() + st.quiet_after_first);
@@ -305,7 +322,33 @@ async fn verify_one(
     ip: IpAddr,
     port: u16,
     timeout: Duration,
+    ironclad: bool,
 ) -> Option<ProbeResult> {
+    if ironclad {
+        let params = crate::tunnelping::MasquePingParams {
+            peer: SocketAddr::new(ip, port),
+            sni: probe.sni.clone(),
+            authority: probe.authority.clone(),
+            path: probe.path.clone(),
+            cert_pem: probe.cert_pem.to_vec(),
+            key_pem: probe.key_pem.to_vec(),
+            noize: probe.noize.clone(),
+            local_ipv4: probe.local_ipv4,
+            local_ipv4_str: probe.local_ipv4.to_string(),
+            local_ipv6_str: String::new(),
+        };
+        return match crate::tunnelping::masque_http_ping(&params, IRONCLAD_TCPING_TIMEOUT).await {
+            Ok(rtt) => {
+                log::info!("[+] ironclad verified {ip}:{port} real http round trip rtt={:?}", rtt);
+                Some(ProbeResult { ip, port, rtt })
+            }
+            Err(e) => {
+                log::debug!("[-] ironclad {ip}:{port} failed real http check: {e}");
+                None
+            }
+        };
+    }
+
     if crate::masque_h2::enabled() {
         let cfg = crate::masque_h2::H2TunnelConfig {
             peer: SocketAddr::new(ip, port),
@@ -315,6 +358,7 @@ async fn verify_one(
             cert_pem: probe.cert_pem.to_vec(),
             key_pem: probe.key_pem.to_vec(),
             local_ipv4: probe.local_ipv4,
+            quiet: true,
         };
         return match crate::masque_h2::verify_h2(&cfg, timeout).await {
             Ok(rtt) => Some(ProbeResult { ip, port, rtt }),

@@ -60,6 +60,13 @@ pub struct WgTunnel {
     pub client_id: [u8; 3],
 }
 
+pub struct EstablishedSession {
+    tunn: Arc<Mutex<Box<Tunn>>>,
+    sock: Arc<UdpSocket>,
+    peer: SocketAddr,
+    client_id: [u8; 3],
+}
+
 impl WgTunnel {
     pub async fn new(cfg: WgConfig, inbound_tx: mpsc::Sender<Vec<u8>>) -> Result<Self> {
         let bind_addr = if cfg.peer_endpoint.is_ipv4() {
@@ -87,6 +94,22 @@ impl WgTunnel {
             aethernoize: cfg.aethernoize.clone(),
             client_id: cfg.client_id,
         })
+    }
+
+    pub fn from_established(
+        session: EstablishedSession,
+        aethernoize: Arc<AetherNoizeConfig>,
+        inbound_tx: mpsc::Sender<Vec<u8>>,
+    ) -> Self {
+        Self {
+            tunn: session.tunn,
+            sock: session.sock,
+            peer: session.peer,
+            inbound_tx,
+            obf_sent: Arc::new(Mutex::new(true)),
+            aethernoize,
+            client_id: session.client_id,
+        }
     }
 
     pub async fn run(self, mut outbound_rx: mpsc::Receiver<Vec<u8>>) -> Result<()> {
@@ -374,6 +397,28 @@ pub async fn verify_endpoint(
     aethernoize: &AetherNoizeConfig,
     timeout: Duration,
 ) -> Result<Duration> {
+    let (elapsed, _session) = verify_endpoint_keep_session(
+        peer,
+        private_key,
+        peer_public,
+        client_id,
+        local_ipv4,
+        aethernoize,
+        timeout,
+    )
+    .await?;
+    Ok(elapsed)
+}
+
+pub async fn verify_endpoint_keep_session(
+    peer: SocketAddr,
+    private_key: [u8; 32],
+    peer_public: [u8; 32],
+    client_id: [u8; 3],
+    local_ipv4: Ipv4Addr,
+    aethernoize: &AetherNoizeConfig,
+    timeout: Duration,
+) -> Result<(Duration, EstablishedSession)> {
     let data_check = std::env::var("AETHER_WG_NO_DATA_CHECK").is_err();
     log::debug!("[wg] verify {} obf={} data_check={}", peer, aethernoize.is_enabled(), data_check);
 
@@ -432,9 +477,20 @@ pub async fn verify_endpoint(
                         let elapsed = start.elapsed();
                         log::debug!("[wg] handshake done in {:?}", elapsed);
                         if data_check {
-                            return verify_dataplane(&sock, &mut tunn, &client_id, local_ipv4, start, deadline).await;
+                            let dp_elapsed = verify_dataplane(&sock, &mut tunn, &client_id, local_ipv4, start, deadline).await?;
+                            return Ok((dp_elapsed, EstablishedSession {
+                                tunn: Arc::new(Mutex::new(Box::new(tunn))),
+                                sock: Arc::new(sock),
+                                peer,
+                                client_id,
+                            }));
                         }
-                        return Ok(elapsed);
+                        return Ok((elapsed, EstablishedSession {
+                            tunn: Arc::new(Mutex::new(Box::new(tunn))),
+                            sock: Arc::new(sock),
+                            peer,
+                            client_id,
+                        }));
                     }
                     TunnResult::WriteToNetwork(pkt) => {
                         let mut pkt_vec = pkt.to_vec();
@@ -444,9 +500,20 @@ pub async fn verify_endpoint(
                         let elapsed = start.elapsed();
                         log::debug!("[wg] handshake success in {:?}", elapsed);
                         if data_check {
-                            return verify_dataplane(&sock, &mut tunn, &client_id, local_ipv4, start, deadline).await;
+                            let dp_elapsed = verify_dataplane(&sock, &mut tunn, &client_id, local_ipv4, start, deadline).await?;
+                            return Ok((dp_elapsed, EstablishedSession {
+                                tunn: Arc::new(Mutex::new(Box::new(tunn))),
+                                sock: Arc::new(sock),
+                                peer,
+                                client_id,
+                            }));
                         }
-                        return Ok(elapsed);
+                        return Ok((elapsed, EstablishedSession {
+                            tunn: Arc::new(Mutex::new(Box::new(tunn))),
+                            sock: Arc::new(sock),
+                            peer,
+                            client_id,
+                        }));
                     }
                     TunnResult::Err(e) => {
                         log::debug!("[wg] decap error: {:?}", e);
