@@ -1,6 +1,6 @@
 #!/bin/sh
 # aether-ctl — CLI management tool for Aether on OpenWrt
-# Usage: aether-ctl {start|stop|restart|status|show|set|version}
+# Usage: aether-ctl {start|stop|restart|status|show|set|version|test}
 
 UCI="/sbin/uci"
 PROG="/usr/bin/aether"
@@ -82,7 +82,13 @@ do_status() {
 		log_key "State" "running"
 		log_key "PID" "$(pidof aether)"
 	else
-		log_key "State" "stopped"
+		# Check if Aether is scanning
+		local recent_logs=$(logread -e aether -l 20 2>/dev/null)
+		if echo "$recent_logs" | grep -qiE 'scanning|scan |probing|candidate'; then
+			log_key "State" "scanning..."
+		else
+			log_key "State" "stopped"
+		fi
 	fi
 	echo ""
 	echo "=== Configuration ==="
@@ -106,10 +112,14 @@ do_show() {
 	local ip_version=$(uci_get ip_version)
 	local obfuscation_profile=$(uci_get obfuscation_profile)
 	local http2_mode=$(uci_get http2_mode)
+	local h2_peer=$(uci_get h2_peer)
 	local fragment_tls=$(uci_get fragment_tls)
 	local peer=$(uci_get peer)
 	local keepalive=$(uci_get keepalive)
 	local reconnect_secs=$(uci_get reconnect_secs)
+	local validate_secs=$(uci_get validate_secs)
+	local quick_reconnect=$(uci_get quick_reconnect)
+	local no_data_check=$(uci_get no_data_check)
 	local log_level=$(uci_get log_level)
 
 	log_key "Enabled" "$([ "$enabled" = "1" ] && echo "yes" || echo "no")"
@@ -119,11 +129,69 @@ do_show() {
 	log_key "IP Version" "${ip_version:-ipv4}"
 	log_key "Obfuscation" "${obfuscation_profile:-firewall}"
 	log_key "HTTP/2" "$([ "$http2_mode" = "1" ] && echo "on" || echo "off")"
+	[ -n "$h2_peer" ] && log_key "H2 Peer" "$h2_peer"
 	log_key "TLS Fragment" "$([ "$fragment_tls" = "1" ] && echo "on" || echo "off")"
 	log_key "Peer" "${peer:-auto-scan}"
 	log_key "Keepalive" "${keepalive:-5}s"
 	log_key "Reconnect" "${reconnect_secs:-2}s"
+	log_key "Validate" "${validate_secs:-10}s"
+	log_key "Quick Reconnect" "$([ "$quick_reconnect" = "1" ] && echo "on" || echo "off")"
+	log_key "No Data Check" "$([ "$no_data_check" = "1" ] && echo "on" || echo "off")"
 	log_key "Log Level" "${log_level:-info}"
+}
+
+do_test() {
+	local target="$1"
+	if [ -z "$target" ]; then
+		echo "Usage: aether-ctl test <host>"
+		echo ""
+		echo "Examples:"
+		echo "  aether-ctl test google.com"
+		echo "  aether-ctl test youtube.com"
+		echo "  aether-ctl test github.com"
+		return 1
+	fi
+
+	# Always use 127.0.0.1 for local test even if UCI has 0.0.0.0
+	local socks=$(uci_get socks_listen)
+	socks=$(echo "$socks" | sed 's/0\.0\.0\.0/127.0.0.1/')
+	[ -z "$socks" ] && socks="127.0.0.1:1819"
+
+	# Check curl is installed
+	if ! command -v curl >/dev/null 2>&1; then
+		log_err "curl not found. Install with: apk add curl"
+		return 1
+	fi
+
+	log_info "Testing $target via SOCKS5 ($socks)..."
+
+	# Use --socks5-hostname for DNS resolution through proxy
+	local start_time=$(date +%s)
+	local http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+		--socks5-hostname "$socks" \
+		--connect-timeout 10 --max-time 15 \
+		"https://$target" 2>/dev/null)
+	local exit_code=$?
+	local end_time=$(date +%s)
+	local elapsed=$((end_time - start_time))
+
+	if [ $exit_code -eq 0 ] && [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
+		log_info "OK — $target responded (HTTP $http_code, ${elapsed}s)"
+	else
+		# Try http as fallback
+		http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+			--socks5-hostname "$socks" \
+			--connect-timeout 10 --max-time 15 \
+			"http://$target" 2>/dev/null)
+		end_time=$(date +%s)
+		elapsed=$((end_time - start_time))
+		if [ $? -eq 0 ] && [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
+			log_info "OK — $target responded (HTTP $http_code, ${elapsed}s)"
+		else
+			log_err "FAILED — Could not reach $target (${elapsed}s)"
+			log_err "Check: aether-ctl status"
+		fi
+	fi
 }
 
 do_set() {
@@ -137,14 +205,18 @@ do_set() {
 		echo "  enabled             yes/no"
 		echo "  protocol            masque/wg/gool"
 		echo "  socks_listen        ip:port"
-		echo "  scan_mode           turbo/balanced/thorough/stealth"
+		echo "  scan_mode           turbo/balanced/thorough/stealth/ironclad"
 		echo "  ip_version          ipv4/ipv6/both"
 		echo "  obfuscation_profile firewall/gfw/balanced/aggressive/light/off"
 		echo "  http2_mode          0/1"
+		echo "  h2_peer             ip:port (for h2 mode)"
 		echo "  fragment_tls        0/1"
 		echo "  peer                ip:port (empty for auto-scan)"
 		echo "  keepalive           seconds"
 		echo "  reconnect_secs      seconds"
+		echo "  validate_secs       seconds"
+		echo "  quick_reconnect     0/1"
+		echo "  no_data_check       0/1"
 		echo "  log_level           info/debug/warn/error"
 		return 1
 	fi
@@ -163,15 +235,15 @@ do_set() {
 			esac ;;
 		scan_mode)
 			case "$value" in
-				turbo|balanced|thorough|stealth) ;;
-				*) log_err "Invalid scan_mode: $value"; return 1 ;;
+				turbo|balanced|thorough|stealth|ironclad) ;;
+				*) log_err "Invalid scan_mode: $value (use turbo/balanced/thorough/stealth/ironclad)"; return 1 ;;
 			esac ;;
 		ip_version)
 			case "$value" in
 				ipv4|ipv6|both) ;;
-				*) log_err "Invalid ip_version: $value"; return 1 ;;
+				*) log_err "Invalid ip_version: $value (use ipv4/ipv6/both)"; return 1 ;;
 			esac ;;
-		http2_mode|fragment_tls)
+		http2_mode|fragment_tls|quick_reconnect|no_data_check)
 			case "$value" in
 				0|1|on|off|yes|no)
 					case "$value" in
@@ -206,6 +278,18 @@ do_version() {
 	fi
 }
 
+do_log() {
+	local lines="${1:-50}"
+	echo "=== Aether Logs (last $lines lines) ==="
+	echo ""
+	logread -e aether -l "$lines" 2>/dev/null
+	if [ $? -ne 0 ] || [ -z "$(logread -e aether -l 1 2>/dev/null)" ]; then
+		log_warn "No Aether logs found. Service may not have run yet."
+	fi
+	echo ""
+	echo "Tip: use 'logread -f -e aether' for real-time logs"
+}
+
 case "${1:-}" in
 	start)    do_start ;;
 	stop)     do_stop ;;
@@ -213,6 +297,8 @@ case "${1:-}" in
 	status)   do_status ;;
 	show)     do_show ;;
 	set)      do_set "$2" "$3" ;;
+	test)     do_test "$2" ;;
+	log)      do_log "$2" ;;
 	version)  do_version ;;
 	*)
 		echo "Aether OpenWrt Controller"
@@ -226,12 +312,16 @@ case "${1:-}" in
 		echo "  status          Show running status and config"
 		echo "  show            Show current configuration"
 		echo "  set <opt> <val> Change a configuration option"
+		echo "  test <host>     Test connection through the tunnel"
+		echo "  log [lines]     Show Aether logs (default 50 lines)"
 		echo "  version         Show Aether binary version"
 		echo ""
 		echo "Examples:"
 		echo "  aether-ctl start"
 		echo "  aether-ctl set protocol wg"
+		echo "  aether-ctl set scan_mode ironclad"
 		echo "  aether-ctl set obfuscation_profile aggressive"
+		echo "  aether-ctl test google.com"
 		echo "  aether-ctl set enabled no"
 		;;
 esac

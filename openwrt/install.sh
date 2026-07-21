@@ -27,12 +27,14 @@ set -e
 
 START_NOW=0
 FORCE_CONFIG=0
+SKIP_CURL=0
 for arg in "$@"; do
 	case "$arg" in
 		--start) START_NOW=1 ;;
 		--force-config) FORCE_CONFIG=1 ;;
+		--no-curl) SKIP_CURL=1 ;;
 		-h|--help)
-			echo "Usage: $0 [--start] [--force-config]"
+			echo "Usage: $0 [--start] [--force-config] [--no-curl]"
 			exit 0
 			;;
 	esac
@@ -148,8 +150,19 @@ copy_file "$FILES_DIR/usr/share/rpcd/acl.d/luci-app-aether.json" /usr/share/rpcd
 copy_file "$FILES_DIR/usr/share/luci/menu.d/luci-app-aether.json" /usr/share/luci/menu.d/luci-app-aether.json 644
 copy_file "$FILES_DIR/www/luci-static/resources/view/aether.js" /www/luci-static/resources/view/aether.js 644
 
+# Install curl if not present (needed for connection tests)
+if [ "$SKIP_CURL" -eq 0 ] && ! command -v curl >/dev/null 2>&1; then
+	info "Installing curl (needed for connection tests)..."
+	if command -v apk >/dev/null 2>&1; then
+		apk add --no-cache curl 2>/dev/null || warn "Could not install curl (optional)"
+	elif command -v opkg >/dev/null 2>&1; then
+		opkg update >/dev/null 2>&1
+		opkg install curl 2>/dev/null || warn "Could not install curl (optional)"
+	fi
+fi
+
 # Identity storage
-mkdir -p /etc/aether
+mkdir -p /etc/aether 2>/dev/null
 chmod 700 /etc/aether 2>/dev/null || true
 
 # Register init script (does not start unless UCI enabled / --start)

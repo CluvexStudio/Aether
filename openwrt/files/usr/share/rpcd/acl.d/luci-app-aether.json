@@ -14,7 +14,9 @@
 				"/etc/init.d/aether": [ "exec" ],
 				"/usr/bin/logread": [ "exec" ],
 				"/sbin/logread": [ "exec" ],
-				"/bin/logread": [ "exec" ]
+				"/bin/logread": [ "exec" ],
+				"/usr/bin/curl": [ "exec" ],
+				"/usr/bin/aether-ctl": [ "exec" ]
 			}
 		},
 		"write": {

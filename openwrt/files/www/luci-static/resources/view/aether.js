@@ -57,19 +57,15 @@ function getServiceStatus() {
 		}).catch(function() {
 			return { running: false };
 		}),
-
 		callUCIGet('aether', 'main', 'enabled').then(function(r) {
 			return (r && r.value != null) ? String(r.value).replace(/'/g, '') : '0';
 		}).catch(function() { return '0'; }),
-
 		callUCIGet('aether', 'main', 'protocol').then(function(r) {
 			return (r && r.value) ? String(r.value).replace(/'/g, '') : 'masque';
 		}).catch(function() { return 'masque'; }),
-
-		callFileExec('logread', [ '-e', 'aether' ]).then(function(r) {
+		callFileExec('logread', [ '-e', 'aether', '-l', '30' ]).then(function(r) {
 			return (r && r.stdout) ? r.stdout : '';
 		}).catch(function() { return ''; }),
-
 		callFileExec('/usr/bin/aether', [ '--version' ]).then(function(r) {
 			return (r && r.stdout) ? String(r.stdout).trim() : '';
 		}).catch(function() { return ''; })
@@ -86,7 +82,9 @@ function getServiceStatus() {
 			transport: extractFromLogs(logs, /MASQUE transport: ([^\s]+)/),
 			socks_addr: extractFromLogs(logs, /socks5 (?:server )?listening on ([^\s]+)/),
 			obfuscation: extractFromLogs(logs, /obfuscation profile: (\w+)/),
-			identity: extractFromLogs(logs, /device=([^\s]+)/)
+			scan_mode: extractFromLogs(logs, /scan mode: (\w+)/),
+			identity: extractFromLogs(logs, /device=([^\s]+)/),
+			logs: logs
 		};
 	});
 }
@@ -103,6 +101,56 @@ function doServiceAction(action) {
 			btn.value = action.charAt(0).toUpperCase() + action.slice(1);
 		});
 	};
+}
+
+function doTestConnection(host) {
+	return function() {
+		var btn = this;
+		var resultEl = document.getElementById('test-result-' + host);
+		btn.disabled = true;
+		btn.value = 'Testing...';
+		if (resultEl) {
+			resultEl.textContent = 'Connecting...';
+			resultEl.style.color = '#888';
+		}
+
+		var startTime = Date.now();
+		callFileExec('/usr/bin/aether-ctl', [ 'test', host ]
+		).then(function(r) {
+			var elapsed = Date.now() - startTime;
+			var output = (r && r.stdout) ? r.stdout : '';
+			if (output.indexOf('OK') !== -1) {
+				var match = output.match(/HTTP (\d+),\s*([\d.]+)s/);
+				var info = match ? 'HTTP ' + match[1] + ' — ' + Math.round(parseFloat(match[2]) * 1000) + 'ms' : 'OK — ' + elapsed + 'ms';
+				if (resultEl) {
+					resultEl.textContent = info;
+					resultEl.style.color = '#2ecc71';
+				}
+			} else {
+				if (resultEl) {
+					resultEl.textContent = 'Failed — ' + elapsed + 'ms';
+					resultEl.style.color = '#e74c3c';
+				}
+			}
+		}).catch(function() {
+			var elapsed = Date.now() - startTime;
+			if (resultEl) {
+				resultEl.textContent = 'Timeout — ' + elapsed + 'ms';
+				resultEl.style.color = '#e74c3c';
+			}
+		}).finally(function() {
+			btn.disabled = false;
+			btn.value = host;
+		});
+	};
+}
+
+function fetchLogs() {
+	return callFileExec('logread', [ '-e', 'aether', '-l', '40' ]).then(function(r) {
+		return (r && r.stdout) ? r.stdout : '(no logs)';
+	}).catch(function() {
+		return '(failed to read logs)';
+	});
 }
 
 return view.extend({
@@ -135,6 +183,7 @@ return view.extend({
 				if (st.endpoint) row('Endpoint', E('code', {}, st.endpoint));
 				if (st.transport) row('Transport', 'MASQUE / ' + st.transport);
 				if (st.obfuscation) row('Obfuscation', st.obfuscation);
+				if (st.scan_mode) row('Scan Mode', st.scan_mode);
 				if (st.socks_addr) row('SOCKS5 Proxy', E('code', {}, st.socks_addr));
 				if (st.identity) {
 					row('Device ID', E('code', {
@@ -181,6 +230,79 @@ return view.extend({
 				btns
 			]));
 
+			// --- Connection Test Section ---
+			var testSection = E('div', { 'class': 'cbi-section' }, [
+				E('h3', { 'style': 'margin-top:0' }, 'Connection Test'),
+				E('p', { 'style': 'margin:4px 0 10px 0;color:#666;font-size:13px' },
+					'Test if the tunnel can reach external services through the SOCKS5 proxy.')
+			]);
+
+			var testHosts = ['google.com', 'youtube.com', 'github.com', 'telegram.org'];
+			var testRow = E('div', {
+				'style': 'display:flex;gap:10px;align-items:center;flex-wrap:wrap'
+			});
+
+			testHosts.forEach(function(host) {
+				var wrapper = E('div', {
+					'style': 'display:flex;align-items:center;gap:6px'
+				});
+
+				var btn = E('input', {
+					'type': 'button',
+					'class': 'cbi-button cbi-button-apply',
+					'value': host,
+					'click': doTestConnection(host)
+				});
+
+				var result = E('span', {
+					'id': 'test-result-' + host,
+					'style': 'font-size:13px;color:#888;min-width:100px'
+				}, '');
+
+				wrapper.appendChild(btn);
+				wrapper.appendChild(result);
+				testRow.appendChild(wrapper);
+			});
+
+			testSection.appendChild(testRow);
+			el.appendChild(testSection);
+
+			// --- Live Logs Section ---
+			var logSection = E('div', { 'class': 'cbi-section' }, [
+				E('h3', { 'style': 'margin-top:0' }, 'Live Logs'),
+				E('p', { 'style': 'margin:4px 0 10px 0;color:#666;font-size:13px' },
+					'Recent Aether log output. Click Refresh to update.')
+			]);
+
+			var logContent = E('pre', {
+				'style': 'background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:6px;max-height:400px;overflow-y:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;margin:0'
+			}, st.logs || '(no logs)');
+
+			var refreshBtn = E('input', {
+				'type': 'button',
+				'class': 'cbi-button cbi-button-apply',
+				'value': 'Refresh',
+				'click': function() {
+					refreshBtn.disabled = true;
+					refreshBtn.value = 'Loading...';
+					fetchLogs().then(function(logs) {
+						logContent.textContent = logs;
+						logContent.scrollTop = logContent.scrollHeight;
+					}).finally(function() {
+						refreshBtn.disabled = false;
+						refreshBtn.value = 'Refresh';
+					});
+				}
+			});
+
+			var logHeader = E('div', {
+				'style': 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'
+			}, [ refreshBtn ]);
+
+			logSection.appendChild(logHeader);
+			logSection.appendChild(logContent);
+			el.appendChild(logSection);
+
 			el.appendChild(E('hr', {
 				'style': 'margin:12px 0;border:none;border-top:1px solid #ddd'
 			}));
@@ -200,7 +322,7 @@ return view.extend({
 			o = s.option(form.ListValue, 'protocol', 'Protocol');
 			o.value('masque', 'MASQUE (recommended)');
 			o.value('wg', 'WireGuard');
-			o.value('gool', 'WireGuard-in-WireGuard');
+			o.value('gool', 'WARP-in-WARP');
 			o.default = 'masque';
 
 			o = s.option(form.Value, 'socks_listen', 'SOCKS5 Listen Address');
@@ -210,11 +332,13 @@ return view.extend({
 
 			s = m.section(form.NamedSection, 'main', 'aether', 'Network');
 
-			o = s.option(form.ListValue, 'scan_mode', 'Scan Mode');
+			o = s.option(form.ListValue, 'scan_mode', 'Scan Mode',
+				'turbo=fastest, balanced=default, thorough=best quality, stealth=quietest, ironclad=real tunnel test');
 			o.value('turbo', 'Turbo');
-			o.value('balanced', 'Balanced');
+			o.value('balanced', 'Balanced (default)');
 			o.value('thorough', 'Thorough');
 			o.value('stealth', 'Stealth');
+			o.value('ironclad', 'Ironclad (real tunnel test)');
 			o.default = 'balanced';
 
 			o = s.option(form.ListValue, 'ip_version', 'IP Version');
@@ -242,6 +366,11 @@ return view.extend({
 				'Enable if UDP/QUIC is blocked');
 			o.default = '0';
 			o.depends('protocol', 'masque');
+
+			o = s.option(form.Value, 'h2_peer', 'H2 Peer',
+				'Manual destination for h2 mode (ip:port), leave empty for auto');
+			o.rmempty = true;
+			o.depends('http2_mode', '1');
 
 			o = s.option(form.Flag, 'fragment_tls', 'TLS Fragmentation',
 				'Fragment ClientHello (HTTP/2 only)');
@@ -271,22 +400,26 @@ return view.extend({
 			o.depends('protocol', 'wg');
 			o.depends('protocol', 'gool');
 
-			o = s.option(form.Value, 'reconnect_secs', 'Reconnect Delay (s)');
+			o = s.option(form.Value, 'reconnect_secs', 'Reconnect Delay (s)',
+				'Delay before auto-reconnect after tunnel drops');
 			o.default = '2';
 			o.datatype = 'min(1)';
 
-			o = s.option(form.Value, 'validate_secs', 'Validation Timeout (s)');
+			o = s.option(form.Value, 'validate_secs', 'Validation Timeout (s)',
+				'Seconds to wait for data-plane probe before giving up on a gateway');
 			o.default = '10';
 			o.datatype = 'min(1)';
 
-			o = s.option(form.Flag, 'quick_reconnect', 'Quick Reconnect');
+			o = s.option(form.Flag, 'quick_reconnect', 'Quick Reconnect',
+				'Always reuse last known-good gateway without asking');
 			o.default = '0';
 
-			o = s.option(form.Flag, 'no_data_check', 'Skip Data Validation');
+			o = s.option(form.Flag, 'no_data_check', 'Skip Data Validation',
+				'Trust gateway after handshake only (faster but less reliable)');
 			o.default = '0';
 
 			o = s.option(form.Value, 'config_path', 'Config Path');
-			o.default = '/etc/aether';
+			o.default = '/etc/aether/aether.toml';
 			o.readonly = true;
 
 			return m.render().then(function(formNode) {

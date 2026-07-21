@@ -13,7 +13,7 @@ start_service() {
 	config_load aether
 
 	local protocol socks_listen scan_mode ip_version obfuscation_profile
-	local http2_mode fragment_tls fragment_size fragment_delay peer
+	local http2_mode h2_peer fragment_tls fragment_size fragment_delay peer
 	local keepalive reconnect_secs validate_secs quick_reconnect
 	local no_data_check config_path log_level
 
@@ -23,6 +23,7 @@ start_service() {
 	config_get ip_version main ip_version 'ipv4'
 	config_get obfuscation_profile main obfuscation_profile 'firewall'
 	config_get http2_mode main http2_mode '0'
+	config_get h2_peer main h2_peer ''
 	config_get fragment_tls main fragment_tls '0'
 	config_get fragment_size main fragment_size '16-32'
 	config_get fragment_delay main fragment_delay '2-10'
@@ -46,7 +47,7 @@ start_service() {
 	esac
 
 	case "$scan_mode" in
-		turbo|balanced|thorough|stealth)
+		turbo|balanced|thorough|stealth|ironclad)
 			cmd_args="$cmd_args --scan $scan_mode" ;;
 	esac
 
@@ -58,6 +59,7 @@ start_service() {
 
 	[ -n "$obfuscation_profile" ] && cmd_args="$cmd_args --noize $obfuscation_profile"
 	[ "$http2_mode" = "1" ] && cmd_args="$cmd_args --h2"
+	[ -n "$h2_peer" ] && [ "$http2_mode" = "1" ] && cmd_args="$cmd_args --h2-peer $h2_peer"
 	if [ "$fragment_tls" = "1" ]; then
 		cmd_args="$cmd_args --fragment"
 		[ -n "$fragment_size" ] && cmd_args="$cmd_args --fragment-size $fragment_size"
@@ -70,7 +72,7 @@ start_service() {
 	[ "$quick_reconnect" = "1" ] && cmd_args="$cmd_args --quick-reconnect"
 	[ "$no_data_check" = "1" ] && cmd_args="$cmd_args --no-data-check"
 
-	mkdir -p "$config_path" 2>/dev/null
+	mkdir -p "$(dirname "$config_path")" 2>/dev/null
 
 	logger -t aether "Starting Aether (protocol=$protocol, obfuscation=$obfuscation_profile)"
 
