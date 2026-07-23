@@ -362,6 +362,8 @@ async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr
             key_pem: identity.key_pem.clone(),
             local_ipv4: parse_local_v4(&identity.ipv4),
             quiet: true,
+            pin_endpoint: true,
+            expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
         };
         return masque_h2::verify_h2(&cfg, std::time::Duration::from_secs(5))
             .await
@@ -536,6 +538,8 @@ async fn run_masque_tunnel(
             key_pem: identity.key_pem.clone(),
             local_ipv4: parse_local_v4(&identity.ipv4),
             quiet: false,
+            pin_endpoint: true,
+            expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
         };
         log::info!("[+] MASQUE transport: HTTP/2 (TCP) to {}", h2cfg.peer);
         tokio::spawn(masque_h2::run(h2cfg, internals, Some(addr_tx), Some(ready_tx)))

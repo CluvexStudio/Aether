@@ -48,3 +48,18 @@ pub const CDN_ANYCAST_POOL: &[&str] = &[
 ];
 
 pub const QUIC_PORT: u16 = 443;
+
+/// SHA-256 SPKI hashes of Cloudflare MASQUE edge certificates.
+/// Used for certificate pinning to prevent MITM attacks while allowing
+/// SslVerifyMode::NONE at the library level (required because Cloudflare
+/// edges serve different certs per SNI and some are self-signed).
+///
+/// Format: raw 32-byte hex (no base64, no colons).
+pub const MASQUE_PINS: &[&[u8]] = &[
+    // masque.cloudflareclient.com — self-signed by Cloudflare (2024-02-27 Self-Signed Root)
+    // Returned when SNI is empty or unrecognized
+    b"\xeb\x59\x1b\x36\xab\x26\xba\x61\x7e\x98\x37\x19\x18\xc1\x0b\xcd\xea\xe3\x74\x2d\xb6\xe7\x65\x43\xf9\x4b\xe5\x24\xdc\xe1\xd5\x55",
+    // cloudflareaccess.com — signed by Google Trust Services WE1
+    // Returned when SNI=cloudflareaccess.com
+    b"\x3f\xbb\x1d\x74\x52\xd3\x2b\x38\x81\xeb\x4b\x5d\x48\x42\x14\x45\xb6\xb9\xd8\xf5\x22\x59\x59\xf0\x33\x53\x2d\x50\x26\x37\xb0\x40",
+];
