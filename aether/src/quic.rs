@@ -179,7 +179,8 @@ pub async fn run(
     let mut config = tls::build_config(&TlsParams {
         cert_pem: &cfg.cert_pem,
         key_pem: &cfg.key_pem,
-        pin_endpoint: false,
+        pin_endpoint: true,
+        expected_pins: consts::MASQUE_PINS,
     })?;
 
     let mut current_ech = cfg.ech_config_list.clone();
@@ -619,7 +620,8 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
     let mut config = tls::build_config(&TlsParams {
         cert_pem: &p.cert_pem,
         key_pem: &p.key_pem,
-        pin_endpoint: false,
+        pin_endpoint: true,
+        expected_pins: consts::MASQUE_PINS,
     })?;
 
     let scid_bytes = random_scid();

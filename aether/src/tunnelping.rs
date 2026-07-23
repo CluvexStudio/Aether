@@ -112,6 +112,8 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
                 key_pem: p.key_pem.clone(),
                 local_ipv4: p.local_ipv4,
                 quiet: true,
+                pin_endpoint: true,
+                expected_pins: crate::consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
             };
             AbortGuard(tokio::spawn(masque_h2::run(h2cfg, internals, None, Some(ready_tx))))
         } else {

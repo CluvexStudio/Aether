@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use boring::pkey::PKey;
-use boring::ssl::{SslConnector, SslMethod, SslVerifyMode, SslVersion};
+use boring::ssl::{SslConnector, SslMethod, SslVersion};
 use boring::x509::X509;
 use bytes::Bytes;
 use http::Method;
@@ -16,6 +16,7 @@ use crate::error::{AetherError, Result};
 use crate::fragment::{FragmentConfig, FragmentingStream};
 use crate::masque::{self, Capsule, CapsuleParser};
 use crate::quic::{AssignedAddr, Control, Internals};
+use crate::tls;
 
 const H2_ALPN: &[u8] = b"\x02h2";
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
@@ -29,6 +30,8 @@ pub struct H2TunnelConfig {
     pub key_pem: Vec<u8>,
     pub local_ipv4: Ipv4Addr,
     pub quiet: bool,
+    pub pin_endpoint: bool,
+    pub expected_pins: Vec<Vec<u8>>,
 }
 
 fn log_or_debug(quiet: bool, msg: String) {
@@ -128,13 +131,22 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
         .set_private_key(&key)
         .map_err(|e| AetherError::Tls(e.to_string()))?;
 
-    builder.set_verify(SslVerifyMode::NONE);
+    // Install TLS verification:
+    // pin_endpoint=true with pins: pin-based verification (SNI can be spoofed)
+    // pin_endpoint=false: SslVerifyMode::NONE (default, required for Cloudflare MASQUE edges)
+    let pin_refs: Vec<&[u8]> = cfg.expected_pins.iter().map(|p| p.as_slice()).collect();
+    tls::install_verification(&mut *builder, cfg.pin_endpoint, &pin_refs)?;
 
     let connector = builder.build();
     let mut config = connector
         .configure()
         .map_err(|e| AetherError::Tls(e.to_string()))?;
-    config.set_verify_hostname(false);
+
+    // When using pin-based verification, SNI may be spoofed for DPI bypass,
+    // so hostname verification against the cert's CN/SAN is not applicable.
+    // Standard CA verification requires hostname matching.
+    let use_pin_verification = cfg.pin_endpoint && !cfg.expected_pins.is_empty();
+    config.set_verify_hostname(!use_pin_verification);
     config.set_use_server_name_indication(true);
 
     Ok(config)

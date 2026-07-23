@@ -359,6 +359,8 @@ async fn verify_one(
             key_pem: probe.key_pem.to_vec(),
             local_ipv4: probe.local_ipv4,
             quiet: true,
+            pin_endpoint: true,
+            expected_pins: crate::consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
         };
         return match crate::masque_h2::verify_h2(&cfg, timeout).await {
             Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
