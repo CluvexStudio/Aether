@@ -22,11 +22,33 @@ async fn bind_udp_fast(bind_addr: SocketAddr) -> Result<UdpSocket> {
     let domain = if bind_addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
     let sock = Socket::new(domain, Type::DGRAM, None).map_err(AetherError::Io)?;
     sock.set_nonblocking(true).map_err(AetherError::Io)?;
-    
-    let buf_size = 7 * 1024 * 1024; // 7MB
+
+    // Scale socket buffers to system memory. Requesting more than the kernel's
+    // rmem_max/wmem_max silently clamps, so aim high on capable machines.
+    let buf_size = {
+        #[cfg(unix)]
+        {
+            let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+            if pages > 0 && page_size > 0 {
+                let total_mb = (pages as u64 * page_size as u64) / (1024 * 1024);
+                match total_mb {
+                    0..=256 => 512 * 1024,        // ≤256MB: 512KB
+                    257..=1024 => 2 * 1024 * 1024, // ≤1GB: 2MB
+                    1025..=4096 => 4 * 1024 * 1024, // ≤4GB: 4MB
+                    4097..=16384 => 7 * 1024 * 1024, // ≤16GB: 7MB (original)
+                    _ => 16 * 1024 * 1024,          // 16GB+: 16MB
+                }
+            } else {
+                7 * 1024 * 1024
+            }
+        }
+        #[cfg(not(unix))]
+        { 7 * 1024 * 1024 }
+    };
     let _ = sock.set_recv_buffer_size(buf_size);
     let _ = sock.set_send_buffer_size(buf_size);
-    
+
     sock.bind(&bind_addr.into()).map_err(AetherError::Io)?;
     UdpSocket::from_std(sock.into()).map_err(AetherError::Io)
 }

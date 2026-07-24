@@ -11,8 +11,31 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{AetherError, Result};
 
-const TCP_BUF: usize = 512 * 1024;
-const UDP_BUF: usize = 128 * 1024;
+/// Scale TCP/UDP buffers to available system memory.
+/// High-RAM machines get larger buffers for better throughput on fat pipes.
+fn scaled_tcp_buf() -> usize {
+    #[cfg(unix)]
+    {
+        let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if pages > 0 && page_size > 0 {
+            let total_mb = (pages as u64 * page_size as u64) / (1024 * 1024);
+            return match total_mb {
+                0..=256 => 64 * 1024,       // ≤256MB: 64KB
+                257..=1024 => 128 * 1024,    // ≤1GB: 128KB
+                1025..=4096 => 256 * 1024,   // ≤4GB: 256KB
+                4097..=16384 => 512 * 1024,  // ≤16GB: 512KB (original)
+                _ => 1024 * 1024,            // 16GB+: 1MB
+            };
+        }
+    }
+    512 * 1024 // fallback for non-unix or sysconf failure
+}
+
+fn scaled_udp_buf() -> usize {
+    scaled_tcp_buf() / 4
+}
+
 const UDP_META: usize = 128;
 const APP_QUEUE: usize = 4096;
 const MAX_INGEST_PER_TICK: usize = 512;
@@ -475,8 +498,8 @@ async fn sleep_opt(delay: Option<std::time::Duration>) {
 fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
     match cmd {
         Cmd::OpenTcp { dst, resp } => {
-            let rx_buf = tcp::SocketBuffer::new(vec![0u8; TCP_BUF]);
-            let tx_buf = tcp::SocketBuffer::new(vec![0u8; TCP_BUF]);
+            let rx_buf = tcp::SocketBuffer::new(vec![0u8; scaled_tcp_buf()]);
+            let tx_buf = tcp::SocketBuffer::new(vec![0u8; scaled_tcp_buf()]);
             let mut socket = tcp::Socket::new(rx_buf, tx_buf);
             socket.set_nagle_enabled(false);
 
@@ -510,8 +533,8 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
         Cmd::OpenUdp { resp } => {
             let rx_meta = vec![udp::PacketMetadata::EMPTY; UDP_META];
             let tx_meta = vec![udp::PacketMetadata::EMPTY; UDP_META];
-            let rx_buf = udp::PacketBuffer::new(rx_meta, vec![0u8; UDP_BUF]);
-            let tx_buf = udp::PacketBuffer::new(tx_meta, vec![0u8; UDP_BUF]);
+            let rx_buf = udp::PacketBuffer::new(rx_meta, vec![0u8; scaled_udp_buf()]);
+            let tx_buf = udp::PacketBuffer::new(tx_meta, vec![0u8; scaled_udp_buf()]);
             let mut socket = udp::Socket::new(rx_buf, tx_buf);
 
             let local_port = alloc_port(&mut s.next_port);
