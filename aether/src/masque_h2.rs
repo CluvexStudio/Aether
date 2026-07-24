@@ -21,6 +21,14 @@ use crate::tls;
 const H2_ALPN: &[u8] = b"\x02h2";
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
 
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub struct H2TunnelConfig {
     pub peer: SocketAddr,
     pub sni: String,
@@ -310,11 +318,12 @@ pub async fn run(
         AetherError::Masque("h2 connection does not support ping".into())
     })?;
 
-    tokio::spawn(async move {
+    let driver_handle = tokio::spawn(async move {
         if let Err(e) = connection.await {
             log::debug!("[h2] connection driver ended: {e}");
         }
     });
+    let _driver_guard = AbortOnDrop(driver_handle);
 
     let mut h2 = h2
         .ready()
@@ -426,7 +435,7 @@ pub async fn run(
             _ = probe_interval.tick(), if data_check && !ready_fired => {
                 let framed = masque::encode_datagram_capsule(&probe_packet);
                 if let Err(e) = send_capsule(&mut send_stream, Bytes::from(framed)).await {
-                    log::debug!("[h2] data-plane probe resend: {e}");
+                    log::trace!("[h2] data-plane probe resend: {e}");
                 }
             }
 
@@ -481,7 +490,7 @@ pub async fn run(
                                 if let Err(e) =
                                     send_capsule(&mut send_stream, Bytes::from(framed)).await
                                 {
-                                    log::debug!("[h2] follow-up data-plane probe: {e}");
+                                    log::trace!("[h2] follow-up data-plane probe: {e}");
                                 }
                             }
                         }
@@ -557,7 +566,7 @@ async fn drain_capsules(
             Ok(Some(_)) => {}
             Ok(None) => break,
             Err(e) => {
-                log::debug!("[h2] capsule parse: {e}");
+                log::trace!("[h2] capsule parse: {e}");
                 break;
             }
         }

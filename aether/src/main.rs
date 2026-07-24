@@ -14,6 +14,7 @@ mod noize;
 mod prober;
 mod quic;
 mod socks;
+mod sysprofile;
 mod tls;
 mod aethernoize;
 mod tunnelping;
@@ -41,16 +42,18 @@ const DEFAULT_CONFIG: &str = "aether.toml";
 async fn main() -> Result<()> {
     cli::parse_and_apply()?;
 
-    let default_filter = if std::env::var("AETHER_VERBOSE").is_ok() {
-        "info,aether=debug"
-    } else {
-        "info"
-    };
+    let level = std::env::var("AETHER_LOG_LEVEL")
+        .ok()
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| matches!(v.as_str(), "error" | "warn" | "info" | "debug" | "trace"))
+        .unwrap_or_else(|| "info".to_string());
+    let default_filter = format!("info,aether={level}");
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .format_timestamp_millis()
         .init();
 
     log::info!("Aether v{}", env!("CARGO_PKG_VERSION"));
+    sysprofile::log_summary();
 
     install_netstack_panic_guard();
 
@@ -106,10 +109,62 @@ async fn main() -> Result<()> {
                 "[+] outer device={} ipv4={} | inner device={} ipv4={}",
                 primary.device_id, primary.ipv4, secondary.device_id, secondary.ipv4
             );
-            let peer = select_peer(&primary, Protocol::WireGuard).await?;
-            log::info!("[+] using cloudflare edge {peer} (outer)");
-            run_warp_in_warp(primary, secondary, peer, listen).await
+            run_gool(primary, secondary, listen).await
         }
+    }
+}
+
+async fn run_gool(
+    primary: account::Identity,
+    secondary: account::Identity,
+    listen: SocketAddr,
+) -> Result<()> {
+    let mut last_peer: Option<SocketAddr> = None;
+    let mut consecutive_fails: u32 = 0;
+    const MAX_CONSECUTIVE_FAILS: u32 = 2;
+
+    loop {
+        let peer = if consecutive_fails < MAX_CONSECUTIVE_FAILS {
+            if let Some(p) = last_peer {
+                Some(p)
+            } else {
+                None
+            }
+        } else {
+            if let Some(p) = last_peer {
+                log::warn!(
+                    "[-] outer endpoint {p} failed {consecutive_fails} times in a row; blacklisting and rescanning"
+                );
+            }
+            None
+        };
+
+        let peer = match peer {
+            Some(p) => p,
+            None => {
+                let p = match select_peer(&primary, Protocol::WireGuard).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("[-] no usable outer WARP endpoint found: {e}; rescanning shortly");
+                        tokio::time::sleep(wg_reconnect_delay()).await;
+                        continue;
+                    }
+                };
+                consecutive_fails = 0;
+                p
+            }
+        };
+
+        log::info!("[+] using cloudflare edge {peer} (outer)");
+        last_peer = Some(peer);
+
+        match run_warp_in_warp(primary.clone(), secondary.clone(), peer, listen).await {
+            Ok(()) => log::warn!("[-] gool tunnel closed; reconnecting"),
+            Err(e) => log::warn!("[-] gool tunnel ended: {e}; reconnecting"),
+        }
+        consecutive_fails += 1;
+
+        tokio::time::sleep(wg_reconnect_delay()).await;
     }
 }
 
@@ -699,6 +754,7 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
                         ipv4,
                         &profile,
                         std::time::Duration::from_secs(6),
+                        None,
                     )
                     .await
                     {
@@ -724,33 +780,45 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
     };
 
     let mut last_good: Option<(SocketAddr, aethernoize::AetherNoizeConfig, String)> = None;
+    let mut consecutive_fails_on_peer: u32 = 0;
+    const MAX_CONSECUTIVE_FAILS: u32 = 2;
 
     loop {
         let (peer, profile, profile_name) = if let Some(q) = quick.take() {
             q
         } else {
-            let retried = match &last_good {
-                Some((p, profile, _)) => {
-                    log::info!("[*] retrying last known-good WireGuard endpoint {p} before rescanning");
-                    match wireguard::verify_endpoint(
-                        *p,
-                        private_key,
-                        peer_public,
-                        identity.client_id,
-                        ipv4,
-                        profile,
-                        std::time::Duration::from_secs(6),
-                    )
-                    .await
-                    {
-                        Ok(_) => Some(last_good.clone().unwrap()),
-                        Err(e) => {
-                            log::warn!("[-] last known-good endpoint {p} no longer responds ({e}); rescanning");
-                            None
+            let retried = if consecutive_fails_on_peer >= MAX_CONSECUTIVE_FAILS {
+                if let Some((p, _, _)) = &last_good {
+                    log::warn!(
+                        "[-] endpoint {p} failed {consecutive_fails_on_peer} times in a row (likely DPI-throttled); blacklisting and rescanning"
+                    );
+                }
+                None
+            } else {
+                match &last_good {
+                    Some((p, profile, _)) => {
+                        log::info!("[*] retrying last known-good WireGuard endpoint {p} before rescanning");
+                        match wireguard::verify_endpoint(
+                            *p,
+                            private_key,
+                            peer_public,
+                            identity.client_id,
+                            ipv4,
+                            profile,
+                            std::time::Duration::from_secs(6),
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(_) => Some(last_good.clone().unwrap()),
+                            Err(e) => {
+                                log::warn!("[-] last known-good endpoint {p} no longer responds ({e}); rescanning");
+                                None
+                            }
                         }
                     }
+                    None => None,
                 }
-                None => None,
             };
 
             match retried {
@@ -773,6 +841,7 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
                                 ipv4,
                                 profile,
                                 std::time::Duration::from_secs(10),
+                                None,
                             )
                             .await
                             {
@@ -810,15 +879,34 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
             lastconn::save(&lastconn_path, &peer.to_string(), &profile_name);
         }
 
+        let is_same_peer_as_before = last_good.as_ref().map(|(p, _, _)| *p) == Some(peer);
+        if !is_same_peer_as_before {
+            consecutive_fails_on_peer = 0;
+        }
         last_good = Some((peer, profile.clone(), profile_name));
 
         match run_wireguard_tunnel(identity.clone(), peer, profile, listen).await {
-            Ok(()) => log::warn!("[-] WireGuard tunnel closed; reconnecting"),
-            Err(e) => log::warn!("[-] WireGuard tunnel ended: {e}; reconnecting"),
+            Ok(()) => {
+                log::warn!("[-] WireGuard tunnel closed; reconnecting");
+                consecutive_fails_on_peer += 1;
+            }
+            Err(e) => {
+                log::warn!("[-] WireGuard tunnel ended: {e}; reconnecting");
+                consecutive_fails_on_peer += 1;
+            }
         }
 
         tokio::time::sleep(wg_reconnect_delay()).await;
     }
+}
+
+fn wg_tunnel_validate_timeout() -> std::time::Duration {
+    let secs = std::env::var("AETHER_WG_VALIDATE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(10);
+    std::time::Duration::from_secs(secs)
 }
 
 async fn run_wireguard_tunnel(
@@ -827,31 +915,30 @@ async fn run_wireguard_tunnel(
     aethernoize: aethernoize::AetherNoizeConfig,
     listen: SocketAddr,
 ) -> Result<()> {
-    log::info!("[*] establishing WireGuard tunnel with {peer} (already verified during scan)...");
-
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
     let ipv4: std::net::Ipv4Addr = identity.ipv4.parse()
         .map_err(|_| AetherError::Other("invalid ipv4".into()))?;
-    let ipv6: std::net::Ipv6Addr = identity.ipv6.parse()
-        .map_err(|_| AetherError::Other("invalid ipv6".into()))?;
 
-    let cfg = wireguard::WgConfig {
-        local_private_key: private_key,
-        peer_public_key: peer_public,
-        peer_endpoint: peer,
-        local_ipv4: ipv4,
-        local_ipv6: ipv6,
-        client_id: identity.client_id,
-        preshared_key: None,
-        persistent_keepalive: Some(wg_keepalive_secs()),
-        aethernoize: std::sync::Arc::new(aethernoize),
-    };
+    log::info!("[*] validating WireGuard tunnel with {peer} (handshake + data-plane) before exposing socks5...");
+    let (_, session) = wireguard::verify_endpoint_keep_session(
+        peer,
+        private_key,
+        peer_public,
+        identity.client_id,
+        ipv4,
+        &aethernoize,
+        wg_tunnel_validate_timeout(),
+        Some(wg_keepalive_secs()),
+    )
+    .await
+    .map_err(|e| AetherError::Other(format!("tunnel failed validation: {e}")))?;
+    log::info!("[+] wireguard tunnel validated (end-to-end data confirmed); exposing socks5");
 
-    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(1024);
-    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1024);
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(sysprofile::channel_capacity());
+    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(sysprofile::channel_capacity());
 
-    let tunnel = wireguard::WgTunnel::new(cfg, inbound_tx).await?;
+    let tunnel = wireguard::WgTunnel::from_established(session, std::sync::Arc::new(aethernoize), inbound_tx, ipv4);
 
     let stack = netstack::spawn(&identity.ipv4, &identity.ipv6, TUNNEL_MTU, inbound_rx, outbound_tx)?;
 
@@ -885,10 +972,6 @@ async fn establish_wg(
         .ipv4
         .parse()
         .map_err(|_| AetherError::Other("invalid ipv4".into()))?;
-    let ipv6: std::net::Ipv6Addr = identity
-        .ipv6
-        .parse()
-        .map_err(|_| AetherError::Other("invalid ipv6".into()))?;
 
     let profile = if obfuscate {
         aethernoize_config()
@@ -896,22 +979,25 @@ async fn establish_wg(
         aethernoize::from_profile("off")
     };
 
-    let cfg = wireguard::WgConfig {
-        local_private_key: private_key,
-        peer_public_key: peer_public,
-        peer_endpoint: peer,
-        local_ipv4: ipv4,
-        local_ipv6: ipv6,
-        client_id: identity.client_id,
-        preshared_key: None,
-        persistent_keepalive: Some(keepalive),
-        aethernoize: std::sync::Arc::new(profile),
-    };
+    log::info!("[*] [{label}] validating WireGuard tunnel with {peer} (handshake + data-plane)...");
+    let (_, session) = wireguard::verify_endpoint_keep_session(
+        peer,
+        private_key,
+        peer_public,
+        identity.client_id,
+        ipv4,
+        &profile,
+        wg_tunnel_validate_timeout(),
+        Some(keepalive),
+    )
+    .await
+    .map_err(|e| AetherError::Other(format!("[{label}] tunnel failed validation: {e}")))?;
+    log::info!("[+] [{label}] wireguard tunnel validated (end-to-end data confirmed)");
 
-    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(1024);
-    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1024);
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(sysprofile::channel_capacity());
+    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(sysprofile::channel_capacity());
 
-    let tunnel = wireguard::WgTunnel::new(cfg, inbound_tx).await?;
+    let tunnel = wireguard::WgTunnel::from_established(session, std::sync::Arc::new(profile), inbound_tx, ipv4);
     let stack = netstack::spawn(&identity.ipv4, &identity.ipv6, mtu, inbound_rx, outbound_tx)?;
 
     tokio::spawn(async move {
@@ -975,8 +1061,6 @@ async fn run_warp_in_warp(
 ) -> Result<()> {
     log::info!("[*] establishing outer WARP tunnel to {peer}...");
     let outer_stack = establish_wg(&primary, peer, TUNNEL_MTU, true, 5, "outer").await?;
-
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
     let forwarder = spawn_udp_forwarder(&outer_stack, peer).await?;
     log::info!("[+] inner endpoint tunneled through outer warp via {forwarder}");

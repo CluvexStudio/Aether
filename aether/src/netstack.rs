@@ -11,10 +11,26 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{AetherError, Result};
 
-const TCP_BUF: usize = 512 * 1024;
-const UDP_BUF: usize = 128 * 1024;
-const UDP_META: usize = 128;
-const APP_QUEUE: usize = 4096;
+fn tcp_buf() -> usize {
+    crate::sysprofile::netstack_tcp_buf_bytes()
+}
+
+fn udp_buf() -> usize {
+    crate::sysprofile::netstack_udp_buf_bytes()
+}
+
+fn udp_meta() -> usize {
+    match crate::sysprofile::tuning().tier {
+        crate::sysprofile::Tier::Low => 32,
+        crate::sysprofile::Tier::Medium => 64,
+        crate::sysprofile::Tier::High => 128,
+    }
+}
+
+fn app_queue() -> usize {
+    crate::sysprofile::channel_capacity()
+}
+
 const MAX_INGEST_PER_TICK: usize = 512;
 const MAX_RECV_CHUNKS: usize = 128;
 
@@ -376,7 +392,7 @@ pub fn spawn(
     apply_addrs(&mut iface, v4, v6);
 
     let (cmd_tx, cmd_rx) = mpsc::channel(256);
-    let (data_in_tx, data_in_rx) = mpsc::channel(APP_QUEUE);
+    let (data_in_tx, data_in_rx) = mpsc::channel(app_queue());
 
     let stack = NetStack {
         iface,
@@ -475,8 +491,8 @@ async fn sleep_opt(delay: Option<std::time::Duration>) {
 fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
     match cmd {
         Cmd::OpenTcp { dst, resp } => {
-            let rx_buf = tcp::SocketBuffer::new(vec![0u8; TCP_BUF]);
-            let tx_buf = tcp::SocketBuffer::new(vec![0u8; TCP_BUF]);
+            let rx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_buf()]);
+            let tx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_buf()]);
             let mut socket = tcp::Socket::new(rx_buf, tx_buf);
             socket.set_nagle_enabled(false);
 
@@ -492,7 +508,7 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
             let id = s.next_id;
             s.next_id += 1;
 
-            let (to_app_tx, to_app_rx) = mpsc::channel(APP_QUEUE);
+            let (to_app_tx, to_app_rx) = mpsc::channel(app_queue());
 
             s.tcp_conns.insert(
                 id,
@@ -508,10 +524,10 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
             );
         }
         Cmd::OpenUdp { resp } => {
-            let rx_meta = vec![udp::PacketMetadata::EMPTY; UDP_META];
-            let tx_meta = vec![udp::PacketMetadata::EMPTY; UDP_META];
-            let rx_buf = udp::PacketBuffer::new(rx_meta, vec![0u8; UDP_BUF]);
-            let tx_buf = udp::PacketBuffer::new(tx_meta, vec![0u8; UDP_BUF]);
+            let rx_meta = vec![udp::PacketMetadata::EMPTY; udp_meta()];
+            let tx_meta = vec![udp::PacketMetadata::EMPTY; udp_meta()];
+            let rx_buf = udp::PacketBuffer::new(rx_meta, vec![0u8; udp_buf()]);
+            let tx_buf = udp::PacketBuffer::new(tx_meta, vec![0u8; udp_buf()]);
             let mut socket = udp::Socket::new(rx_buf, tx_buf);
 
             let local_port = alloc_port(&mut s.next_port);
@@ -524,7 +540,7 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
             let id = s.next_id;
             s.next_id += 1;
 
-            let (to_app_tx, to_app_rx) = mpsc::channel(APP_QUEUE);
+            let (to_app_tx, to_app_rx) = mpsc::channel(app_queue());
             s.udp_conns.insert(id, UdpState { handle, to_app: to_app_tx });
 
             let conn = UdpConn {

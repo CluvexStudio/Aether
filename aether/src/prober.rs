@@ -207,7 +207,8 @@ pub async fn host_has_ipv6() -> bool {
 }
 
 pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<ProbeResult> {
-    let st = mode.strategy();
+    let mut st = mode.strategy();
+    st.concurrency = crate::sysprofile::cap_concurrency(st.concurrency);
     let timeout = st.per_probe_timeout;
     let mut effective_ip = probe.ip;
     if probe.ip.want_v6() && !host_has_ipv6().await {
@@ -343,7 +344,7 @@ async fn verify_one(
                 Some(ProbeResult { ip, port, rtt })
             }
             Err(e) => {
-                log::debug!("[-] ironclad {ip}:{port} failed real http check: {e}");
+                log::trace!("[-] ironclad {ip}:{port} failed real http check: {e}");
                 None
             }
         };
@@ -365,7 +366,7 @@ async fn verify_one(
         return match crate::masque_h2::verify_h2(&cfg, timeout).await {
             Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
             Err(e) => {
-                log::debug!("h2 probe {ip}:{port} -> {e}");
+                log::trace!("h2 probe {ip}:{port} -> {e}");
                 None
             }
         };
@@ -387,7 +388,7 @@ async fn verify_one(
     match quic::verify_masque(&vp).await {
         Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
         Err(e) => {
-            log::debug!("probe {ip}:{port} -> {e}");
+            log::trace!("probe {ip}:{port} -> {e}");
             None
         }
     }

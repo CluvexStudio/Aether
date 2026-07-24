@@ -51,8 +51,13 @@ Config files:
 
 Advanced:
   --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
-  --verbose                detailed debug logs: tunnel stages, validation, reconnects, retries
-                           (equivalent to RUST_LOG=info,aether=debug; RUST_LOG overrides this)
+  --perf <low|medium|high> force a resource profile instead of auto-detecting from cpu/ram
+                           (low: routers/small boards, medium: typical desktop, high: servers)
+  --log-level <level>      error | warn | info | debug | trace (default info)
+                           info: connection stages, validation, reconnects, retries
+                           debug: adds per-tunnel internals useful for troubleshooting
+                           trace: everything, including per-packet noise
+  --verbose                shortcut for --log-level debug (RUST_LOG overrides both)
 
   -v, --version            show version and exit
   -h, --help               show this help and exit
@@ -132,7 +137,9 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
-            "--verbose" => set("AETHER_VERBOSE", "1"),
+            "--perf" => set("AETHER_PERF_PROFILE", next_value!()),
+            "--log-level" => set("AETHER_LOG_LEVEL", next_value!()),
+            "--verbose" => set("AETHER_LOG_LEVEL", "debug"),
 
             other => {
                 return Err(crate::error::AetherError::Other(format!(

@@ -136,12 +136,12 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
         return;
     }
 
-    log::debug!("sending {} junk packets before handshake", cfg.jc_before_hs);
+    log::trace!("sending {} junk packets before handshake", cfg.jc_before_hs);
 
     for i in 0..cfg.jc_before_hs {
         let pkt = junk_packet(cfg);
         match sock.send_to(&pkt, peer).await {
-            Ok(n) => log::debug!("junk[{i}] sent {n} bytes"),
+            Ok(n) => log::trace!("junk[{i}] sent {n} bytes"),
             Err(e) => log::debug!("junk[{i}] send failed: {e}"),
         }
         if !cfg.junk_interval.is_zero() {
@@ -153,7 +153,7 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
         let pkt = parse_cps(i1);
         if !pkt.is_empty() {
             match sock.send_to(&pkt, peer).await {
-                Ok(n) => log::debug!("signature i1 sent {n} bytes"),
+                Ok(n) => log::trace!("signature i1 sent {n} bytes"),
                 Err(e) => log::debug!("signature i1 send failed: {e}"),
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -163,7 +163,7 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
     for i in 0..cfg.jc_after_i1 {
         let pkt = junk_packet(cfg);
         match sock.send_to(&pkt, peer).await {
-            Ok(n) => log::debug!("junk_after[{i}] sent {n} bytes"),
+            Ok(n) => log::trace!("junk_after[{i}] sent {n} bytes"),
             Err(e) => log::debug!("junk_after[{i}] send failed: {e}"),
         }
         if !cfg.junk_interval.is_zero() {
@@ -175,11 +175,11 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
         let pkt = parse_cps(i2);
         if !pkt.is_empty() {
             match sock.send_to(&pkt, peer).await {
-                Ok(n) => log::debug!("signature i2 sent {n} bytes"),
+                Ok(n) => log::trace!("signature i2 sent {n} bytes"),
                 Err(e) => log::debug!("signature i2 send failed: {e}"),
             }
         }
     }
-    
-    log::debug!("obfuscation pre-handshake complete");
+
+    log::trace!("obfuscation pre-handshake complete");
 }

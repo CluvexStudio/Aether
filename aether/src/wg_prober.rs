@@ -129,7 +129,8 @@ pub struct WgProbe {
 }
 
 pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<WgProbeResult> {
-    let st = mode.strategy();
+    let mut st = mode.strategy();
+    st.concurrency = crate::sysprofile::cap_concurrency(st.concurrency);
     let timeout = st.per_probe_timeout;
     let mut effective_ip = probe.ip;
     if probe.ip.want_v6() && !crate::prober::host_has_ipv6().await {
@@ -256,12 +257,13 @@ async fn verify_one_wg(
         probe.local_ipv4,
         &probe.aethernoize,
         timeout,
+        None,
     )
     .await
     {
         Ok(v) => v,
         Err(e) => {
-            log::debug!("wg probe {ip}:{port} -> {e}");
+            log::trace!("wg probe {ip}:{port} -> {e}");
             return None;
         }
     };
@@ -284,7 +286,7 @@ async fn verify_one_wg(
             Some(WgProbeResult { ip, port, rtt: http_rtt })
         }
         Err(e) => {
-            log::debug!("[-] ironclad wg {ip}:{port} failed real http check: {e}");
+            log::trace!("[-] ironclad wg {ip}:{port} failed real http check: {e}");
             None
         }
     }

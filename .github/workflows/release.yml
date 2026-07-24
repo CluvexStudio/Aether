@@ -274,6 +274,79 @@ jobs:
           if-no-files-found: error
 
   # ------------------------------------------------------------------
+  # 64-bit x86 and arm64 musl, fully static. x86_64 covers OpenWrt on
+  # x86_64 routers/boxes and any generic musl-based x86_64 Linux.
+  # aarch64 covers OpenWrt on arm64 routers and Raspberry Pi 4/5 running
+  # a musl userland. Same toolchain source and same bindgen/libc env
+  # var fixes as linux-armv7-musl above, just different target triples.
+  # ------------------------------------------------------------------
+  linux-musl:
+    name: Build ${{ matrix.archive }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aether
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            cross_prefix: x86_64-unknown-linux-musl
+            archive: aether-linux-x86_64-musl.tar.gz
+          - target: aarch64-unknown-linux-musl
+            cross_prefix: aarch64-unknown-linux-musl
+            archive: aether-linux-aarch64-musl.tar.gz
+    env:
+      RUST_LIBC_UNSTABLE_MUSL_V1_2_3: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install musl cross toolchain
+        run: |
+          curl -fsSL https://github.com/AmanoTeam/musl-gcc-cross/releases/download/gcc-15/x86_64-unknown-linux-gnu.tar.xz -o /tmp/musl-cross.tar.xz
+          sudo mkdir -p /opt/musl-cross
+          sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
+
+      - name: Set up cross env vars
+        run: |
+          triple=$(echo "${{ matrix.target }}" | tr '-' '_')
+          prefix=/opt/musl-cross/bin/${{ matrix.cross_prefix }}
+          echo "CARGO_TARGET_${triple^^}_LINKER=${prefix}-gcc" >> "$GITHUB_ENV"
+          echo "CC_${triple}=${prefix}-gcc" >> "$GITHUB_ENV"
+          echo "CXX_${triple}=${prefix}-g++" >> "$GITHUB_ENV"
+          echo "AR_${triple}=${prefix}-ar" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_${triple}=--target=${{ matrix.target }} --sysroot=/opt/musl-cross/${{ matrix.cross_prefix }}" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package archive
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czf ../../../${{ matrix.archive }} aether
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: aether/${{ matrix.archive }}
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
   # Android / Termux targets, built with the NDK via cargo-ndk on the
   # latest Ubuntu runner (the NDK cross toolchain, not the host libc,
   # determines the output).
@@ -348,7 +421,7 @@ jobs:
   # ------------------------------------------------------------------
   release:
     name: Publish release
-    needs: [desktop, linux, linux-armv7, linux-armv7-musl, android]
+    needs: [desktop, linux, linux-armv7, linux-armv7-musl, linux-musl, android]
     runs-on: ubuntu-latest
     if: ${{ always() }} && startsWith(github.ref, 'refs/tags/') 
     steps:
@@ -379,17 +452,19 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v1.3.0
+            Aether v1.4.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            What's new in v1.3.0:
+            What's new in v1.4.0:
 
-            - New "ironclad" scan mode. The existing scan modes only check that a candidate gateway answers a handshake; ironclad goes further and opens a real tunnel through each candidate, then sends a real HTTP request end to end before trusting it. Slower than the other modes, but it's the only one that guarantees the gateway actually works before you connect.
-            - MASQUE and WireGuard both reconnect smarter after a drop. Instead of always kicking off a full rescan (which can take minutes in ironclad mode), Aether now first re-checks the gateway that was working a moment ago, and only falls back to a fresh scan if that one is actually dead.
-            - Fixed a bug where probe tunnels opened during scanning could keep running in the background after their timeout, which showed up as a wall of "connection closed" log lines during a scan.
-            - Fixed UDP over SOCKS5 not working when exposing the proxy to your local network (AETHER_SOCKS set to a non-loopback address). The UDP relay was always binding to 127.0.0.1 regardless of what address SOCKS5 was actually listening on, so TCP worked from other devices on the network but UDP silently dropped everything.
-            - New fully static armv7 musl build, meant for OpenWrt routers and other musl-based Linux systems that can't run the regular glibc binary.
+            - Security fix: MASQUE connections now verify the Cloudflare edge certificate against pinned SPKI hashes instead of skipping verification entirely. Before this, anyone able to intercept the connection could present a fake certificate and the client would accept it silently. Both the HTTP/3 and HTTP/2 transports are covered.
+            - Fixed WireGuard and WARP-in-WARP (gool) reporting "connected" while the tunnel was actually dead. Both now run a continuous health check and reconnect automatically if no real data has come back from the peer for a while, instead of sitting there silently with a socks5 proxy that leads nowhere.
+            - Fixed a memory/task leak in WireGuard, MASQUE HTTP/2, and MASQUE HTTP/3: every reconnect used to leave old background tasks running instead of shutting them down, so long-running sessions with frequent drops would slowly pile up idle tasks and memory.
+            - gool (WARP-in-WARP) now reconnects automatically like the other two modes. Previously, if the outer tunnel dropped, the whole process just exited.
+            - `--log-level` replaces the old all-or-nothing `--verbose`. Pick error, warn, info, debug or trace. info stays quiet, debug adds tunnel internals useful for troubleshooting, trace adds full per-packet detail. `--verbose` still works as a shortcut for debug.
+            - Aether now reads the machine's CPU count and RAM at startup and scales scan concurrency, socket buffers, and internal queue sizes accordingly, so it doesn't hog resources on a router or a small board. Override with `--perf low|medium|high` if you want to force it.
+            - New fully static builds for x86_64 and aarch64 musl, on top of the existing armv7 musl build. Covers OpenWrt on x86_64/arm64 boxes and Raspberry Pi 4/5 running a musl userland.
 
             This release includes prebuilt binaries for:
 
@@ -397,6 +472,8 @@ jobs:
             - Linux arm64 / aarch64, built on Fedora latest (aether-linux-arm64.tar.gz)
             - Linux armv7 / 32-bit ARM, e.g. Raspberry Pi 2/3 (aether-linux-armv7.tar.gz)
             - Linux armv7 musl / 32-bit ARM, fully static, for OpenWrt routers and other musl-based systems (aether-linux-armv7-musl.tar.gz)
+            - Linux x86_64 musl, fully static, for OpenWrt and other musl-based x86_64 systems (aether-linux-x86_64-musl.tar.gz)
+            - Linux aarch64 musl, fully static, for OpenWrt arm64 and Raspberry Pi 4/5 (aether-linux-aarch64-musl.tar.gz)
             - macOS arm64 / Apple Silicon (aether-macos-arm64.tar.gz)
             - macOS x86_64 / Intel (aether-macos-x86_64.tar.gz)
             - Windows x86_64 (aether-windows-x86_64.zip)

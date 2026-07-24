@@ -165,13 +165,14 @@ pub async fn wg_http_ping_established(
     timeout: Duration,
 ) -> Result<Duration> {
     let attempt = async {
-        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(1024);
-        let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1024);
+        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(crate::sysprofile::channel_capacity());
+        let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(crate::sysprofile::channel_capacity());
 
         let tunnel = wireguard::WgTunnel::from_established(
             session,
             std::sync::Arc::new(p.aethernoize.clone()),
             inbound_tx,
+            p.local_ipv4,
         );
 
         let local_ipv4_str = p.local_ipv4.to_string();

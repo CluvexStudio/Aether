@@ -15,7 +15,10 @@ use crate::tls::{self, TlsParams};
 use crate::{consts, error::AetherError, error::Result};
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
-const NET_QUEUE: usize = 1024;
+
+fn net_queue() -> usize {
+    crate::sysprofile::channel_capacity()
+}
 
 async fn bind_udp_fast(bind_addr: SocketAddr) -> Result<UdpSocket> {
     use socket2::{Socket, Domain, Type};
@@ -23,7 +26,7 @@ async fn bind_udp_fast(bind_addr: SocketAddr) -> Result<UdpSocket> {
     let sock = Socket::new(domain, Type::DGRAM, None).map_err(AetherError::Io)?;
     sock.set_nonblocking(true).map_err(AetherError::Io)?;
     
-    let buf_size = 7 * 1024 * 1024; // 7MB
+    let buf_size = crate::sysprofile::udp_socket_buf_bytes();
     let _ = sock.set_recv_buffer_size(buf_size);
     let _ = sock.set_send_buffer_size(buf_size);
     
@@ -79,8 +82,8 @@ pub struct Channels {
 }
 
 pub fn channels() -> (Channels, Internals) {
-    let (outbound_tx, outbound_rx) = mpsc::channel(NET_QUEUE);
-    let (inbound_tx, inbound_rx) = mpsc::channel(NET_QUEUE);
+    let (outbound_tx, outbound_rx) = mpsc::channel(net_queue());
+    let (inbound_tx, inbound_rx) = mpsc::channel(net_queue());
     let (ctrl_tx, ctrl_rx) = mpsc::channel(16);
 
     (
@@ -131,13 +134,32 @@ fn random_scid() -> [u8; 16] {
     scid
 }
 
-fn spawn_reader(sock: Arc<UdpSocket>, local: SocketAddr, tx: mpsc::Sender<NetPacket>) {
+#[derive(Default)]
+struct ReaderGuard {
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl ReaderGuard {
+    fn push(&mut self, h: tokio::task::JoinHandle<()>) {
+        self.handles.push(h);
+    }
+}
+
+impl Drop for ReaderGuard {
+    fn drop(&mut self) {
+        for h in self.handles.drain(..) {
+            h.abort();
+        }
+    }
+}
+
+fn spawn_reader(sock: Arc<UdpSocket>, local: SocketAddr, tx: mpsc::Sender<NetPacket>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
         loop {
             match sock.recv_from(&mut buf).await {
                 Ok((n, from)) => {
-                    log::debug!("recv {n} bytes from {from}");
+                    log::trace!("recv {n} bytes from {from}");
                     if tx.send((local, from, buf[..n].to_vec())).await.is_err() {
                         break;
                     }
@@ -148,7 +170,7 @@ fn spawn_reader(sock: Arc<UdpSocket>, local: SocketAddr, tx: mpsc::Sender<NetPac
                 }
             }
         }
-    });
+    })
 }
 
 pub async fn run(
@@ -170,11 +192,12 @@ pub async fn run(
     let local = init_sock.local_addr()?;
     let init_sock = Arc::new(init_sock);
 
-    let (net_tx, mut net_rx) = mpsc::channel::<NetPacket>(NET_QUEUE);
+    let (net_tx, mut net_rx) = mpsc::channel::<NetPacket>(net_queue());
 
     let mut sockets: HashMap<SocketAddr, Arc<UdpSocket>> = HashMap::new();
     sockets.insert(local, init_sock.clone());
-    spawn_reader(init_sock, local, net_tx.clone());
+    let mut readers = ReaderGuard::default();
+    readers.push(spawn_reader(init_sock, local, net_tx.clone()));
 
     let mut config = tls::build_config(&TlsParams {
         cert_pem: &cfg.cert_pem,
@@ -248,10 +271,10 @@ pub async fn run(
                     match masque::encode_ip_datagram(sid, &probe_packet) {
                         Ok(framed) => {
                             if let Err(e) = conn.dgram_send(&framed) {
-                                log::debug!("data-plane probe send: {e}");
+                                log::trace!("data-plane probe send: {e}");
                             }
                         }
-                        Err(e) => log::debug!("data-plane probe encode: {e}"),
+                        Err(e) => log::trace!("data-plane probe encode: {e}"),
                     }
                 }
             }
@@ -259,18 +282,18 @@ pub async fn run(
             Some((to_local, from, mut data)) = net_rx.recv() => {
                 let mut hdr_buf = data.clone();
                 if let Ok(hdr) = quiche::Header::from_slice(&mut hdr_buf, quiche::MAX_CONN_ID_LEN) {
-                    log::debug!("recv {} bytes type={:?} version=0x{:x} from {}", data.len(), hdr.ty, hdr.version, from);
+                    log::trace!("recv {} bytes type={:?} version=0x{:x} from {}", data.len(), hdr.ty, hdr.version, from);
                 }
                 let info = quiche::RecvInfo { from, to: to_local };
                 if let Err(e) = conn.recv(&mut data, info) {
-                    log::debug!("recv error: {e}");
+                    log::trace!("recv error: {e}");
                 }
             }
 
             ctrl = internals.ctrl_rx.recv() => {
                 match ctrl {
                     Some(Control::Migrate) => {
-                        if let Err(e) = do_migrate(&mut conn, peer, &mut sockets, &net_tx).await {
+                        if let Err(e) = do_migrate(&mut conn, peer, &mut sockets, &net_tx, &mut readers).await {
                             log::warn!("migration failed: {e}");
                         }
                     }
@@ -287,10 +310,10 @@ pub async fn run(
                             match masque::encode_ip_datagram(sid, &ip_packet) {
                                 Ok(framed) => {
                                     if let Err(e) = conn.dgram_send(&framed) {
-                                        log::debug!("dgram_send: {e}");
+                                        log::trace!("dgram_send: {e}");
                                     }
                                 }
-                                Err(e) => log::debug!("encap: {e}"),
+                                Err(e) => log::trace!("encap: {e}"),
                             }
                         }
                     }
@@ -483,7 +506,7 @@ fn drain_capsules(capsules: &mut CapsuleParser, addr_tx: &Option<mpsc::Sender<As
             Ok(Some(_)) => {}
             Ok(None) => break,
             Err(e) => {
-                log::debug!("capsule parse: {e}");
+                log::trace!("capsule parse: {e}");
                 break;
             }
         }
@@ -526,11 +549,11 @@ async fn drain_datagrams(
                     }
                 }
                 Ok(None) => {}
-                Err(e) => log::debug!("decap: {e}"),
+                Err(e) => log::trace!("decap: {e}"),
             },
             Err(quiche::Error::Done) => break,
             Err(e) => {
-                log::debug!("dgram_recv: {e}");
+                log::trace!("dgram_recv: {e}");
                 break;
             }
         }
@@ -566,6 +589,7 @@ async fn do_migrate(
     peer: SocketAddr,
     sockets: &mut HashMap<SocketAddr, Arc<UdpSocket>>,
     net_tx: &mpsc::Sender<NetPacket>,
+    readers: &mut ReaderGuard,
 ) -> Result<()> {
     if conn.available_dcids() == 0 {
         return Err(AetherError::Other("no spare dcids for migration".into()));
@@ -576,7 +600,7 @@ async fn do_migrate(
     let new_sock = Arc::new(new_sock);
 
     sockets.insert(new_local, new_sock.clone());
-    spawn_reader(new_sock, new_local, net_tx.clone());
+    readers.push(spawn_reader(new_sock, new_local, net_tx.clone()));
 
     conn.probe_path(new_local, peer)?;
     let seq = conn.migrate_source(new_local)?;
@@ -673,11 +697,11 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
                     Ok(n) => {
                         let mut hdr_buf = buf[..n].to_vec();
                         if let Ok(hdr) = quiche::Header::from_slice(&mut hdr_buf, quiche::MAX_CONN_ID_LEN) {
-                            log::debug!("verify recv {} bytes type={:?} version=0x{:x} from {}", n, hdr.ty, hdr.version, p.peer);
+                            log::trace!("verify recv {} bytes type={:?} version=0x{:x} from {}", n, hdr.ty, hdr.version, p.peer);
                         }
                         let info = quiche::RecvInfo { from: p.peer, to: local };
                         if let Err(e) = conn.recv(&mut buf[..n], info) {
-                            log::debug!("verify recv error from {}: {e}", p.peer);
+                            log::trace!("verify recv error from {}: {e}", p.peer);
                         }
                     }
                     Err(e) => return Err(AetherError::Io(e)),
