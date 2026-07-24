@@ -45,6 +45,7 @@ WireGuard:
   --no-profile-retry       don't retry other obfuscation profiles during scan
 
 Config files:
+  -d, --data-dir <dir>     base directory for identity and session files
   --config <path>          base identity config path (default aether.toml)
   --wg-config <path>       identity config path for WireGuard
   --masque-config <path>   identity config path for MASQUE
@@ -60,6 +61,10 @@ Advanced:
 
 pub fn parse_and_apply() -> crate::error::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
+    parse_args(&args)
+}
+
+pub fn parse_args(args: &[String]) -> crate::error::Result<()> {
     let mut i = 0;
 
     while i < args.len() {
@@ -127,6 +132,7 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "--keepalive" => set("AETHER_WG_KEEPALIVE", next_value!()),
             "--no-profile-retry" => set("AETHER_WG_NO_PROFILE_RETRY", "1"),
 
+            "-d" | "--data-dir" => set("AETHER_DATA_DIR", next_value!()),
             "--config" => set("AETHER_CONFIG", next_value!()),
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
@@ -150,3 +156,103 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
 fn set(key: &str, value: &str) {
     std::env::set_var(key, value);
 }
+
+pub fn resolve_config_path(
+    data_dir: Option<&str>,
+    explicit_path: Option<&str>,
+    default_filename: &str,
+) -> String {
+    match explicit_path {
+        Some(path) => {
+            let p = std::path::Path::new(path);
+            if p.is_absolute() {
+                path.to_string()
+            } else if let Some(dir) = data_dir {
+                std::path::Path::new(dir)
+                    .join(path)
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                path.to_string()
+            }
+        }
+        None => match data_dir {
+            Some(dir) => std::path::Path::new(dir)
+                .join(default_filename)
+                .to_string_lossy()
+                .to_string(),
+            None => default_filename.to_string(),
+        },
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_config_path_no_data_dir() {
+        assert_eq!(resolve_config_path(None, None, "aether.toml"), "aether.toml");
+        assert_eq!(resolve_config_path(None, Some("custom.toml"), "aether.toml"), "custom.toml");
+        assert_eq!(resolve_config_path(None, Some("/abs/path.toml"), "aether.toml"), "/abs/path.toml");
+    }
+
+    #[test]
+    fn test_resolve_config_path_with_data_dir() {
+        assert_eq!(
+            resolve_config_path(Some("/var/lib/aether"), None, "aether.toml"),
+            std::path::Path::new("/var/lib/aether")
+                .join("aether.toml")
+                .to_string_lossy()
+                .to_string()
+        );
+        assert_eq!(
+            resolve_config_path(Some("/var/lib/aether"), Some("custom.toml"), "aether.toml"),
+            std::path::Path::new("/var/lib/aether")
+                .join("custom.toml")
+                .to_string_lossy()
+                .to_string()
+        );
+        assert_eq!(
+            resolve_config_path(Some("/var/lib/aether"), Some("/abs/path.toml"), "aether.toml"),
+            "/abs/path.toml"
+        );
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_data_dir() {
+        let _guard = EnvGuard::new("AETHER_DATA_DIR");
+
+        std::env::remove_var("AETHER_DATA_DIR");
+        parse_args(&["-d".to_string(), "/tmp/aether-data-1".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_DATA_DIR").unwrap(), "/tmp/aether-data-1");
+
+        std::env::remove_var("AETHER_DATA_DIR");
+        parse_args(&["--data-dir".to_string(), "/tmp/aether-data-2".to_string()]).unwrap();
+        assert_eq!(std::env::var("AETHER_DATA_DIR").unwrap(), "/tmp/aether-data-2");
+    }
+}
+
+

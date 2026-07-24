@@ -219,6 +219,7 @@ Reconnect to it now without rescanning? [Y/n]:
 ### مجبور کردن نقطهٔ اتصال و مسیر فایل کانفیگ
 
 - `AETHER_PEER` یا `AETHER_WG_PEER` (`--peer`, `--wg-peer`) — اگه بخوای خودت یه آدرس ثابت بدی و اسکن رو دور بزنی.
+- `AETHER_DATA_DIR` (`-d`, `--data-dir`) — مسیر پوشهٔ پایه برای ذخیرهٔ فایل‌های کانفیگ و حالت اتصال.
 - `AETHER_CONFIG` (`--config`) — مسیر فایل کانفیگ پایه. پیش‌فرض `aether.toml`.
 - `AETHER_WG_CONFIG` و `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — مسیر فایل کانفیگ مخصوص هر پروتکل.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — بازنویسی گروه‌های TLS key-share که توی دست‌دادن اعلام می‌شن. پیش‌فرض شبیه کروم هست (`P-256:X25519:P-384`).

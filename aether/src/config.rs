@@ -88,6 +88,13 @@ pub fn load(path: &str) -> Result<Option<Identity>> {
 }
 
 pub fn save(path: &str, identity: &Identity) -> Result<()> {
+    if let Some(parent) = Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AetherError::Other(format!("config dir create {}: {e}", parent.display())))?;
+    }
     let persisted = PersistedIdentity::from(identity);
     let text = toml::to_string_pretty(&persisted)
         .map_err(|e| AetherError::Other(format!("config encode: {e}")))?;
@@ -109,3 +116,34 @@ pub fn save_masque_creds(path: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<
     std::fs::write(path, updated)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_save_creates_parent_dir() {
+        let dir = std::env::temp_dir().join(format!("aether_test_cfg_{}", rand::random::<u64>()));
+        let nested_path = dir.join("nested").join("dir").join("aether.toml");
+        let path_str = nested_path.to_str().unwrap();
+
+        let identity = Identity {
+            device_id: "dev123".into(),
+            access_token: "tok123".into(),
+            cert_pem: vec![],
+            key_pem: vec![],
+            ipv4: "192.0.2.1".into(),
+            ipv6: "2001:db8::1".into(),
+            wg_private_key: [1u8; 32],
+            wg_peer_public_key: [2u8; 32],
+            client_id: [0u8; 3],
+        };
+
+        let res = save(path_str, &identity);
+        assert!(res.is_ok());
+        assert!(nested_path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+

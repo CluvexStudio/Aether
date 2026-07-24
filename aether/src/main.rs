@@ -59,7 +59,12 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| "127.0.0.1:1819".parse().unwrap());
 
-    let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
+    let data_dir = std::env::var("AETHER_DATA_DIR").ok();
+    let base_config = cli::resolve_config_path(
+        data_dir.as_deref(),
+        std::env::var("AETHER_CONFIG").ok().as_deref(),
+        DEFAULT_CONFIG,
+    );
 
     let protocol = if std::env::var("AETHER_PEER").is_ok() || std::env::var("AETHER_WG_PEER").is_ok() {
         match std::env::var("AETHER_PROTOCOL") {
@@ -141,15 +146,17 @@ fn aethernoize_config() -> aethernoize::AetherNoizeConfig {
 }
 
 fn warp_config_path(base: &str) -> String {
+    let data_dir = std::env::var("AETHER_DATA_DIR").ok();
     if let Ok(p) = std::env::var("AETHER_WG_CONFIG") {
-        return p;
+        return cli::resolve_config_path(data_dir.as_deref(), Some(&p), base);
     }
     base.to_string()
 }
 
 fn masque_config_path(base: &str) -> String {
+    let data_dir = std::env::var("AETHER_DATA_DIR").ok();
     if let Ok(p) = std::env::var("AETHER_MASQUE_CONFIG") {
-        return p;
+        return cli::resolve_config_path(data_dir.as_deref(), Some(&p), base);
     }
     derive_sibling_path(base, "masque")
 }
@@ -1115,3 +1122,74 @@ async fn select_ip_version() -> prober::IpScan {
         _ => prober::IpScan::V4,
     }
 }
+
+#[cfg(test)]
+mod main_tests {
+    use super::*;
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::set_var(key, val);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn test_main_config_path_resolution_with_data_dir() {
+        let data_dir = "/custom/data/dir";
+        let _g_data = EnvGuard::set("AETHER_DATA_DIR", data_dir);
+        let _g_cfg = EnvGuard::remove("AETHER_CONFIG");
+        let _g_wg = EnvGuard::remove("AETHER_WG_CONFIG");
+        let _g_masque = EnvGuard::remove("AETHER_MASQUE_CONFIG");
+
+        let base = cli::resolve_config_path(
+            Some(data_dir),
+            None,
+            DEFAULT_CONFIG,
+        );
+        let expected_base = std::path::Path::new(data_dir)
+            .join("aether.toml")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(base, expected_base);
+
+        let wg = warp_config_path(&base);
+        assert_eq!(wg, expected_base);
+
+        let masque = masque_config_path(&base);
+        let expected_masque = std::path::Path::new(data_dir)
+            .join("aether-masque.toml")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(masque, expected_masque);
+
+        let lastconn = lastconn_path(&masque);
+        let expected_lastconn = std::path::Path::new(data_dir)
+            .join("aether-masque-lastconn.toml")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(lastconn, expected_lastconn);
+    }
+}
+
