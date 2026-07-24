@@ -16,10 +16,99 @@ use crate::error::{AetherError, Result};
 use crate::fragment::{FragmentConfig, FragmentingStream};
 use crate::masque::{self, Capsule, CapsuleParser};
 use crate::quic::{AssignedAddr, Control, Internals};
+use crate::sysprofile::{self, Tier};
 use crate::tls;
 
 const H2_ALPN: &[u8] = b"\x02h2";
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
+
+const H2_WINDOW_MIN_BYTES: u32 = 64 * 1024;
+const H2_WINDOW_MAX_BYTES: u32 = 64 * 1024 * 1024;
+const H2_SEND_BUFFER_MIN_BYTES: usize = 64 * 1024;
+const H2_SEND_BUFFER_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct H2FlowControl {
+    stream_window: u32,
+    connection_window: u32,
+    send_buffer: usize,
+}
+
+fn h2_defaults(tier: Tier) -> H2FlowControl {
+    match tier {
+        Tier::Low => H2FlowControl {
+            stream_window: 1024 * 1024,
+            connection_window: 2 * 1024 * 1024,
+            send_buffer: 512 * 1024,
+        },
+        Tier::Medium => H2FlowControl {
+            stream_window: 4 * 1024 * 1024,
+            connection_window: 8 * 1024 * 1024,
+            send_buffer: 1024 * 1024,
+        },
+        Tier::High => H2FlowControl {
+            stream_window: 8 * 1024 * 1024,
+            connection_window: 16 * 1024 * 1024,
+            send_buffer: 2 * 1024 * 1024,
+        },
+    }
+}
+
+fn parse_bounded_u32(value: Option<&str>, default: u32, min: u32, max: u32) -> u32 {
+    value
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(|parsed| parsed.clamp(min as u64, max as u64) as u32)
+        .unwrap_or(default)
+}
+
+fn parse_bounded_usize(value: Option<&str>, default: usize, min: usize, max: usize) -> usize {
+    value
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(|parsed| parsed.clamp(min as u64, max as u64) as usize)
+        .unwrap_or(default)
+}
+
+fn h2_flow_control() -> H2FlowControl {
+    let defaults = h2_defaults(sysprofile::tuning().tier);
+    let stream_override = std::env::var("AETHER_MASQUE_H2_STREAM_WINDOW_BYTES").ok();
+    let connection_override =
+        std::env::var("AETHER_MASQUE_H2_CONNECTION_WINDOW_BYTES").ok();
+    let send_buffer_override = std::env::var("AETHER_MASQUE_H2_SEND_BUFFER_BYTES").ok();
+
+    let stream_window = parse_bounded_u32(
+        stream_override.as_deref(),
+        defaults.stream_window,
+        H2_WINDOW_MIN_BYTES,
+        H2_WINDOW_MAX_BYTES,
+    );
+    let connection_window = parse_bounded_u32(
+        connection_override.as_deref(),
+        defaults.connection_window,
+        stream_window,
+        H2_WINDOW_MAX_BYTES,
+    );
+    let send_buffer = parse_bounded_usize(
+        send_buffer_override.as_deref(),
+        defaults.send_buffer,
+        H2_SEND_BUFFER_MIN_BYTES,
+        H2_SEND_BUFFER_MAX_BYTES,
+    );
+
+    H2FlowControl {
+        stream_window,
+        connection_window,
+        send_buffer,
+    }
+}
+
+fn h2_client_builder(flow: H2FlowControl) -> h2::client::Builder {
+    let mut builder = h2::client::Builder::new();
+    builder
+        .initial_window_size(flow.stream_window)
+        .initial_connection_window_size(flow.connection_window)
+        .max_send_buffer_size(flow.send_buffer);
+    builder
+}
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
@@ -185,7 +274,10 @@ pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Durati
         let tls = tokio_boring::connect(tls_config, &cfg.sni, fragment)
             .await
             .map_err(|e| AetherError::Tls(format!("h2 tls handshake: {e}")))?;
-        let (h2, connection) = h2::client::handshake(tls)
+        let flow = h2_flow_control();
+        let mut h2_builder = h2_client_builder(flow);
+        let (h2, connection) = h2_builder
+            .handshake(tls)
             .await
             .map_err(|e| AetherError::Masque(format!("h2 handshake: {e}")))?;
         let driver = tokio::spawn(async move {
@@ -310,7 +402,19 @@ pub async fn run(
         String::from_utf8_lossy(tls.ssl().selected_alpn_protocol().unwrap_or(b""))
     ));
 
-    let (h2, mut connection) = h2::client::handshake(tls)
+    let flow = h2_flow_control();
+    log_or_debug(
+        quiet,
+        format!(
+            "[h2] flow control: stream={}KB connection={}KB send-buffer={}KB",
+            flow.stream_window / 1024,
+            flow.connection_window / 1024,
+            flow.send_buffer / 1024
+        ),
+    );
+    let mut h2_builder = h2_client_builder(flow);
+    let (h2, mut connection) = h2_builder
+        .handshake(tls)
         .await
         .map_err(|e| AetherError::Masque(format!("h2 handshake: {e}")))?;
 
@@ -583,5 +687,34 @@ fn bytes_to_ip(version: u8, bytes: &[u8]) -> Option<IpAddr> {
             Some(IpAddr::V6(b.into()))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_window_parser_uses_defaults_and_clamps() {
+        assert_eq!(parse_bounded_u32(None, 1024, 64, 4096), 1024);
+        assert_eq!(parse_bounded_u32(Some("invalid"), 1024, 64, 4096), 1024);
+        assert_eq!(parse_bounded_u32(Some("1"), 1024, 64, 4096), 64);
+        assert_eq!(parse_bounded_u32(Some("9999"), 1024, 64, 4096), 4096);
+        assert_eq!(parse_bounded_u32(Some(" 2048 "), 1024, 64, 4096), 2048);
+    }
+
+    #[test]
+    fn resource_tiers_scale_flow_control_without_unbounded_memory() {
+        let low = h2_defaults(Tier::Low);
+        let medium = h2_defaults(Tier::Medium);
+        let high = h2_defaults(Tier::High);
+
+        assert!(low.stream_window < medium.stream_window);
+        assert!(medium.stream_window < high.stream_window);
+        assert!(low.connection_window >= low.stream_window);
+        assert!(medium.connection_window >= medium.stream_window);
+        assert!(high.connection_window >= high.stream_window);
+        assert!(high.connection_window <= H2_WINDOW_MAX_BYTES);
+        assert!(high.send_buffer <= H2_SEND_BUFFER_MAX_BYTES);
     }
 }
