@@ -6,6 +6,21 @@ use serde::{Deserialize, Serialize};
 use crate::account::Identity;
 use crate::error::{AetherError, Result};
 
+/// Decode a base64 field into a fixed-size key, reporting the field name on
+/// failure instead of panicking. A truncated or hand-edited config must be a
+/// recoverable error: the caller can re-register, but it cannot catch a panic.
+fn decode_key<const N: usize>(field: &str, value: &str) -> Result<[u8; N]> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(value.trim())
+        .map_err(|e| AetherError::Other(format!("config: {field} is not valid base64: {e}")))?;
+    <[u8; N]>::try_from(raw.as_slice()).map_err(|_| {
+        AetherError::Other(format!(
+            "config: {field} decodes to {} bytes, expected {N}",
+            raw.len()
+        ))
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedIdentity {
     pub device_id: String,
@@ -39,31 +54,25 @@ impl From<&Identity> for PersistedIdentity {
     }
 }
 
-impl From<PersistedIdentity> for Identity {
-    fn from(p: PersistedIdentity) -> Self {
-        let wg_priv = base64::engine::general_purpose::STANDARD
-            .decode(&p.wg_private_key)
-            .expect("decode wg private key");
+impl TryFrom<PersistedIdentity> for Identity {
+    type Error = AetherError;
 
-        let wg_peer = base64::engine::general_purpose::STANDARD
-            .decode(&p.wg_peer_public_key)
-            .expect("decode wg peer public key");
+    fn try_from(p: PersistedIdentity) -> Result<Self> {
+        let wg_private_key = decode_key::<32>("wg_private_key", &p.wg_private_key)?;
+        let wg_peer_public_key = decode_key::<32>("wg_peer_public_key", &p.wg_peer_public_key)?;
 
-        let mut wg_private_key = [0u8; 32];
-        let mut wg_peer_public_key = [0u8; 32];
-        let mut client_id_arr = [0u8; 3];
-        wg_private_key.copy_from_slice(&wg_priv);
-        wg_peer_public_key.copy_from_slice(&wg_peer);
-        
+        // client_id predates the current format, so an absent or unreadable
+        // value stays a zeroed default rather than an error.
+        let mut client_id = [0u8; 3];
         if !p.client_id.is_empty() {
             if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&p.client_id) {
-                if decoded.len() == 3 {
-                    client_id_arr.copy_from_slice(&decoded);
+                if decoded.len() == client_id.len() {
+                    client_id.copy_from_slice(&decoded);
                 }
             }
         }
 
-        Identity {
+        Ok(Identity {
             device_id: p.device_id,
             access_token: p.access_token,
             cert_pem: p.cert_pem.into_bytes(),
@@ -72,9 +81,27 @@ impl From<PersistedIdentity> for Identity {
             ipv6: p.ipv6,
             wg_private_key,
             wg_peer_public_key,
-            client_id: client_id_arr,
-        }
+            client_id,
+        })
     }
+}
+
+/// Write a file that holds private keys: atomically, and readable only by the
+/// current user. `std::fs::write` truncates in place — a crash mid-write leaves
+/// a half-written config — and it creates the file with the process umask,
+/// which is world-readable on a typical Linux box.
+fn write_private(path: &str, contents: &str) -> Result<()> {
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, contents)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 pub fn load(path: &str) -> Result<Option<Identity>> {
@@ -84,15 +111,14 @@ pub fn load(path: &str) -> Result<Option<Identity>> {
     let text = std::fs::read_to_string(path)?;
     let persisted: PersistedIdentity =
         toml::from_str(&text).map_err(|e| AetherError::Other(format!("config parse: {e}")))?;
-    Ok(Some(persisted.into()))
+    Ok(Some(Identity::try_from(persisted)?))
 }
 
 pub fn save(path: &str, identity: &Identity) -> Result<()> {
     let persisted = PersistedIdentity::from(identity);
     let text = toml::to_string_pretty(&persisted)
         .map_err(|e| AetherError::Other(format!("config encode: {e}")))?;
-    std::fs::write(path, text)?;
-    Ok(())
+    write_private(path, &text)
 }
 
 pub fn save_masque_creds(path: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<()> {
@@ -106,6 +132,73 @@ pub fn save_masque_creds(path: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<
     persisted.key_pem = String::from_utf8_lossy(key_pem).to_string();
     let updated = toml::to_string_pretty(&persisted)
         .map_err(|e| AetherError::Other(format!("config encode: {e}")))?;
-    std::fs::write(path, updated)?;
-    Ok(())
+    write_private(path, &updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn persisted(wg_private_key: &str, wg_peer_public_key: &str) -> PersistedIdentity {
+        PersistedIdentity {
+            device_id: "d".into(),
+            access_token: "t".into(),
+            cert_pem: String::new(),
+            key_pem: String::new(),
+            ipv4: "10.0.0.2".into(),
+            ipv6: "::1".into(),
+            wg_private_key: wg_private_key.into(),
+            wg_peer_public_key: wg_peer_public_key.into(),
+            client_id: String::new(),
+        }
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn reads_a_well_formed_identity() {
+        let id = Identity::try_from(persisted(&b64(&[1u8; 32]), &b64(&[2u8; 32]))).unwrap();
+        assert_eq!(id.wg_private_key, [1u8; 32]);
+        assert_eq!(id.wg_peer_public_key, [2u8; 32]);
+    }
+
+    #[test]
+    fn a_truncated_key_is_an_error_not_a_panic() {
+        // What a config left half-written by a killed process looks like.
+        let err = Identity::try_from(persisted(&b64(&[1u8; 20]), &b64(&[2u8; 32]))).unwrap_err();
+        assert!(err.to_string().contains("wg_private_key"), "{err}");
+        assert!(err.to_string().contains("expected 32"), "{err}");
+    }
+
+    #[test]
+    fn a_key_that_is_not_base64_is_an_error_not_a_panic() {
+        let err =
+            Identity::try_from(persisted("!!! not base64 !!!", &b64(&[2u8; 32]))).unwrap_err();
+        assert!(err.to_string().contains("not valid base64"), "{err}");
+    }
+
+    #[test]
+    fn an_oversized_key_is_rejected_too() {
+        let err = Identity::try_from(persisted(&b64(&[1u8; 33]), &b64(&[2u8; 32]))).unwrap_err();
+        assert!(err.to_string().contains("expected 32"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_saved_config_is_not_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("aether-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("aether.toml");
+        let path = path.to_str().unwrap();
+
+        write_private(path, "device_id = \"d\"\n").unwrap();
+
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "config holds private keys, mode was {mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
