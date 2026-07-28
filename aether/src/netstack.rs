@@ -34,6 +34,10 @@ fn app_queue() -> usize {
 const MAX_INGEST_PER_TICK: usize = 512;
 const MAX_RECV_CHUNKS: usize = 128;
 
+fn max_tcp_pending() -> usize {
+    tcp_buf().saturating_mul(2).max(64 * 1024)
+}
+
 type OpenTcpResp = oneshot::Sender<std::result::Result<TcpConn, String>>;
 type OpenUdpResp = oneshot::Sender<std::result::Result<UdpConn, String>>;
 
@@ -115,6 +119,7 @@ pub struct TcpConn {
     pub id: usize,
     pub from_stack: mpsc::Receiver<Vec<u8>>,
     data_in: mpsc::Sender<DataIn>,
+    split: bool,
 }
 
 impl TcpConn {
@@ -129,14 +134,29 @@ impl TcpConn {
         let _ = self.data_in.send(DataIn::TcpClose(self.id)).await;
     }
 
-    pub fn into_split(self) -> (TcpSender, mpsc::Receiver<Vec<u8>>) {
+    pub fn into_split(mut self) -> (TcpSender, mpsc::Receiver<Vec<u8>>) {
+        self.split = true;
         (
             TcpSender {
                 id: self.id,
-                data_in: self.data_in,
+                data_in: self.data_in.clone(),
             },
-            self.from_stack,
+            std::mem::replace(
+                &mut self.from_stack,
+                {
+                    let (_tx, rx) = mpsc::channel(1);
+                    rx
+                },
+            ),
         )
+    }
+}
+
+impl Drop for TcpConn {
+    fn drop(&mut self) {
+        if !self.split {
+            let _ = self.data_in.try_send(DataIn::TcpClose(self.id));
+        }
     }
 }
 
@@ -158,10 +178,17 @@ impl TcpSender {
     }
 }
 
+impl Drop for TcpSender {
+    fn drop(&mut self) {
+        let _ = self.data_in.try_send(DataIn::TcpClose(self.id));
+    }
+}
+
 pub struct UdpConn {
     pub id: usize,
     pub from_stack: mpsc::Receiver<(SocketAddr, Vec<u8>)>,
     data_in: mpsc::Sender<DataIn>,
+    split: bool,
 }
 
 impl UdpConn {
@@ -176,14 +203,29 @@ impl UdpConn {
         let _ = self.data_in.send(DataIn::UdpClose(self.id)).await;
     }
 
-    pub fn into_split(self) -> (UdpSender, mpsc::Receiver<(SocketAddr, Vec<u8>)>) {
+    pub fn into_split(mut self) -> (UdpSender, mpsc::Receiver<(SocketAddr, Vec<u8>)>) {
+        self.split = true;
         (
             UdpSender {
                 id: self.id,
-                data_in: self.data_in,
+                data_in: self.data_in.clone(),
             },
-            self.from_stack,
+            std::mem::replace(
+                &mut self.from_stack,
+                {
+                    let (_tx, rx) = mpsc::channel(1);
+                    rx
+                },
+            ),
         )
+    }
+}
+
+impl Drop for UdpConn {
+    fn drop(&mut self) {
+        if !self.split {
+            let _ = self.data_in.try_send(DataIn::UdpClose(self.id));
+        }
     }
 }
 
@@ -202,6 +244,12 @@ impl UdpSender {
 
     pub async fn close(&self) {
         let _ = self.data_in.send(DataIn::UdpClose(self.id)).await;
+    }
+}
+
+impl Drop for UdpSender {
+    fn drop(&mut self) {
+        let _ = self.data_in.try_send(DataIn::UdpClose(self.id));
     }
 }
 
@@ -423,6 +471,8 @@ async fn run(
     mut inbound_rx: mpsc::Receiver<Vec<u8>>,
     outbound_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<()> {
+    let mut deferred: VecDeque<DataIn> = VecDeque::new();
+
     loop {
         let now = Instant::now();
         let poll_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -436,10 +486,22 @@ async fn run(
         service_udp(&mut s).await;
         flush_tx(&mut s, &outbound_tx).await;
 
+        while let Some(d) = deferred.pop_front() {
+            if let Some(back) = try_handle_data(&mut s, d) {
+                deferred.push_front(back);
+                break;
+            }
+        }
+
         let delay = s
             .iface
             .poll_delay(Instant::now(), &s.sockets)
             .map(|d| std::time::Duration::from_micros(d.total_micros()));
+        let delay = if deferred.is_empty() {
+            delay
+        } else {
+            Some(delay.unwrap_or(std::time::Duration::from_millis(5)))
+        };
 
         tokio::select! {
             biased;
@@ -467,11 +529,21 @@ async fn run(
                 }
             }
 
-            maybe = data_in_rx.recv() => {
+            maybe = data_in_rx.recv(), if deferred.is_empty() => {
                 if let Some(d) = maybe {
-                    handle_data(&mut s, d);
-                    while let Ok(d2) = data_in_rx.try_recv() {
-                        handle_data(&mut s, d2);
+                    if let Some(back) = try_handle_data(&mut s, d) {
+                        deferred.push_back(back);
+                    } else {
+                        while deferred.is_empty() {
+                            match data_in_rx.try_recv() {
+                                Ok(d2) => {
+                                    if let Some(back) = try_handle_data(&mut s, d2) {
+                                        deferred.push_back(back);
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
                     }
                 }
             }
@@ -547,6 +619,7 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
                 id,
                 from_stack: to_app_rx,
                 data_in: s.data_in_tx.clone(),
+                split: false,
             };
             let _ = resp.send(Ok(conn));
         }
@@ -557,28 +630,43 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
     }
 }
 
-fn handle_data(s: &mut NetStack, d: DataIn) {
+/// Returns `Some(d)` when the datagram must be deferred (TCP pending full).
+fn try_handle_data(s: &mut NetStack, d: DataIn) -> Option<DataIn> {
     match d {
         DataIn::Tcp(id, data) => {
             if let Some(st) = s.tcp_conns.get_mut(&id) {
-                st.pending.extend_from_slice(&data);
+                let max = max_tcp_pending();
+                if st.pending.len() >= max {
+                    return Some(DataIn::Tcp(id, data));
+                }
+                let space = max - st.pending.len();
+                if data.len() <= space {
+                    st.pending.extend_from_slice(&data);
+                } else {
+                    st.pending.extend_from_slice(&data[..space]);
+                    return Some(DataIn::Tcp(id, data[space..].to_vec()));
+                }
             }
+            None
         }
         DataIn::TcpClose(id) => {
             if let Some(st) = s.tcp_conns.get_mut(&id) {
                 st.half_closed = true;
             }
+            None
         }
         DataIn::Udp(id, dst, data) => {
             if let Some(st) = s.udp_conns.get(&id) {
                 let sock = s.sockets.get_mut::<udp::Socket>(st.handle);
                 let _ = sock.send_slice(&data, to_ip_endpoint(dst));
             }
+            None
         }
         DataIn::UdpClose(id) => {
             if let Some(st) = s.udp_conns.remove(&id) {
                 s.sockets.remove(st.handle);
             }
+            None
         }
     }
 }
@@ -603,6 +691,7 @@ async fn service_tcp(s: &mut NetStack) {
                         id,
                         from_stack: rx,
                         data_in: data_in_tx.clone(),
+                        split: false,
                     };
                     let _ = resp.send(Ok(conn));
                 }
@@ -630,6 +719,9 @@ async fn service_tcp(s: &mut NetStack) {
                     let sent = socket.send_slice(&st.pending).unwrap_or(0);
                     if sent > 0 {
                         st.pending.drain(0..sent);
+                        if st.pending.len() * 4 < st.pending.capacity() {
+                            st.pending.shrink_to(max_tcp_pending().min(st.pending.capacity()));
+                        }
                     }
                 }
             }
@@ -673,7 +765,15 @@ async fn service_tcp(s: &mut NetStack) {
         if matches!(st_state, tcp::State::CloseWait) {
             s.sockets.get_mut::<tcp::Socket>(handle).close();
         }
-        if matches!(st_state, tcp::State::Closed) && s.tcp_conns[&id].established {
+        if matches!(st_state, tcp::State::TimeWait) {
+            if let Some(st) = s.tcp_conns.get_mut(&id) {
+                st.pending.clear();
+                st.pending.shrink_to_fit();
+            }
+        }
+        if matches!(st_state, tcp::State::Closed | tcp::State::TimeWait)
+            && s.tcp_conns[&id].established
+        {
             s.sockets.remove(handle);
             s.tcp_conns.remove(&id);
         }
@@ -703,9 +803,16 @@ async fn service_udp(s: &mut NetStack) {
         }
 
         let to_app = s.udp_conns[&id].to_app.clone();
+        let mut app_gone = to_app.is_closed();
         for p in packets {
             if to_app.send(p).await.is_err() {
+                app_gone = true;
                 break;
+            }
+        }
+        if app_gone {
+            if let Some(st) = s.udp_conns.remove(&id) {
+                s.sockets.remove(st.handle);
             }
         }
     }
