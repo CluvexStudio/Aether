@@ -964,7 +964,7 @@ async fn establish_wg(
     obfuscate: bool,
     keepalive: u16,
     label: &'static str,
-) -> Result<netstack::StackHandle> {
+) -> Result<(netstack::StackHandle, AbortOnDrop)> {
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
 
@@ -1000,19 +1000,27 @@ async fn establish_wg(
     let tunnel = wireguard::WgTunnel::from_established(session, std::sync::Arc::new(profile), inbound_tx, ipv4);
     let stack = netstack::spawn(&identity.ipv4, &identity.ipv6, mtu, inbound_rx, outbound_tx)?;
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         if let Err(e) = tunnel.run(outbound_rx).await {
             log::error!("[{label}] wireguard tunnel exited: {e}");
         }
     });
 
-    Ok(stack)
+    Ok((stack, AbortOnDrop(handle)))
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 async fn spawn_udp_forwarder(
     outer: &netstack::StackHandle,
     remote: SocketAddr,
-) -> Result<SocketAddr> {
+) -> Result<(SocketAddr, AbortOnDrop, AbortOnDrop)> {
     let sock = std::sync::Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await?);
     let local = sock.local_addr()?;
 
@@ -1024,7 +1032,7 @@ async fn spawn_udp_forwarder(
 
     let up_sock = sock.clone();
     let up_peer = inner_peer.clone();
-    tokio::spawn(async move {
+    let up = tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
         loop {
             match up_sock.recv_from(&mut buf).await {
@@ -1041,7 +1049,7 @@ async fn spawn_udp_forwarder(
 
     let down_sock = sock.clone();
     let down_peer = inner_peer.clone();
-    tokio::spawn(async move {
+    let down = tokio::spawn(async move {
         while let Some((_src, data)) = udp_rx.recv().await {
             let dst = *down_peer.lock().await;
             if let Some(dst) = dst {
@@ -1050,7 +1058,7 @@ async fn spawn_udp_forwarder(
         }
     });
 
-    Ok(local)
+    Ok((local, AbortOnDrop(up), AbortOnDrop(down)))
 }
 
 async fn run_warp_in_warp(
@@ -1060,15 +1068,16 @@ async fn run_warp_in_warp(
     listen: SocketAddr,
 ) -> Result<()> {
     log::info!("[*] establishing outer WARP tunnel to {peer}...");
-    let outer_stack = establish_wg(&primary, peer, TUNNEL_MTU, true, 5, "outer").await?;
+    let (outer_stack, _outer_tunnel) = establish_wg(&primary, peer, TUNNEL_MTU, true, 5, "outer").await?;
 
-    let forwarder = spawn_udp_forwarder(&outer_stack, peer).await?;
+    let (forwarder, _fwd_up, _fwd_down) = spawn_udp_forwarder(&outer_stack, peer).await?;
     log::info!("[+] inner endpoint tunneled through outer warp via {forwarder}");
 
     log::info!("[*] establishing inner WARP tunnel (warp-in-warp)...");
-    let inner_stack = establish_wg(&secondary, forwarder, INNER_MTU, false, 20, "inner").await?;
+    let (inner_stack, _inner_tunnel) = establish_wg(&secondary, forwarder, INNER_MTU, false, 20, "inner").await?;
 
     log::info!("[+] socks5 server listening on {listen}");
+    // Guards above abort outer/inner tunnels + forwarders when this returns.
     socks::serve(listen, inner_stack).await
 }
 
