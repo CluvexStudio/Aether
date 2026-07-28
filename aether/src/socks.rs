@@ -27,14 +27,21 @@ pub async fn serve(listen: SocketAddr, stack: StackHandle) -> Result<()> {
     log::info!("socks5 listening on {listen}");
     let bind_ip = listen.ip();
 
+    let mut clients = tokio::task::JoinSet::new();
     loop {
-        let (sock, peer) = listener.accept().await?;
-        let stack = stack.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(sock, stack, bind_ip).await {
-                log::debug!("socks client {peer} ended: {e}");
+        tokio::select! {
+            accept = listener.accept() => {
+                let (sock, peer) = accept?;
+                let stack = stack.clone();
+                clients.spawn(async move {
+                    if let Err(e) = handle_client(sock, stack, bind_ip).await {
+                        log::debug!("socks client {peer} ended: {e}");
+                    }
+                });
             }
-        });
+            // Reap finished clients so JoinSet does not grow without bound.
+            Some(_) = clients.join_next(), if !clients.is_empty() => {}
+        }
     }
 }
 
