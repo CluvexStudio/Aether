@@ -43,31 +43,51 @@ async fn http_probe(stack: &netstack::StackHandle) -> Result<()> {
     );
     sender.send(request.into_bytes()).await?;
 
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
     let mut buf = Vec::new();
+    let mut timed_out = false;
+
     loop {
-        match tokio::time::timeout(Duration::from_secs(6), from_stack.recv()).await {
+        match tokio::time::timeout_at(deadline, from_stack.recv()).await {
             Ok(Some(chunk)) => {
                 buf.extend_from_slice(&chunk);
-                if buf.len() >= 12 {
+                if buf.windows(2).any(|w| w == b"\r\n") || buf.len() >= 128 {
                     break;
                 }
             }
             Ok(None) => break,
-            Err(_) => return Err(AetherError::Other("http probe response timeout".into())),
+            Err(_) => {
+                timed_out = true;
+                break;
+            }
         }
     }
 
     sender.close().await;
 
-    let status_line = String::from_utf8_lossy(&buf);
-    if status_line.contains("204") {
+    if timed_out {
+        return Err(AetherError::Other("http probe response timeout".into()));
+    }
+
+    let response = String::from_utf8_lossy(&buf);
+    let status_line = response.lines().next().unwrap_or("").trim();
+
+    if http_status_code(status_line) == Some(204) {
         Ok(())
     } else {
-        let first_line = status_line.lines().next().unwrap_or("").trim();
         Err(AetherError::Other(format!(
-            "unexpected http probe response: {first_line}"
+            "unexpected http probe response: {status_line}"
         )))
     }
+}
+
+fn http_status_code(status_line: &str) -> Option<u16> {
+    let mut parts = status_line.split(' ');
+    let version = parts.next()?;
+    if !version.starts_with("HTTP/") {
+        return None;
+    }
+    parts.next()?.parse().ok()
 }
 
 pub struct MasquePingParams {
@@ -198,5 +218,32 @@ pub async fn wg_http_ping_established(
         Ok(Ok(rtt)) => Ok(rtt),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(AetherError::Other("ironclad http probe timeout".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_status_code;
+
+    #[test]
+    fn reads_the_status_code_from_the_status_line() {
+        assert_eq!(http_status_code("HTTP/1.1 204 No Content"), Some(204));
+        assert_eq!(http_status_code("HTTP/1.1 200 OK"), Some(200));
+        assert_eq!(http_status_code("HTTP/1.0 403 Forbidden"), Some(403));
+    }
+
+    #[test]
+    fn a_header_that_merely_contains_204_is_not_a_success() {
+        let response = "HTTP/1.1 200 OK\r\nContent-Length: 204\r\n\r\n";
+        let status_line = response.lines().next().unwrap().trim();
+        assert_ne!(http_status_code(status_line), Some(204));
+    }
+
+    #[test]
+    fn rejects_lines_that_are_not_http_status_lines() {
+        assert_eq!(http_status_code(""), None);
+        assert_eq!(http_status_code("204"), None);
+        assert_eq!(http_status_code("GET / HTTP/1.1"), None);
+        assert_eq!(http_status_code("HTTP/1.1 abc"), None);
     }
 }

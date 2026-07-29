@@ -33,6 +33,9 @@ fn app_queue() -> usize {
 
 const MAX_INGEST_PER_TICK: usize = 512;
 const MAX_RECV_CHUNKS: usize = 128;
+const BACKPRESSURE_RETRY: std::time::Duration = std::time::Duration::from_millis(2);
+const DROP_REPORT_STEP: usize = 512;
+const MAX_IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(250);
 
 type OpenTcpResp = oneshot::Sender<std::result::Result<TcpConn, String>>;
 type OpenUdpResp = oneshot::Sender<std::result::Result<UdpConn, String>>;
@@ -423,6 +426,9 @@ async fn run(
     mut inbound_rx: mpsc::Receiver<Vec<u8>>,
     outbound_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<()> {
+    let mut tx_dropped: usize = 0;
+    let mut next_drop_report: usize = DROP_REPORT_STEP;
+
     loop {
         let now = Instant::now();
         let poll_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -432,14 +438,32 @@ async fn run(
             s.device.rx.clear();
             s.device.tx.clear();
         }
-        service_tcp(&mut s).await;
-        service_udp(&mut s).await;
-        flush_tx(&mut s, &outbound_tx).await;
+        let tcp_busy = service_tcp(&mut s);
+        let udp_busy = service_udp(&mut s);
+        let dropped = flush_tx(&mut s, &outbound_tx);
 
-        let delay = s
-            .iface
-            .poll_delay(Instant::now(), &s.sockets)
-            .map(|d| std::time::Duration::from_micros(d.total_micros()));
+        if dropped > 0 {
+            tx_dropped = tx_dropped.saturating_add(dropped);
+            if tx_dropped >= next_drop_report {
+                next_drop_report = tx_dropped + DROP_REPORT_STEP;
+                log::debug!("[netstack] dropped {tx_dropped} outbound packets under pressure");
+            }
+        }
+
+        let delay = if tcp_busy || udp_busy {
+            Some(BACKPRESSURE_RETRY)
+        } else {
+            let polled = s
+                .iface
+                .poll_delay(Instant::now(), &s.sockets)
+                .map(|d| std::time::Duration::from_micros(d.total_micros()));
+
+            if s.tcp_conns.is_empty() && s.udp_conns.is_empty() {
+                polled
+            } else {
+                Some(polled.map_or(MAX_IDLE_TICK, |d| d.min(MAX_IDLE_TICK)))
+            }
+        };
 
         tokio::select! {
             biased;
@@ -583,7 +607,8 @@ fn handle_data(s: &mut NetStack, d: DataIn) {
     }
 }
 
-async fn service_tcp(s: &mut NetStack) {
+fn service_tcp(s: &mut NetStack) -> bool {
+    let mut backpressured = false;
     let ids: Vec<usize> = s.tcp_conns.keys().copied().collect();
 
     for id in ids {
@@ -643,28 +668,38 @@ async fn service_tcp(s: &mut NetStack) {
             }
         }
 
-        let mut chunks: Vec<Vec<u8>> = Vec::new();
-        {
-            let socket = s.sockets.get_mut::<tcp::Socket>(handle);
-            while socket.can_recv() && chunks.len() < MAX_RECV_CHUNKS {
-                match socket.recv(|buf| {
-                    let v = buf.to_vec();
-                    (v.len(), v)
-                }) {
-                    Ok(v) if !v.is_empty() => chunks.push(v),
-                    _ => break,
-                }
-            }
-        }
-
         let to_app = s.tcp_conns[&id].to_app.clone();
         let mut app_gone = false;
-        for v in chunks {
-            if to_app.send(v).await.is_err() {
-                app_gone = true;
+        let mut delivered = 0;
+
+        while delivered < MAX_RECV_CHUNKS {
+            let permit = match to_app.try_reserve() {
+                Ok(permit) => permit,
+                Err(mpsc::error::TrySendError::Full(())) => {
+                    backpressured = true;
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(())) => {
+                    app_gone = true;
+                    break;
+                }
+            };
+
+            let socket = s.sockets.get_mut::<tcp::Socket>(handle);
+            if !socket.can_recv() {
                 break;
             }
+            let chunk = match socket.recv(|buf| {
+                let v = buf.to_vec();
+                (v.len(), v)
+            }) {
+                Ok(v) if !v.is_empty() => v,
+                _ => break,
+            };
+            permit.send(chunk);
+            delivered += 1;
         }
+
         if app_gone {
             s.sockets.get_mut::<tcp::Socket>(handle).close();
         }
@@ -678,9 +713,12 @@ async fn service_tcp(s: &mut NetStack) {
             s.tcp_conns.remove(&id);
         }
     }
+
+    backpressured
 }
 
-async fn service_udp(s: &mut NetStack) {
+fn service_udp(s: &mut NetStack) -> bool {
+    let mut backpressured = false;
     let ids: Vec<usize> = s.udp_conns.keys().copied().collect();
 
     for id in ids {
@@ -689,32 +727,272 @@ async fn service_udp(s: &mut NetStack) {
             None => continue,
         };
 
-        let mut packets: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
-        {
+        let to_app = s.udp_conns[&id].to_app.clone();
+        let mut delivered = 0;
+
+        while delivered < MAX_RECV_CHUNKS {
+            let permit = match to_app.try_reserve() {
+                Ok(permit) => permit,
+                Err(mpsc::error::TrySendError::Full(())) => {
+                    backpressured = true;
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(())) => break,
+            };
+
             let socket = s.sockets.get_mut::<udp::Socket>(handle);
-            while socket.can_recv() && packets.len() < MAX_RECV_CHUNKS {
-                match socket.recv() {
-                    Ok((data, meta)) => {
-                        packets.push((endpoint_to_socketaddr(meta.endpoint), data.to_vec()));
-                    }
-                    Err(_) => break,
+            if !socket.can_recv() {
+                break;
+            }
+            match socket.recv() {
+                Ok((data, meta)) => {
+                    permit.send((endpoint_to_socketaddr(meta.endpoint), data.to_vec()));
+                    delivered += 1;
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    backpressured
+}
+
+fn flush_tx(s: &mut NetStack, outbound_tx: &mpsc::Sender<Vec<u8>>) -> usize {
+    let mut dropped = 0;
+    while let Some(pkt) = s.device.tx.pop_front() {
+        match outbound_tx.try_send(pkt) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => dropped += 1,
+            Err(mpsc::error::TrySendError::Closed(_)) => break,
+        }
+    }
+    dropped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration as StdDuration;
+
+    fn udp_ip_packet(payload_len: usize) -> Vec<u8> {
+        let total = 20 + 8 + payload_len;
+        let mut pkt = vec![0u8; total];
+        pkt[0] = 0x45;
+        pkt[2] = (total >> 8) as u8;
+        pkt[3] = (total & 0xff) as u8;
+        pkt[8] = 64;
+        pkt[9] = 17;
+        pkt[12..16].copy_from_slice(&[10, 0, 0, 9]);
+        pkt[16..20].copy_from_slice(&[198, 18, 0, 1]);
+        pkt[20..22].copy_from_slice(&5555u16.to_be_bytes());
+        pkt[22..24].copy_from_slice(&9999u16.to_be_bytes());
+        let udp_len = (8 + payload_len) as u16;
+        pkt[24..26].copy_from_slice(&udp_len.to_be_bytes());
+        pkt
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn netstack_keeps_draining_inbound_when_outbound_is_never_read() {
+        let (inbound_tx, inbound_rx) = mpsc::channel::<Vec<u8>>(4);
+        let (outbound_tx, _outbound_rx_never_read) = mpsc::channel::<Vec<u8>>(1);
+
+        let stack = spawn("198.18.0.1", "fc00::1", 1400, inbound_rx, outbound_tx)
+            .expect("netstack should start");
+
+        let udp = stack.open_udp().await.expect("udp socket should open");
+        let dst: SocketAddr = "1.1.1.1:53".parse().unwrap();
+
+        for _ in 0..64 {
+            let _ = udp.send_to(dst, vec![0u8; 64]).await;
+        }
+
+        tokio::time::sleep(StdDuration::from_millis(120)).await;
+
+        for index in 0..64 {
+            let send = inbound_tx.send(udp_ip_packet(32));
+            tokio::time::timeout(StdDuration::from_secs(3), send)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("netstack stopped draining inbound at packet {index}: deadlock")
+                })
+                .expect("inbound channel should stay open");
+        }
+    }
+
+    fn checksum16(data: &[u8], initial: u32) -> u16 {
+        let mut sum = initial;
+        let mut chunks = data.chunks_exact(2);
+        for chunk in chunks.by_ref() {
+            sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+        }
+        if let Some(&last) = chunks.remainder().first() {
+            sum += (last as u32) << 8;
+        }
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        !(sum as u16)
+    }
+
+    struct Segment {
+        src_port: u16,
+        dst_port: u16,
+        seq: u32,
+        flags: u8,
+    }
+
+    fn parse_tcp(pkt: &[u8]) -> Option<Segment> {
+        if pkt.len() < 20 || pkt[0] >> 4 != 4 {
+            return None;
+        }
+        let ihl = ((pkt[0] & 0x0f) as usize) * 4;
+        if pkt[9] != 6 || pkt.len() < ihl + 20 {
+            return None;
+        }
+        let tcp = &pkt[ihl..];
+        Some(Segment {
+            src_port: u16::from_be_bytes([tcp[0], tcp[1]]),
+            dst_port: u16::from_be_bytes([tcp[2], tcp[3]]),
+            seq: u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]),
+            flags: tcp[13],
+        })
+    }
+
+    fn build_tcp(
+        src: (Ipv4Addr, u16),
+        dst: (Ipv4Addr, u16),
+        seq: u32,
+        ack: u32,
+        flags: u8,
+    ) -> Vec<u8> {
+        let mut tcp = vec![0u8; 20];
+        tcp[0..2].copy_from_slice(&src.1.to_be_bytes());
+        tcp[2..4].copy_from_slice(&dst.1.to_be_bytes());
+        tcp[4..8].copy_from_slice(&seq.to_be_bytes());
+        tcp[8..12].copy_from_slice(&ack.to_be_bytes());
+        tcp[12] = 5 << 4;
+        tcp[13] = flags;
+        tcp[14..16].copy_from_slice(&64240u16.to_be_bytes());
+
+        let mut pseudo = Vec::new();
+        pseudo.extend_from_slice(&src.0.octets());
+        pseudo.extend_from_slice(&dst.0.octets());
+        pseudo.push(0);
+        pseudo.push(6);
+        pseudo.extend_from_slice(&(tcp.len() as u16).to_be_bytes());
+        pseudo.extend_from_slice(&tcp);
+        let tcp_sum = checksum16(&pseudo, 0);
+        tcp[16..18].copy_from_slice(&tcp_sum.to_be_bytes());
+
+        let total = 20 + tcp.len();
+        let mut ip = vec![0u8; 20];
+        ip[0] = 0x45;
+        ip[2..4].copy_from_slice(&(total as u16).to_be_bytes());
+        ip[8] = 64;
+        ip[9] = 6;
+        ip[12..16].copy_from_slice(&src.0.octets());
+        ip[16..20].copy_from_slice(&dst.0.octets());
+        let ip_sum = checksum16(&ip, 0);
+        ip[10..12].copy_from_slice(&ip_sum.to_be_bytes());
+
+        ip.extend_from_slice(&tcp);
+        ip
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_vanished_app_makes_the_netstack_tear_the_connection_down() {
+        let local = Ipv4Addr::new(198, 18, 0, 1);
+        let remote = Ipv4Addr::new(93, 184, 216, 34);
+        let remote_port = 80u16;
+
+        let (inbound_tx, inbound_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<Vec<u8>>(256);
+
+        let stack = spawn("198.18.0.1", "fc00::1", 1400, inbound_rx, outbound_tx)
+            .expect("netstack should start");
+
+        let dst = SocketAddr::new(IpAddr::V4(remote), remote_port);
+        let connect = {
+            let stack = stack.clone();
+            tokio::spawn(async move { stack.open_tcp(dst).await })
+        };
+
+        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(5);
+
+        let (client_port, client_seq) = loop {
+            let pkt = tokio::time::timeout_at(deadline, outbound_rx.recv())
+                .await
+                .expect("the netstack should emit a syn")
+                .expect("outbound channel stays open");
+
+            if let Some(seg) = parse_tcp(&pkt) {
+                if seg.dst_port == remote_port && seg.flags & 0x02 != 0 && seg.flags & 0x10 == 0 {
+                    break (seg.src_port, seg.seq);
+                }
+            }
+        };
+
+        let syn_ack = build_tcp(
+            (remote, remote_port),
+            (local, client_port),
+            5000,
+            client_seq.wrapping_add(1),
+            0x12,
+        );
+        inbound_tx.send(syn_ack).await.expect("inbound accepts the syn-ack");
+
+        let conn = tokio::time::timeout(StdDuration::from_secs(5), connect)
+            .await
+            .expect("the connect call should finish")
+            .expect("the connect task should not panic")
+            .expect("the connection should be established");
+
+        drop(conn);
+
+        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(5);
+        let mut saw_teardown = false;
+
+        while let Ok(Some(pkt)) = tokio::time::timeout_at(deadline, outbound_rx.recv()).await {
+            if let Some(seg) = parse_tcp(&pkt) {
+                if seg.flags & 0x01 != 0 || seg.flags & 0x04 != 0 {
+                    saw_teardown = true;
+                    break;
                 }
             }
         }
 
-        let to_app = s.udp_conns[&id].to_app.clone();
-        for p in packets {
-            if to_app.send(p).await.is_err() {
-                break;
-            }
-        }
+        assert!(
+            saw_teardown,
+            "the netstack never closed the socket after the app went away, so it leaks"
+        );
     }
-}
 
-async fn flush_tx(s: &mut NetStack, outbound_tx: &mpsc::Sender<Vec<u8>>) {
-    while let Some(pkt) = s.device.tx.pop_front() {
-        if outbound_tx.send(pkt).await.is_err() {
-            return;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flush_tx_drops_instead_of_blocking_when_outbound_is_full() {
+        let (outbound_tx, outbound_rx) = mpsc::channel::<Vec<u8>>(2);
+        let mut stack = NetStack {
+            iface: {
+                let mut device = StackDevice::new(1400);
+                let config = Config::new(HardwareAddress::Ip);
+                Interface::new(config, &mut device, Instant::now())
+            },
+            device: StackDevice::new(1400),
+            sockets: SocketSet::new(Vec::new()),
+            tcp_conns: HashMap::new(),
+            udp_conns: HashMap::new(),
+            next_id: 0,
+            next_port: 40000,
+            data_in_tx: mpsc::channel(1).0,
+        };
+
+        for _ in 0..10 {
+            stack.device.tx.push_back(vec![1, 2, 3]);
         }
+
+        let dropped = flush_tx(&mut stack, &outbound_tx);
+
+        assert!(stack.device.tx.is_empty(), "the tx queue must be drained");
+        assert_eq!(dropped, 8, "everything past the channel capacity is dropped");
+        assert_eq!(outbound_rx.len(), 2, "the channel keeps what fits");
     }
 }

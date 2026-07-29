@@ -307,12 +307,12 @@ fn build_wg_candidates(st: &WgStrategy, ports: &[u16], ip: IpScan) -> Vec<(IpAdd
     let mut pool: Vec<IpAddr> = Vec::new();
 
     if ip.want_v4() {
-        for s in wireguard::WG_SEEDS_V4 {
+        for s in wireguard::wg_seeds_v4() {
             if let Ok(a) = s.parse::<Ipv4Addr>() {
                 anchors.push(IpAddr::V4(a));
             }
         }
-        let cidr_hosts: Vec<Vec<Ipv4Addr>> = wireguard::WG_PREFIXES_V4
+        let cidr_hosts: Vec<Vec<Ipv4Addr>> = wireguard::wg_prefixes_v4()
             .iter()
             .map(|c| {
                 if st.full_subnet {
@@ -339,7 +339,7 @@ fn build_wg_candidates(st: &WgStrategy, ports: &[u16], ip: IpScan) -> Vec<(IpAdd
             }
         }
         let per = if st.sample_per_cidr == 0 { 80 } else { st.sample_per_cidr };
-        let cidr6: Vec<Vec<Ipv6Addr>> = wireguard::WG_PREFIXES_V6
+        let cidr6: Vec<Vec<Ipv6Addr>> = wireguard::wg_prefixes_v6()
             .iter()
             .map(|c| sample_cidr_v6(c, per, wireguard::WG_PREFIXES_V4))
             .collect();

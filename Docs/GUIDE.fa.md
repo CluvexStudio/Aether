@@ -267,8 +267,12 @@ AETHER_QUICK_RECONNECT=1 ./target/release/aether --masque
 
 شما می‌توانید ایمیج رسمی Aether را مستقیماً از GitHub Container Registry (GHCR) اجرا کنید که یه محیط ایزوله بهت می‌ده و نیازی به نصب Rust یا ابزارهای C++ روی سیستم خودت نداری.
 
+> **پراکسی SOCKS5 هیچ احراز هویتی ندارد.** دستورهای زیر پورت را فقط روی `127.0.0.1` منتشر می‌کنند. اگر به‌جایش `-p 1819:1819` بنویسی، روی همه‌ی اینترفیس‌های سیستم گوش می‌دهد و هر کسی در شبکه می‌تواند تونل تو را مانند یک رله‌ی باز مصرف کند.
+
+والیوم `-v aether-data:/data` هویت WARP را بین ریستارت‌ها نگه می‌دارد. بدون آن هر اجرا یک دستگاه نو ثبت می‌کند، همان چیزی که در نهایت باعث محدود شدن آدرست توسط Cloudflare می‌شود.
+
 ```bash
-docker run -it -p 1819:1819 \
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data \
   -e AETHER_PROTOCOL=masque \
   -e AETHER_SCAN=balanced \
   ghcr.io/cluvexstudio/aether:latest
@@ -279,7 +283,7 @@ docker run -it -p 1819:1819 \
 
 ```bash
 docker build -t aether .
-docker run -it -p 1819:1819 aether
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data aether
 ```
 
 ## تست اینکه واقعاً کار می‌کنه یا نه

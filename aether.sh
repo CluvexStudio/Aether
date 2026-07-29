@@ -61,8 +61,7 @@ detect_arch() {
     x86_64|amd64)
       echo "x86_64" ;;
     *)
-      error "Unsupported architecture: ${machine}"
-      exit 1 ;;
+      echo "unsupported" ;;
   esac
 }
 
@@ -100,6 +99,10 @@ do_install() {
 
   local arch
   arch="$(detect_arch)"
+  if [[ "${arch}" == "unsupported" ]]; then
+    error "Unsupported architecture: $(uname -m)"
+    exit 1
+  fi
   local archive="aether-android-${arch}.tar.gz"
 
   info "Detected architecture: $(uname -m) -> asset: ${archive}"
@@ -167,10 +170,26 @@ do_install() {
     exit 1
   fi
 
-  mkdir -p "${PREFIX}/bin" "${PREFIX}/etc"
-  chmod +x "${binary_path}"
-  cp -f "${binary_path}" "${INSTALL_PATH}"
-  echo "${tag_name}" > "${VERSION_FILE}"
+  if ! mkdir -p "${PREFIX}/bin" "${PREFIX}/etc"; then
+    error "Could not create ${PREFIX}/bin or ${PREFIX}/etc"
+    exit 1
+  fi
+
+  if ! chmod +x "${binary_path}"; then
+    error "Could not mark the downloaded binary executable"
+    exit 1
+  fi
+
+  if ! cp -f "${binary_path}" "${INSTALL_PATH}"; then
+    error "Could not copy the binary to ${INSTALL_PATH}"
+    error "If aether is currently running, stop it first and try again."
+    exit 1
+  fi
+
+  if ! echo "${tag_name}" > "${VERSION_FILE}"; then
+    error "Installed the binary but could not record the version in ${VERSION_FILE}"
+    exit 1
+  fi
 
   success "Aether ${tag_name} installed. Run it with: ${BIN_NAME}"
   info "Once running, SOCKS5 proxy will listen on 127.0.0.1:1819"

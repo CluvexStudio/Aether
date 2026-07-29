@@ -78,16 +78,20 @@ target/release/aether
 
 You can run Aether in an isolated environment using Docker. The official image is available on GitHub Container Registry (GHCR).
 
+> **The SOCKS5 proxy has no authentication.** Anyone who can reach the port can use your tunnel. Every command below publishes the port to `127.0.0.1` only, so it stays reachable from your own machine and nothing else. Do not replace it with `-p 1819:1819`, because that form listens on every interface of the host and turns the proxy into an open relay. If you genuinely need to serve other machines, put an authenticated front end in front of it and firewall the port.
+
+The `-v aether-data:/data` volume keeps the generated WARP identity between runs. Without it every start registers a brand new device, and Cloudflare begins rate limiting your address.
+
 Pull and run the pre-built image (interactive mode is required for initial setup):
 
 ```bash
-docker run -it -p 1819:1819 ghcr.io/cluvexstudio/aether:latest
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data ghcr.io/cluvexstudio/aether:latest
 ```
 
 You can also bypass prompts by providing environment variables:
 
 ```bash
-docker run -it -p 1819:1819 \
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data \
   -e AETHER_PROTOCOL=masque \
   -e AETHER_SCAN=balanced \
   ghcr.io/cluvexstudio/aether:latest
@@ -97,7 +101,7 @@ If you prefer to build the image manually from source:
 
 ```bash
 docker build -t aether .
-docker run -it -p 1819:1819 aether
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data aether
 ```
 
 ## Usage

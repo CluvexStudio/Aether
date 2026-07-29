@@ -423,7 +423,7 @@ jobs:
     name: Publish release
     needs: [desktop, linux, linux-armv7, linux-armv7-musl, linux-musl, android]
     runs-on: ubuntu-latest
-    if: ${{ always() }} && startsWith(github.ref, 'refs/tags/') 
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -452,19 +452,53 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v1.4.0
+            Aether v1.5.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            What's new in v1.4.0:
+            What's new in v1.5.0:
 
-            - Security fix: MASQUE connections now verify the Cloudflare edge certificate against pinned SPKI hashes instead of skipping verification entirely. Before this, anyone able to intercept the connection could present a fake certificate and the client would accept it silently. Both the HTTP/3 and HTTP/2 transports are covered.
-            - Fixed WireGuard and WARP-in-WARP (gool) reporting "connected" while the tunnel was actually dead. Both now run a continuous health check and reconnect automatically if no real data has come back from the peer for a while, instead of sitting there silently with a socks5 proxy that leads nowhere.
-            - Fixed a memory/task leak in WireGuard, MASQUE HTTP/2, and MASQUE HTTP/3: every reconnect used to leave old background tasks running instead of shutting them down, so long-running sessions with frequent drops would slowly pile up idle tasks and memory.
-            - gool (WARP-in-WARP) now reconnects automatically like the other two modes. Previously, if the outer tunnel dropped, the whole process just exited.
-            - `--log-level` replaces the old all-or-nothing `--verbose`. Pick error, warn, info, debug or trace. info stays quiet, debug adds tunnel internals useful for troubleshooting, trace adds full per-packet detail. `--verbose` still works as a shortcut for debug.
-            - Aether now reads the machine's CPU count and RAM at startup and scales scan concurrency, socket buffers, and internal queue sizes accordingly, so it doesn't hog resources on a router or a small board. Override with `--perf low|medium|high` if you want to force it.
-            - New fully static builds for x86_64 and aarch64 musl, on top of the existing armv7 musl build. Covers OpenWrt on x86_64/arm64 boxes and Raspberry Pi 4/5 running a musl userland.
+            Zero Trust (WARP for organizations)
+
+            - Aether can now enrol into a Cloudflare Zero Trust organization with `--team <name>`, so it connects as a managed device on your organization's account instead of as an anonymous consumer WARP device. Works on both MASQUE and WireGuard.
+            - Three ways to sign in. `--access-email <addr>` sends a one-time code to your mailbox and Aether prompts for it. `--access-id` plus `--access-secret` uses an Access service token for headless machines and CI. `--access-token <jwt>` accepts a token you already obtained by signing in at https://<team>.cloudflareaccess.com/warp.
+            - The enrolment token is cached in memory for the lifetime of the process, so a reconnect or a protocol switch does not ask you to sign in again.
+            - One team identity is shared across protocols. Switching between MASQUE and WireGuard reuses the same registered device instead of forcing a second sign-in and burning a second device seat.
+            - The endpoint Cloudflare assigns to your organization is probed and confirmed before use, and Aether falls back to a normal edge scan if it does not answer. A stale assignment can no longer strand you on a dead peer.
+            - The device profile is refreshed on startup, so an IP or endpoint your administrator changed on the dashboard is picked up without deleting the local identity file.
+            - `--gateway` routes HTTP and HTTPS through the organization's Gateway proxy so its filtering and logging apply. It is off by default: it adds a hop inside the tunnel, it logs your browsing, and the release does not assume you want either. When it is on and the proxy stops answering, Aether fails open to direct tunnel egress rather than breaking every connection.
+            - Enrolling no longer needs environment variables. The interactive menu has a fourth entry: pick Zero Trust, type the team name, give an email, enter the code that arrives, and you land back on the transport menu already signed in. A team you have enrolled before is offered as the default and reused without a new sign-in.
+            - A mistyped login code no longer aborts startup. You get three attempts before it gives up.
+            - `--warp` is accepted as an alias for `--wg`.
+
+            Routing rules
+
+            - Two new lists decide what a destination is allowed to do, in the style of Xray's routing rules. `--route-block <list>` refuses the connection outright. `--route-direct <list>` sends it out of your real interface instead of the tunnel, which is what you want for banking apps, LAN services, and domestic sites that reject foreign addresses.
+            - `--routes <path>` reads the same rules from a file, one entry per line, so a long list does not have to live on the command line.
+            - Rules match on domain, IP, and port, and apply to both TCP and UDP. Direct UDP gets its own socket and reply pump rather than being smuggled through the tunnel's relay.
+            - Per-application rules deliberately stay out of the core. In tun mode the traffic has already lost its application identity by the time it reaches Aether, so a per-app list cannot be honoured here. It belongs in the Android client's VpnService, which is the same split Xray uses.
+
+            Security fixes
+
+            - SOCKS5 UDP ASSOCIATE used to accept datagrams from any source once the relay socket was open, which let anything else on the machine, or on the LAN when bound to a public address, inject and read traffic through your tunnel. The relay is now pinned to the peer that opened the control connection.
+            - The Docker image no longer encourages publishing the SOCKS port on every interface. The documented `docker run` lines bind it to `127.0.0.1:1819` on the host and keep the identity in a named volume, and the guides now spell out what changing that exposes. Identity files survive a container restart instead of being regenerated on every run.
+            - Updated the vendored quiche to 0.29.3, which carries three upstream fixes: the path-event queue is now bounded, so a peer rotating source ports can no longer grow it without limit; HTTP/3 QPACK accounts for the 32-byte per-field overhead when checking a field section against the announced limit; and the maximum priority-update size is enforced.
+            - Pinned h2 to an exact version rather than a floating minor, so a release build cannot silently pick up a different HTTP/2 implementation than the one that was tested.
+
+            Reliability fixes
+
+            - Fixed WARP-in-WARP (gool) dropping silently after an hour or two while the log still said connected and nothing reconnected. The tunnel was started as a detached background task, so when its health check declared the peer dead the failure was only logged: the SOCKS5 port stayed open, the reconnect loop never got control, and traffic went nowhere until the process was restarted. Both the outer and inner tunnels are now watched alongside the SOCKS server, and whichever one dies first tears the others down and triggers a reconnect. Reported as issue #65.
+            - Every reconnect in gool used to leave the previous tunnel's netstack, UDP forwarder tasks, and sockets running. On a long-lived service with frequent drops those piled up. They are now tied to a guard that cleans up on exit.
+            - Fixed `Address already in use` when rebinding the SOCKS5 listener during a reconnect. The old listener was aborted but not awaited, so the port was sometimes still held when the new one tried to bind.
+            - Endpoint scanning now follows Cloudflare's documented order. WireGuard swept UDP 500 first even though the documented default is 2408, which is now tried first, followed by the documented fallbacks 500, 1701 and 4500. For MASQUE the documented ingress range 162.159.197.0/24 leads the sweep instead of sitting seventh behind two DNS-over-HTTPS ranges that can never answer a MASQUE handshake; those two are now swept last. IPv6 is ordered the same way, and when a team is configured the Zero Trust ranges are promoted to the front.
+
+            Other fixes and additions
+
+            - Fixed a flow-control bug in the MASQUE HTTP/2 capsule writer. It compared the wrong side of the reserved-capacity result, which could spin in a tight loop and could also write a capsule before the peer had granted room for it.
+            - Registration has a camouflaged fallback path for networks that tamper with the Cloudflare API. It talks to an edge address directly with no DNS lookup and rotates between three TLS fingerprints, so a blocked or poisoned api.cloudflareclient.com no longer stops a first-time signup.
+            - Registration and profile calls now retry with backoff and honour a `Retry-After` response, instead of failing on the first transient error or hammering the API.
+            - `--dns <list>` (or `AETHER_DNS`) sets the resolvers used inside the tunnel, so you are not stuck with the defaults.
+            - The Zero Trust edge ranges 162.159.193.0/24 and 2606:4700:100::/48 are included in endpoint scanning, and UDP port 4500 was added to the MASQUE port list, matching what Cloudflare hands out to team accounts.
 
             This release includes prebuilt binaries for:
 

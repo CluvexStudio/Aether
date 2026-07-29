@@ -116,6 +116,37 @@ pub fn encode_datagram_capsule(ip_packet: &[u8]) -> Vec<u8> {
     encode_capsule(CAPSULE_DATAGRAM, ip_packet)
 }
 
+pub fn strip_datagram_context(payload: &[u8]) -> Option<Vec<u8>> {
+    if payload.is_empty() {
+        return None;
+    }
+
+    let mut b = Octets::with_slice(payload);
+    if let Ok(ctx) = b.get_varint() {
+        if ctx == consts::CONNECT_IP_CONTEXT_ID {
+            let rest = b.cap();
+            let consumed = payload.len() - rest;
+            let inner = &payload[consumed..];
+            if looks_like_ip_packet(inner) {
+                return Some(inner.to_vec());
+            }
+        }
+    }
+
+    if looks_like_ip_packet(payload) {
+        return Some(payload.to_vec());
+    }
+
+    None
+}
+
+fn looks_like_ip_packet(data: &[u8]) -> bool {
+    match data.first() {
+        Some(first) => matches!(first >> 4, 4 | 6) && data.len() >= 20,
+        None => false,
+    }
+}
+
 pub struct CapsuleParser {
     buf: Vec<u8>,
 }
@@ -301,4 +332,61 @@ fn ipv4_header_checksum(header: &[u8]) -> u16 {
         sum = (sum & 0xffff) + (sum >> 16);
     }
     !(sum as u16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip_packet() -> Vec<u8> {
+        let mut pkt = vec![0u8; 24];
+        pkt[0] = 0x45;
+        pkt[9] = 17;
+        pkt[12..16].copy_from_slice(&[198, 18, 0, 1]);
+        pkt[16..20].copy_from_slice(&[1, 1, 1, 1]);
+        pkt
+    }
+
+    fn capsule_value(capsule: &[u8]) -> Vec<u8> {
+        let mut b = Octets::with_slice(capsule);
+        assert_eq!(b.get_varint().unwrap(), CAPSULE_DATAGRAM);
+        let length = b.get_varint().unwrap() as usize;
+        b.get_bytes(length).unwrap().to_vec()
+    }
+
+    #[test]
+    fn the_h2_capsule_carries_the_bare_packet_that_the_cloudflare_edge_expects() {
+        let packet = ip_packet();
+        assert_eq!(capsule_value(&encode_datagram_capsule(&packet)), packet);
+    }
+
+    #[test]
+    fn a_capsule_round_trips_through_the_receive_path() {
+        let packet = ip_packet();
+        let value = capsule_value(&encode_datagram_capsule(&packet));
+        assert_eq!(strip_datagram_context(&value), Some(packet));
+    }
+
+    #[test]
+    fn a_payload_that_does_carry_a_context_id_is_also_accepted() {
+        let packet = ip_packet();
+        let mut framed = vec![0u8];
+        framed.extend_from_slice(&packet);
+        assert_eq!(strip_datagram_context(&framed), Some(packet));
+    }
+
+    #[test]
+    fn a_payload_that_is_not_an_ip_packet_is_rejected() {
+        assert_eq!(strip_datagram_context(&[]), None);
+        assert_eq!(strip_datagram_context(&[0x00, 0x01, 0x02]), None);
+        assert_eq!(strip_datagram_context(&[0xff; 40]), None);
+    }
+
+    #[test]
+    fn the_h3_path_still_carries_the_context_id() {
+        let packet = ip_packet();
+        let h3 = encode_ip_datagram(8, &packet).expect("h3 encoding");
+        let decoded = decode_ip_datagram(&h3, 8).expect("h3 decoding").expect("payload");
+        assert_eq!(decoded, packet);
+    }
 }

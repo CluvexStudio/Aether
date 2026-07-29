@@ -238,6 +238,9 @@ pub async fn run(
     let mut probe_interval = tokio::time::interval(Duration::from_millis(700));
     probe_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let mut ctrl_open = true;
+    let mut outbound_open = true;
+
     loop {
         if data_check && !ready_fired {
             if let Some(dl) = validate_deadline {
@@ -290,20 +293,25 @@ pub async fn run(
                 }
             }
 
-            ctrl = internals.ctrl_rx.recv() => {
+            ctrl = internals.ctrl_rx.recv(), if ctrl_open => {
                 match ctrl {
                     Some(Control::Migrate) => {
                         if let Err(e) = do_migrate(&mut conn, peer, &mut sockets, &net_tx, &mut readers).await {
                             log::warn!("migration failed: {e}");
                         }
                     }
-                    Some(Control::Close) | None => {
+                    Some(Control::Close) => {
+                        ctrl_open = false;
+                        let _ = conn.close(true, 0x00, b"bye");
+                    }
+                    None => {
+                        ctrl_open = false;
                         let _ = conn.close(true, 0x00, b"bye");
                     }
                 }
             }
 
-            pkt = internals.outbound_rx.recv() => {
+            pkt = internals.outbound_rx.recv(), if outbound_open => {
                 match pkt {
                     Some(ip_packet) => {
                         if let Some(sid) = req_stream {
@@ -318,6 +326,7 @@ pub async fn run(
                         }
                     }
                     None => {
+                        outbound_open = false;
                         let _ = conn.close(true, 0x00, b"eof");
                     }
                 }
@@ -357,7 +366,7 @@ pub async fn run(
         }
 
         let got_data =
-            drain_datagrams(&mut conn, req_stream, &internals.inbound_tx, &mut out_buf).await;
+            drain_datagrams(&mut conn, req_stream, &internals.inbound_tx, &mut out_buf);
 
         if got_data && !ready_fired {
             validate_successes += 1;
@@ -527,7 +536,7 @@ fn bytes_to_ip(version: u8, bytes: &[u8]) -> Option<IpAddr> {
     }
 }
 
-async fn drain_datagrams(
+fn drain_datagrams(
     conn: &mut quiche::Connection,
     req_stream: Option<u64>,
     inbound_tx: &mpsc::Sender<Vec<u8>>,
@@ -544,8 +553,12 @@ async fn drain_datagrams(
             Ok(n) => match masque::decode_ip_datagram(&buf[..n], sid) {
                 Ok(Some(ip_packet)) => {
                     delivered = true;
-                    if inbound_tx.send(ip_packet).await.is_err() {
-                        return delivered;
+                    match inbound_tx.try_send(ip_packet) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            log::trace!("inbound queue full, dropping datagram");
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => return delivered,
                     }
                 }
                 Ok(None) => {}

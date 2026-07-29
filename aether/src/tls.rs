@@ -84,7 +84,7 @@ pub fn install_verification(
 
             let matched = pins.iter().any(|pin| pin.as_slice() == hash.as_slice());
             if !matched {
-                log::warn!(
+                log::debug!(
                     "tls pin: server cert SPKI hash {:02x?} does not match any pinned hash",
                     hash
                 );
@@ -95,10 +95,10 @@ pub fn install_verification(
             log::debug!("tls pin: SPKI hash match OK");
             Ok(())
         });
-        log::info!(
+        announce_once(format!(
             "tls verification: pin-based ({} pins loaded)",
             expected_pins.len()
-        );
+        ));
     } else {
         // No pin-based verification configured — disable server cert verification.
         // This is required because Aether connects to Cloudflare edge IPs with
@@ -107,9 +107,19 @@ pub fn install_verification(
         // Standard CA validation fails in this context. The security model relies on
         // the encrypted MASQUE tunnel and ECH rather than TLS cert verification.
         builder.set_verify(SslVerifyMode::NONE);
-        log::info!("tls verification: disabled (no pin configured)");
+        announce_once("tls verification: disabled (no pin configured)".to_string());
     }
     Ok(())
+}
+
+fn announce_once(message: String) {
+    use std::sync::OnceLock;
+    static ANNOUNCED: OnceLock<()> = OnceLock::new();
+    if ANNOUNCED.set(()).is_ok() {
+        log::info!("{message}");
+    } else {
+        log::debug!("{message}");
+    }
 }
 
 pub fn build_config(params: &TlsParams) -> Result<quiche::Config> {

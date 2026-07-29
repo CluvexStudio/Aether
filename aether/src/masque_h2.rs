@@ -471,7 +471,7 @@ pub async fn run(
                     Some(Ok(chunk)) => {
                         let _ = recv_body.flow_control().release_capacity(chunk.len());
                         capsules.push(&chunk);
-                        let got_data = drain_capsules(&mut capsules, &inbound_tx, &addr_tx).await;
+                        let got_data = drain_capsules(&mut capsules, &inbound_tx, &addr_tx);
                         if got_data && !ready_fired {
                             validate_successes += 1;
                             log::debug!(
@@ -516,13 +516,9 @@ async fn send_capsule(send: &mut h2::SendStream<Bytes>, data: Bytes) -> Result<(
     }
 
     send.reserve_capacity(len);
-    loop {
+    while send.capacity() < len {
         match futures::future::poll_fn(|cx| send.poll_capacity(cx)).await {
-            Some(Ok(n)) => {
-                if n >= len {
-                    break;
-                }
-            }
+            Some(Ok(_)) => {}
             Some(Err(e)) => return Err(AetherError::Masque(format!("h2 capacity: {e}"))),
             None => return Err(AetherError::Masque("h2 stream closed".into())),
         }
@@ -533,7 +529,7 @@ async fn send_capsule(send: &mut h2::SendStream<Bytes>, data: Bytes) -> Result<(
     Ok(())
 }
 
-async fn drain_capsules(
+fn drain_capsules(
     capsules: &mut CapsuleParser,
     inbound_tx: &mpsc::Sender<Vec<u8>>,
     addr_tx: &Option<mpsc::Sender<AssignedAddr>>,
@@ -541,10 +537,21 @@ async fn drain_capsules(
     let mut delivered = false;
     loop {
         match capsules.next() {
-            Ok(Some(Capsule::Datagram(pkt))) => {
+            Ok(Some(Capsule::Datagram(payload))) => {
+                let pkt = match masque::strip_datagram_context(&payload) {
+                    Some(inner) => inner,
+                    None => {
+                        log::trace!("[h2] discarding a datagram that is not an ip packet");
+                        continue;
+                    }
+                };
                 delivered = true;
-                if inbound_tx.send(pkt).await.is_err() {
-                    return delivered;
+                match inbound_tx.try_send(pkt) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        log::trace!("[h2] inbound queue full, dropping datagram");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => return delivered,
                 }
             }
             Ok(Some(Capsule::AddressAssign(addrs))) => {

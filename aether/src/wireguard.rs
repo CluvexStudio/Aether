@@ -1,4 +1,5 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,35 @@ const MAX_PACKET: usize = 65536;
 
 const WG_MSG_TYPE_MIN: u8 = 1;
 const WG_MSG_TYPE_MAX: u8 = 4;
+
+const MAX_TRANSIENT_RECV_ERRORS: u32 = 64;
+const TRANSIENT_RECV_BACKOFF: Duration = Duration::from_millis(50);
+
+pub fn is_transient_socket_error(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+
+    matches!(
+        error.kind(),
+        ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::Interrupted
+            | ErrorKind::WouldBlock
+            | ErrorKind::TimedOut
+    )
+}
+
+struct TaskGuard(Vec<tokio::task::AbortHandle>);
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        for handle in self.0.drain(..) {
+            handle.abort();
+        }
+    }
+}
 
 fn inject_client_id(pkt: &mut [u8], client_id: &[u8; 3]) {
     if pkt.len() < 4 {
@@ -127,6 +157,7 @@ impl WgTunnel {
         let tunn_h = self.tunn.clone();
         let inbound_tx = self.inbound_tx.clone();
         let obf_sent = self.obf_sent.clone();
+        let post_hs_junk_sent = Arc::new(AtomicBool::new(false));
         let aethernoize = self.aethernoize.clone();
         let aethernoize_t = self.aethernoize.clone();
         let client_id = self.client_id;
@@ -141,9 +172,11 @@ impl WgTunnel {
         let recv_task = tokio::spawn(async move {
             let mut buf = vec![0u8; MAX_PACKET];
             let mut tmp = vec![0u8; MAX_PACKET];
+            let mut transient_errors = 0u32;
             loop {
                 match sock_r.recv(&mut buf).await {
                     Ok(n) => {
+                        transient_errors = 0;
                         strip_client_id(&mut buf[..n]);
                         let mut tunn = tunn_r.lock().await;
                         match tunn.decapsulate(None, &buf[..n], &mut tmp) {
@@ -169,6 +202,20 @@ impl WgTunnel {
                         }
                     }
                     Err(e) => {
+                        if is_transient_socket_error(&e) {
+                            transient_errors += 1;
+                            if transient_errors > MAX_TRANSIENT_RECV_ERRORS {
+                                log::error!(
+                                    "recv error: {e}; giving up after {transient_errors} consecutive transient failures"
+                                );
+                                break;
+                            }
+                            log::debug!(
+                                "transient recv error: {e}; keeping the tunnel and retrying"
+                            );
+                            tokio::time::sleep(TRANSIENT_RECV_BACKOFF).await;
+                            continue;
+                        }
                         log::error!("recv error: {e}");
                         break;
                     }
@@ -202,7 +249,9 @@ impl WgTunnel {
 
                         let _ = sock_w.send(&pkt_vec).await;
 
-                        if aethernoize.jc_after_hs > 0 {
+                        if aethernoize.jc_after_hs > 0
+                            && !post_hs_junk_sent.swap(true, Ordering::SeqCst)
+                        {
                             let sock_clone = sock_w.clone();
                             let cfg_clone = aethernoize.clone();
                             tokio::spawn(async move {
@@ -268,10 +317,12 @@ impl WgTunnel {
             }
         });
 
-        let recv_abort = recv_task.abort_handle();
-        let send_abort = send_task.abort_handle();
-        let timer_abort = timer_task.abort_handle();
-        let health_abort = health_task.abort_handle();
+        let _guard = TaskGuard(vec![
+            recv_task.abort_handle(),
+            send_task.abort_handle(),
+            timer_task.abort_handle(),
+            health_task.abort_handle(),
+        ]);
 
         let result = tokio::select! {
             _ = recv_task => {
@@ -294,11 +345,6 @@ impl WgTunnel {
                 }
             }
         };
-
-        recv_abort.abort();
-        send_abort.abort();
-        timer_abort.abort();
-        health_abort.abort();
 
         result
     }
@@ -622,15 +668,24 @@ pub const WG_PREFIXES_V4: &[&str] = &[
     "188.114.97.0/24",
     "188.114.98.0/24",
     "188.114.99.0/24",
+    "162.159.193.0/24",
 ];
 
-pub const WG_PREFIXES_V6: &[&str] = &["2606:4700:d0::/64", "2606:4700:d1::/64"];
+pub const WG_PREFIXES_V6: &[&str] = &[
+    "2606:4700:d0::/64",
+    "2606:4700:d1::/64",
+    "2606:4700:100::/48",
+];
+
+pub const WG_ZT_PREFIXES_V4: &[&str] = &["162.159.193.0/24"];
+
+pub const WG_ZT_PREFIXES_V6: &[&str] = &["2606:4700:100::/48"];
 
 pub const WG_PORTS: &[u16] = &[
-    500, 854, 859, 864, 878, 880, 890, 891, 894, 903, 908, 928, 934, 939, 942, 943, 945,
-    946, 955, 968, 987, 988, 1002, 1010, 1014, 1018, 1070, 1074, 1180, 1387, 1701, 1843, 2371,
-    2408, 2506, 3138, 3476, 3581, 3854, 4177, 4198, 4233, 4500, 5279, 5956, 7103, 7152, 7156, 7281,
-    7559, 8319, 8742, 8854, 8886,
+    2408, 500, 1701, 4500, 854, 859, 864, 878, 880, 890, 891, 894, 903, 908, 928, 934, 939,
+    942, 943, 945, 946, 955, 968, 987, 988, 1002, 1010, 1014, 1018, 1070, 1074, 1180, 1387,
+    1843, 2371, 2506, 3138, 3476, 3581, 3854, 4177, 4198, 4233, 5279, 5956, 7103, 7152, 7156,
+    7281, 7559, 8319, 8742, 8854, 8886,
 ];
 
 pub const WG_SEEDS_V4: &[&str] = &[
@@ -638,6 +693,122 @@ pub const WG_SEEDS_V4: &[&str] = &[
     "162.159.195.1",
     "188.114.96.1",
     "188.114.97.1",
+    "162.159.193.1",
 ];
 
 pub const WG_SEEDS_V6: &[&str] = &["2606:4700:d0::a29f:c001", "2606:4700:d1::a29f:c001", "2606:4700:d0::a29f:c301", "2606:4700:d0::bc72:6001"];
+
+pub fn wg_prefixes_v4() -> Vec<&'static str> {
+    crate::prober::prioritize(WG_PREFIXES_V4, WG_ZT_PREFIXES_V4)
+}
+
+pub fn wg_prefixes_v6() -> Vec<&'static str> {
+    crate::prober::prioritize(WG_PREFIXES_V6, WG_ZT_PREFIXES_V6)
+}
+
+pub fn wg_seeds_v4() -> Vec<&'static str> {
+    crate::prober::prioritize(WG_SEEDS_V4, &["162.159.193.1"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn the_documented_zero_trust_wireguard_ingress_range_is_scanned() {
+        assert!(WG_PREFIXES_V4.contains(&"162.159.193.0/24"));
+        assert!(WG_PREFIXES_V6.contains(&"2606:4700:100::/48"));
+    }
+
+    #[test]
+    fn the_documented_wireguard_ports_are_all_covered() {
+        for port in [2408u16, 500, 1701, 4500] {
+            assert!(WG_PORTS.contains(&port), "port {port} should be scanned");
+        }
+    }
+
+    #[test]
+    fn the_documented_default_wireguard_port_leads_the_sweep() {
+        assert_eq!(
+            WG_PORTS.first(),
+            Some(&2408),
+            "the primary sweep port is taken from the head of this list"
+        );
+    }
+
+    #[test]
+    fn the_documented_wireguard_fallback_ports_follow_the_default() {
+        assert_eq!(&WG_PORTS[..4], &[2408, 500, 1701, 4500]);
+    }
+
+    #[test]
+    fn the_consumer_range_leads_when_no_team_is_configured() {
+        std::env::remove_var("AETHER_TEAM");
+        assert_eq!(wg_prefixes_v4().first(), Some(&"162.159.192.0/24"));
+        assert_eq!(wg_prefixes_v6().first(), Some(&"2606:4700:d0::/64"));
+    }
+
+    #[test]
+    fn no_prefix_is_lost_when_the_zero_trust_range_is_promoted() {
+        let promoted = crate::prober::prioritize(WG_PREFIXES_V4, WG_ZT_PREFIXES_V4);
+        assert_eq!(promoted.len(), WG_PREFIXES_V4.len());
+        for entry in WG_PREFIXES_V4 {
+            assert!(promoted.contains(entry), "{entry} went missing");
+        }
+    }
+
+    #[test]
+    fn every_wireguard_prefix_parses() {
+        for entry in WG_PREFIXES_V4 {
+            let (addr, bits) = entry.split_once('/').expect("cidr");
+            assert!(addr.parse::<std::net::Ipv4Addr>().is_ok(), "{entry}");
+            assert!(bits.parse::<u8>().is_ok(), "{entry}");
+        }
+        for entry in WG_PREFIXES_V6 {
+            let (addr, bits) = entry.split_once('/').expect("cidr");
+            assert!(addr.parse::<std::net::Ipv6Addr>().is_ok(), "{entry}");
+            assert!(bits.parse::<u8>().is_ok(), "{entry}");
+        }
+    }
+
+    #[test]
+    fn an_icmp_port_unreachable_is_treated_as_transient() {
+        assert!(is_transient_socket_error(&Error::from(
+            ErrorKind::ConnectionRefused
+        )));
+    }
+
+    #[test]
+    fn the_usual_transient_udp_errors_do_not_end_the_tunnel() {
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::HostUnreachable,
+            ErrorKind::NetworkUnreachable,
+            ErrorKind::Interrupted,
+            ErrorKind::WouldBlock,
+            ErrorKind::TimedOut,
+        ] {
+            assert!(
+                is_transient_socket_error(&Error::from(kind)),
+                "{kind:?} should be transient"
+            );
+        }
+    }
+
+    #[test]
+    fn a_broken_socket_is_still_fatal() {
+        for kind in [
+            ErrorKind::NotConnected,
+            ErrorKind::AddrNotAvailable,
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidInput,
+        ] {
+            assert!(
+                !is_transient_socket_error(&Error::from(kind)),
+                "{kind:?} should be fatal"
+            );
+        }
+    }
+}

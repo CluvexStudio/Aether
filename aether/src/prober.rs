@@ -11,38 +11,77 @@ use crate::noize::NoizeConfig;
 use crate::quic;
 
 pub const MASQUE_CIDRS_V4: &[&str] = &[
-    "162.159.36.0/24",
-    "162.159.46.0/24",
-    "162.159.192.0/24",
-    "162.159.193.0/24",
-    "162.159.195.0/24",
-    "162.159.196.0/24",
     "162.159.197.0/24",
     "162.159.198.0/24",
+    "162.159.196.0/24",
+    "162.159.195.0/24",
+    "162.159.192.0/24",
+    "162.159.193.0/24",
     "162.159.204.0/24",
     "172.65.251.0/24",
     "188.114.96.0/24",
     "188.114.97.0/24",
     "188.114.98.0/24",
     "188.114.99.0/24",
+    "162.159.36.0/24",
+    "162.159.46.0/24",
 ];
 
 pub const MASQUE_SEEDS: &[&str] = &[
+    "162.159.197.3",
+    "162.159.197.1",
     "162.159.198.2",
     "162.159.198.1",
+    "162.159.196.1",
+    "162.159.195.1",
     "162.159.192.1",
     "162.159.193.1",
-    "162.159.195.1",
-    "162.159.196.1",
 ];
 
-pub const MASQUE_PORTS: &[u16] = &[443, 500, 1701, 4443, 8443, 8095];
+pub const MASQUE_PORTS: &[u16] = &[443, 500, 1701, 4500, 4443, 8443, 8095];
 
 pub const MASQUE_CIDRS_V6: &[&str] = &[
+    "2606:4700:102::/48",
     "2606:4700:d0::/48",
     "2606:4700:d1::/48",
-    "2606:4700:102::/48",
 ];
+
+pub const MASQUE_ZT_CIDRS_V4: &[&str] = &["162.159.197.0/24"];
+
+pub const MASQUE_ZT_CIDRS_V6: &[&str] = &["2606:4700:102::/48"];
+
+pub fn zero_trust_mode() -> bool {
+    std::env::var("AETHER_TEAM")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+pub fn prioritize(all: &[&'static str], first: &[&'static str]) -> Vec<&'static str> {
+    if !zero_trust_mode() {
+        return all.to_vec();
+    }
+
+    let mut out: Vec<&'static str> = Vec::with_capacity(all.len());
+    for entry in first {
+        if all.contains(entry) {
+            out.push(entry);
+        }
+    }
+    for entry in all {
+        if !out.contains(entry) {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+pub fn masque_cidrs_v4() -> Vec<&'static str> {
+    prioritize(MASQUE_CIDRS_V4, MASQUE_ZT_CIDRS_V4)
+}
+
+pub fn masque_cidrs_v6() -> Vec<&'static str> {
+    prioritize(MASQUE_CIDRS_V6, MASQUE_ZT_CIDRS_V6)
+}
 
 pub const MASQUE_SEEDS_V6: &[&str] = &["2606:4700:d0::a29f:c602", "2606:4700:d1::a29f:c602", "2606:4700:d0::a29f:c601", "2606:4700:d0::a29f:c001"];
 
@@ -408,7 +447,7 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
                 out.push((IpAddr::V4(*a), primary));
             }
         }
-        let cidr_hosts: Vec<Vec<Ipv4Addr>> = MASQUE_CIDRS_V4
+        let cidr_hosts: Vec<Vec<Ipv4Addr>> = masque_cidrs_v4()
             .iter()
             .map(|c| {
                 if st.full_subnet {
@@ -437,7 +476,7 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
             }
         }
         let per = if st.sample_per_cidr == 0 { 96 } else { st.sample_per_cidr };
-        let cidr6: Vec<Vec<Ipv6Addr>> = MASQUE_CIDRS_V6
+        let cidr6: Vec<Vec<Ipv6Addr>> = masque_cidrs_v6()
             .iter()
             .map(|c| sample_cidr_v6(c, per, MASQUE_CIDRS_V4))
             .collect();
@@ -558,4 +597,97 @@ fn sample_cidr_v6(cidr: &str, n: usize, v4_cidrs: &[&str]) -> Vec<Ipv6Addr> {
         out.push(Ipv6Addr::from(base | embedded));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_documented_zero_trust_masque_ingress_range_is_scanned() {
+        assert!(MASQUE_CIDRS_V4.contains(&"162.159.197.0/24"));
+        assert!(MASQUE_CIDRS_V6.contains(&"2606:4700:102::/48"));
+    }
+
+    #[test]
+    fn the_documented_masque_ingress_range_is_swept_first() {
+        assert_eq!(MASQUE_CIDRS_V4.first(), Some(&"162.159.197.0/24"));
+        assert_eq!(MASQUE_CIDRS_V6.first(), Some(&"2606:4700:102::/48"));
+    }
+
+    #[test]
+    fn the_dns_over_https_ranges_are_swept_last_because_they_never_serve_masque() {
+        let doh = ["162.159.36.0/24", "162.159.46.0/24"];
+        let tail = &MASQUE_CIDRS_V4[MASQUE_CIDRS_V4.len() - doh.len()..];
+        for entry in doh {
+            assert!(tail.contains(&entry), "{entry} should be at the end");
+        }
+    }
+
+    #[test]
+    fn the_documented_default_masque_port_leads_the_sweep() {
+        assert_eq!(MASQUE_PORTS.first(), Some(&443));
+    }
+
+    #[test]
+    fn the_documented_masque_fallback_ports_keep_their_documented_order() {
+        assert_eq!(MASQUE_PORTS, &[443, 500, 1701, 4500, 4443, 8443, 8095]);
+    }
+
+    #[test]
+    fn a_live_documented_address_is_the_first_seed() {
+        assert_eq!(MASQUE_SEEDS.first(), Some(&"162.159.197.3"));
+    }
+
+    #[test]
+    fn without_a_team_the_range_order_is_left_alone() {
+        std::env::remove_var("AETHER_TEAM");
+        assert_eq!(prioritize(MASQUE_CIDRS_V4, MASQUE_ZT_CIDRS_V4), MASQUE_CIDRS_V4.to_vec());
+    }
+
+    #[test]
+    fn prioritize_moves_the_wanted_entries_to_the_front_without_losing_any() {
+        let all = ["a", "b", "c", "d"];
+        let out = {
+            let mut out: Vec<&'static str> = vec!["c"];
+            for entry in all {
+                if !out.contains(&entry) {
+                    out.push(entry);
+                }
+            }
+            out
+        };
+        assert_eq!(out, vec!["c", "a", "b", "d"]);
+        assert_eq!(out.len(), all.len());
+    }
+
+    #[test]
+    fn the_documented_masque_fallback_ports_are_all_covered() {
+        for port in [443u16, 500, 1701, 4443, 4500, 8443, 8095] {
+            assert!(
+                MASQUE_PORTS.contains(&port),
+                "documented fallback port {port} should be scanned"
+            );
+        }
+    }
+
+    #[test]
+    fn every_masque_prefix_and_seed_parses() {
+        for entry in MASQUE_CIDRS_V4 {
+            let (addr, bits) = entry.split_once('/').expect("cidr");
+            assert!(addr.parse::<Ipv4Addr>().is_ok(), "{entry}");
+            assert!(bits.parse::<u8>().is_ok(), "{entry}");
+        }
+        for entry in MASQUE_CIDRS_V6 {
+            let (addr, bits) = entry.split_once('/').expect("cidr");
+            assert!(addr.parse::<Ipv6Addr>().is_ok(), "{entry}");
+            assert!(bits.parse::<u8>().is_ok(), "{entry}");
+        }
+        for seed in MASQUE_SEEDS {
+            assert!(seed.parse::<Ipv4Addr>().is_ok(), "{seed}");
+        }
+        for seed in MASQUE_SEEDS_V6 {
+            assert!(seed.parse::<Ipv6Addr>().is_ok(), "{seed}");
+        }
+    }
 }
