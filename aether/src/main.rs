@@ -964,7 +964,7 @@ async fn establish_wg(
     obfuscate: bool,
     keepalive: u16,
     label: &'static str,
-) -> Result<(netstack::StackHandle, AbortOnDrop)> {
+) -> Result<(netstack::StackHandle, AbortOnDrop<Result<()>>)> {
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
 
@@ -1001,19 +1001,35 @@ async fn establish_wg(
     let stack = netstack::spawn(&identity.ipv4, &identity.ipv6, mtu, inbound_rx, outbound_tx)?;
 
     let handle = tokio::spawn(async move {
-        if let Err(e) = tunnel.run(outbound_rx).await {
-            log::error!("[{label}] wireguard tunnel exited: {e}");
+        match tunnel.run(outbound_rx).await {
+            Ok(()) => {
+                log::warn!("[{label}] wireguard tunnel closed");
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("[{label}] wireguard tunnel exited: {e}");
+                Err(e)
+            }
         }
     });
 
     Ok((stack, AbortOnDrop(handle)))
 }
 
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
+struct AbortOnDrop<T = ()>(tokio::task::JoinHandle<T>);
 
-impl Drop for AbortOnDrop {
+impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+fn tunnel_task_outcome(label: &str, result: std::result::Result<Result<()>, tokio::task::JoinError>) -> Result<()> {
+    match result {
+        Ok(Ok(())) => Err(AetherError::Other(format!("{label} wireguard tunnel closed"))),
+        Ok(Err(e)) => Err(AetherError::Other(format!("{label} wireguard tunnel exited: {e}"))),
+        Err(e) if e.is_cancelled() => Err(AetherError::Other(format!("{label} wireguard tunnel cancelled"))),
+        Err(e) => Err(AetherError::Other(format!("{label} wireguard tunnel panicked: {e}"))),
     }
 }
 
@@ -1068,17 +1084,38 @@ async fn run_warp_in_warp(
     listen: SocketAddr,
 ) -> Result<()> {
     log::info!("[*] establishing outer WARP tunnel to {peer}...");
-    let (outer_stack, _outer_tunnel) = establish_wg(&primary, peer, TUNNEL_MTU, true, 5, "outer").await?;
+    let (outer_stack, mut outer_tunnel) = establish_wg(&primary, peer, TUNNEL_MTU, true, 5, "outer").await?;
 
     let (forwarder, _fwd_up, _fwd_down) = spawn_udp_forwarder(&outer_stack, peer).await?;
     log::info!("[+] inner endpoint tunneled through outer warp via {forwarder}");
 
     log::info!("[*] establishing inner WARP tunnel (warp-in-warp)...");
-    let (inner_stack, _inner_tunnel) = establish_wg(&secondary, forwarder, INNER_MTU, false, 20, "inner").await?;
+    let (inner_stack, mut inner_tunnel) = establish_wg(&secondary, forwarder, INNER_MTU, false, 20, "inner").await?;
 
-    log::info!("[+] socks5 server listening on {listen}");
-    // Guards above abort outer/inner tunnels + forwarders when this returns.
-    socks::serve(listen, inner_stack).await
+    let socks_task = tokio::spawn(async move {
+        log::info!("[+] socks5 server listening on {listen}");
+        socks::serve(listen, inner_stack).await
+    });
+    let socks_abort = socks_task.abort_handle();
+
+    // Watch outer/inner tunnels: previously socks::serve blocked forever after a
+    // stale tunnel death, so run_gool never reached its reconnect loop.
+    let result = tokio::select! {
+        r = socks_task => {
+            match r {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(e) if e.is_cancelled() => Ok(()),
+                Err(e) => Err(AetherError::Other(format!("socks task panicked: {e}"))),
+            }
+        }
+        r = &mut outer_tunnel.0 => tunnel_task_outcome("outer", r),
+        r = &mut inner_tunnel.0 => tunnel_task_outcome("inner", r),
+    };
+
+    socks_abort.abort();
+    // Remaining AbortOnDrop guards abort outer/inner tunnels + forwarders on return.
+    result
 }
 
 async fn prompt_line(prompt: &str) -> Option<String> {
