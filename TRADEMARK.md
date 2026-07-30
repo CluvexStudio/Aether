@@ -1,0 +1,1 @@
+The name "Aether", any associated logos, and any confusingly similar names are trademarks of the Aether project. Use of the name "Aether" or any name that may cause confusion with the Aether project in derivative products, clients, distributions, or related software requires prior written permission from the project maintainers.
