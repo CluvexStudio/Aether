@@ -39,6 +39,9 @@ http = "1"
 bytes = "1"
 tokio-boring = "4.22"
 
+[target.'cfg(windows)'.dependencies]
+tray-icon = { version = "0.24", features = ["common-controls-v6"] }
+
 [profile.release]
 opt-level = 3
 lto = "fat"

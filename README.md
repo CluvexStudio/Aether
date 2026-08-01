@@ -20,6 +20,7 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 - Traffic obfuscation
 - Automatic reconnection, and quick-reconnect to your last known-good gateway to skip rescanning
 - Local SOCKS5 proxy
+- Close-to-tray on Windows: closing the console keeps the tunnel running in the background with a tray icon (opt out with `AETHER_CLOSE_TO_TRAY=0`)
 - Command-line flags, environment variables, or interactive prompts — your choice
 - Linux, Windows, macOS and Android (Termux)
 
@@ -119,6 +120,8 @@ Or skip the prompts with flags:
 ```
 
 On Windows, double-click `run-aether.bat` (included in the release zip) instead — it opens a terminal, runs `aether.exe`, and keeps the window open afterwards so you can read any errors.
+
+On Windows, closing the terminal window does not stop Aether: the process detaches from the console and keeps the tunnel running in the background, and a tray icon with an "Exit" item appears in the notification area. Set `AETHER_CLOSE_TO_TRAY=0` to restore the old close-to-exit behaviour.
 
 Every prompt has a flag and an environment variable equivalent. Run `./target/release/aether --help` for the full list, or see the guides linked below.
 

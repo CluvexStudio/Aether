@@ -23,6 +23,8 @@ mod tunnelping;
 mod wireguard;
 mod wg_prober;
 mod zerotrust;
+#[cfg(target_os = "windows")]
+mod tray;
 
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -59,6 +61,9 @@ async fn main() -> Result<()> {
     sysprofile::log_summary();
 
     install_netstack_panic_guard();
+
+    #[cfg(target_os = "windows")]
+    tray::init();
 
     let listen: SocketAddr = std::env::var("AETHER_SOCKS")
         .ok()
