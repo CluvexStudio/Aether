@@ -83,6 +83,7 @@ fn install_console_handler() -> std::io::Result<()> {
 fn spawn_tray() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let menu = Menu::new();
     let exit = MenuItem::new("Exit", true, None);
+    let exit_id = exit.id();
     menu.append(&exit)?;
 
     let icon = Icon::from_rgba(app_icon(), 32, 32)?;
@@ -93,8 +94,8 @@ fn spawn_tray() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_icon(icon)
         .build()?;
 
-    // Capture the exit item ID before moving tray into forget (ID is Copy).
-    let exit_id = exit.id();
+    // Keep exit alive for process lifetime (menu holds a reference to it).
+    std::mem::forget(exit);
     // The icon must stay alive for the process lifetime; leak it on purpose.
     std::mem::forget(tray);
 
