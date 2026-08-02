@@ -95,7 +95,11 @@ fn spawn_tray() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_icon(icon)
         .build()?;
 
-    // Menu keeps exit alive; tray must stay alive for process lifetime.
+    // Leak exit so the closure can use exit_id (Copy) without lifetime issues.
+    // The Menu inside tray keeps a reference to exit, so leaking exit ensures
+    // it stays alive for the process lifetime.
+    std::mem::forget(exit);
+    // Tray must stay alive for the process lifetime.
     std::mem::forget(tray);
 
     let receiver = MenuEvent::receiver();
