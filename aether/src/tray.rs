@@ -93,13 +93,15 @@ fn spawn_tray() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_icon(icon)
         .build()?;
 
+    // Capture the exit item ID before moving tray into forget (ID is Copy).
+    let exit_id = exit.id();
     // The icon must stay alive for the process lifetime; leak it on purpose.
     std::mem::forget(tray);
 
     let receiver = MenuEvent::receiver();
     std::thread::spawn(move || loop {
         if let Ok(event) = receiver.try_recv() {
-            if event.id() == exit.id() {
+            if event.id() == exit_id {
                 std::process::exit(0);
             }
         }
