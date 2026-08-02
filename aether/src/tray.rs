@@ -83,6 +83,7 @@ fn install_console_handler() -> std::io::Result<()> {
 fn spawn_tray() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let menu = Menu::new();
     let exit = MenuItem::new("Exit", true, None);
+    // Get exit_id BEFORE menu.append so we don't need to borrow exit afterwards.
     let exit_id = exit.id();
     menu.append(&exit)?;
 
@@ -94,9 +95,7 @@ fn spawn_tray() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_icon(icon)
         .build()?;
 
-    // Keep exit alive for process lifetime so closure can use exit_id.
-    std::mem::forget(exit);
-    // The tray must stay alive for the process lifetime.
+    // Menu keeps exit alive; tray must stay alive for process lifetime.
     std::mem::forget(tray);
 
     let receiver = MenuEvent::receiver();
