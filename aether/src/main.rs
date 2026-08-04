@@ -7,6 +7,7 @@ mod consts;
 mod dns;
 mod error;
 mod fragment;
+mod http_proxy;
 mod lastconn;
 mod masque;
 mod masque_h2;
@@ -184,6 +185,13 @@ fn install_netstack_panic_guard() {
             default_hook(info);
         }
     }));
+}
+
+fn http_listen_addr() -> SocketAddr {
+    std::env::var("AETHER_HTTP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| "127.0.0.1:1820".parse().unwrap())
 }
 
 fn noize_config() -> noize::NoizeConfig {
@@ -844,8 +852,15 @@ async fn run_masque_tunnel(
         socks::serve(listen, socks_stack).await
     });
 
+    let http_listen = http_listen_addr();
+    let http_stack = stack.clone();
+    let http_task = tokio::spawn(async move {
+        http_proxy::serve(http_listen, http_stack).await
+    });
+
     let tunnel_result = tunnel_task.await;
     socks_task.abort();
+    http_task.abort();
 
     match tunnel_result {
         Ok(Ok(())) => Ok(()),
@@ -1210,9 +1225,16 @@ async fn run_wireguard_tunnel(
         socks::serve(listen, socks_stack).await
     });
 
+    let http_listen = http_listen_addr();
+    let http_stack = stack.clone();
+    let http_task = tokio::spawn(async move {
+        http_proxy::serve(http_listen, http_stack).await
+    });
+
     let tunnel_result = tunnel.run(outbound_rx).await;
 
     socks_task.abort();
+    http_task.abort();
     let _ = socks_task.await;
 
     drop(stack);
@@ -1357,21 +1379,30 @@ async fn run_warp_in_warp(
         establish_wg(&secondary, forwarder, INNER_MTU, false, 20, "inner").await?;
 
     log::info!("[+] socks5 server listening on {listen}");
+    let http_stack = inner_stack.clone();
     let mut socks_task = tokio::spawn(async move { socks::serve(listen, inner_stack).await });
+
+    let http_listen = http_listen_addr();
+    let mut http_task = tokio::spawn(async move {
+        http_proxy::serve(http_listen, http_stack).await
+    });
 
     let outcome = tokio::select! {
         result = &mut outer_exit => join_outcome("outer wireguard tunnel", result),
         result = &mut inner_exit => join_outcome("inner wireguard tunnel", result),
         result = &mut socks_task => join_outcome("socks5 server", result),
+        result = &mut http_task => join_outcome("http proxy server", result),
     };
 
     outer_exit.abort();
     inner_exit.abort();
     socks_task.abort();
+    http_task.abort();
 
     let _ = outer_exit.await;
     let _ = inner_exit.await;
     let _ = socks_task.await;
+    let _ = http_task.await;
 
     drop(outer_stack);
 
