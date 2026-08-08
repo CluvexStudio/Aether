@@ -201,6 +201,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — delay between fragments in ms, `n` or `a-b`. Default `2-10`.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — if set, a `:status 200` alone is enough; the end-to-end data-plane probe is skipped.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — seconds to wait for the data-plane probe to succeed before giving up on a gateway. Default `10`.
+- `AETHER_MASQUE_STARTUP_SECS` (`--startup-secs`) — total deadline for TCP/QUIC, TLS, CONNECT-IP, and initial data-plane validation. Default `30`.
 - `AETHER_MASQUE_RECONNECT_SECS` (`--reconnect-secs`) — delay before automatically reconnecting after the MASQUE tunnel drops or fails validation. Default `2`.
 - `AETHER_WG_RECONNECT_SECS` — delay before automatically reconnecting after the WireGuard tunnel drops. Default `2`.
 
@@ -219,6 +220,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_PEER` or `AETHER_WG_PEER` (`--peer`, `--wg-peer`) — if you want to give a fixed address yourself and bypass the scan.
 - `AETHER_CONFIG` (`--config`) — the path of the base config file. Default `aether.toml`.
 - `AETHER_WG_CONFIG` and `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — the config path specific to each protocol.
+- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — how long an endpoint that fails twice is excluded from rescans. Default `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — override the TLS key-share groups advertised in the handshake. Default mimics Chrome (`P-256:X25519:P-384`).
 
 ## Practical examples

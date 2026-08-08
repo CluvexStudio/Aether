@@ -25,7 +25,9 @@ mod wg_prober;
 mod zerotrust;
 
 
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::Instant;
 
 use error::{AetherError, Result};
 
@@ -516,6 +518,7 @@ async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result
                 aethernoize: aethernoize_config(),
                 ports: wireguard::WG_PORTS.to_vec(),
                 ip,
+                excluded: HashSet::new(),
             };
 
             let best = wg_prober::hunt_best_wg_endpoint(&probe, mode).await?;
@@ -559,6 +562,15 @@ fn masque_reconnect_delay() -> std::time::Duration {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(2);
+    std::time::Duration::from_secs(secs)
+}
+
+fn masque_startup_timeout() -> std::time::Duration {
+    let secs = std::env::var("AETHER_MASQUE_STARTUP_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(30);
     std::time::Duration::from_secs(secs)
 }
 
@@ -825,9 +837,10 @@ async fn run_masque_tunnel(
         tokio::spawn(quic::run(cfg, internals, Some(addr_tx), Some(ready_tx)))
     };
 
-    match ready_rx.await {
-        Ok(()) => {}
-        Err(_) => {
+    let startup_timeout = masque_startup_timeout();
+    match tokio::time::timeout(startup_timeout, ready_rx).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
             let joined = tunnel_task.await;
             let msg = match joined {
                 Ok(Ok(())) => "tunnel exited before validation".to_string(),
@@ -835,6 +848,14 @@ async fn run_masque_tunnel(
                 Err(e) => format!("tunnel task join error: {e}"),
             };
             return Err(AetherError::Other(msg));
+        }
+        Err(_) => {
+            tunnel_task.abort();
+            let _ = tunnel_task.await;
+            return Err(AetherError::Other(format!(
+                "tunnel startup timed out after {:?}",
+                startup_timeout
+            )));
         }
     }
 
@@ -889,6 +910,7 @@ async fn hunt_wg_peer_with_profile(
     mode_str: &str,
     ip: prober::IpScan,
     profile: aethernoize::AetherNoizeConfig,
+    excluded: &HashSet<SocketAddr>,
 ) -> Result<SocketAddr> {
     let mode = wg_prober::WgScanMode::parse(mode_str);
     let private_key = identity.private_key_bytes()?;
@@ -905,6 +927,7 @@ async fn hunt_wg_peer_with_profile(
         aethernoize: profile,
         ports: wireguard::WG_PORTS.to_vec(),
         ip,
+        excluded: excluded.clone(),
     };
 
     let best = wg_prober::hunt_best_wg_endpoint(&probe, mode).await?;
@@ -919,18 +942,28 @@ fn wg_reconnect_delay() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+fn wg_endpoint_cooldown() -> std::time::Duration {
+    let secs = std::env::var("AETHER_WG_ENDPOINT_COOLDOWN_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(300);
+    std::time::Duration::from_secs(secs)
+}
+
 async fn hunt_wg_peer(
     identity: &account::Identity,
     candidates: &[(String, aethernoize::AetherNoizeConfig)],
     mode_str: &str,
     ip: prober::IpScan,
+    excluded: &HashSet<SocketAddr>,
 ) -> Result<(SocketAddr, aethernoize::AetherNoizeConfig, String)> {
     let multi = candidates.len() > 1;
     for (name, profile) in candidates {
         log::info!(
             "[*] hunting for a working WireGuard endpoint (handshake + data-plane verification, aethernoize='{name}')"
         );
-        match hunt_wg_peer_with_profile(identity, mode_str, ip, profile.clone()).await {
+        match hunt_wg_peer_with_profile(identity, mode_str, ip, profile.clone(), excluded).await {
             Ok(peer) => {
                 log::info!("[+] selected WireGuard endpoint {peer} using aethernoize profile '{name}'");
                 return Ok((peer, profile.clone(), name.clone()));
@@ -1043,44 +1076,50 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
 
     let mut last_good: Option<(SocketAddr, aethernoize::AetherNoizeConfig, String)> = None;
     let mut consecutive_fails_on_peer: u32 = 0;
+    let mut endpoint_cooldowns: HashMap<SocketAddr, Instant> = HashMap::new();
     const MAX_CONSECUTIVE_FAILS: u32 = 2;
 
     loop {
+        let now = Instant::now();
+        endpoint_cooldowns.retain(|_, until| *until > now);
+        if consecutive_fails_on_peer >= MAX_CONSECUTIVE_FAILS {
+            if let Some((peer, _, _)) = last_good.take() {
+                let cooldown = wg_endpoint_cooldown();
+                endpoint_cooldowns.insert(peer, now + cooldown);
+                log::warn!(
+                    "[-] endpoint {peer} failed {consecutive_fails_on_peer} times in a row; excluding it for {:?}",
+                    cooldown
+                );
+            }
+            consecutive_fails_on_peer = 0;
+        }
+
         let (peer, profile, profile_name) = if let Some(q) = quick.take() {
             q
         } else {
-            let retried = if consecutive_fails_on_peer >= MAX_CONSECUTIVE_FAILS {
-                if let Some((p, _, _)) = &last_good {
-                    log::warn!(
-                        "[-] endpoint {p} failed {consecutive_fails_on_peer} times in a row (likely DPI-throttled); blacklisting and rescanning"
-                    );
-                }
-                None
-            } else {
-                match &last_good {
-                    Some((p, profile, _)) => {
-                        log::info!("[*] retrying last known-good WireGuard endpoint {p} before rescanning");
-                        match wireguard::verify_endpoint(
-                            *p,
-                            private_key,
-                            peer_public,
-                            identity.client_id,
-                            ipv4,
-                            profile,
-                            std::time::Duration::from_secs(6),
-                            None,
-                        )
-                        .await
-                        {
-                            Ok(_) => Some(last_good.clone().unwrap()),
-                            Err(e) => {
-                                log::warn!("[-] last known-good endpoint {p} no longer responds ({e}); rescanning");
-                                None
-                            }
+            let retried = match &last_good {
+                Some((p, profile, _)) => {
+                    log::info!("[*] retrying last known-good WireGuard endpoint {p} before rescanning");
+                    match wireguard::verify_endpoint(
+                        *p,
+                        private_key,
+                        peer_public,
+                        identity.client_id,
+                        ipv4,
+                        profile,
+                        std::time::Duration::from_secs(6),
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(_) => Some(last_good.clone().unwrap()),
+                        Err(e) => {
+                            log::warn!("[-] last known-good endpoint {p} no longer responds ({e}); rescanning");
+                            None
                         }
                     }
-                    None => None,
                 }
+                None => None,
             };
 
             match retried {
@@ -1122,7 +1161,9 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
                             None => return Err(AetherError::NoCleanEndpoint),
                         }
                     } else {
-                        match hunt_wg_peer(&identity, &candidates, &mode_str, ip).await {
+                        let excluded: HashSet<SocketAddr> =
+                            endpoint_cooldowns.keys().copied().collect();
+                        match hunt_wg_peer(&identity, &candidates, &mode_str, ip, &excluded).await {
                             Ok(v) => v,
                             Err(e) => {
                                 log::warn!("[-] no usable WireGuard endpoint found: {e}; rescanning shortly");
