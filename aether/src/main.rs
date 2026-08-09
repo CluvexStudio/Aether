@@ -864,8 +864,13 @@ async fn run_masque_tunnel(
         log::info!("[+] socks5 server listening on {listen}");
         socks::serve(listen, socks_stack).await
     });
+    let http_task = spawn_http_proxy(&stack);
 
     let tunnel_result = tunnel_task.await;
+
+    if let Some(task) = &http_task {
+        task.abort();
+    }
     socks_task.abort();
 
     match tunnel_result {
@@ -1250,8 +1255,13 @@ async fn run_wireguard_tunnel(
         log::info!("[+] socks5 server listening on {listen}");
         socks::serve(listen, socks_stack).await
     });
+    let http_task = spawn_http_proxy(&stack);
 
     let tunnel_result = tunnel.run(outbound_rx).await;
+
+    if let Some(task) = &http_task {
+        task.abort();
+    }
 
     socks_task.abort();
     let _ = socks_task.await;
@@ -1265,6 +1275,30 @@ async fn run_wireguard_tunnel(
 }
 
 type TunnelExit = tokio::task::JoinHandle<Result<()>>;
+
+fn http_proxy_listen() -> Option<SocketAddr> {
+    let raw = std::env::var("AETHER_HTTP_PROXY").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.parse::<SocketAddr>() {
+        Ok(addr) => Some(addr),
+        Err(_) => {
+            log::warn!("[-] ignoring an unparsable http proxy address: {trimmed}");
+            None
+        }
+    }
+}
+
+fn spawn_http_proxy(stack: &netstack::StackHandle) -> Option<TunnelExit> {
+    let listen = http_proxy_listen()?;
+    let stack = stack.clone();
+    Some(tokio::spawn(async move {
+        log::info!("[+] http proxy listening on {listen}");
+        socks::serve_http(listen, stack).await
+    }))
+}
 
 async fn establish_wg(
     identity: &account::Identity,
@@ -1398,6 +1432,7 @@ async fn run_warp_in_warp(
         establish_wg(&secondary, forwarder, INNER_MTU, false, 20, "inner").await?;
 
     log::info!("[+] socks5 server listening on {listen}");
+    let http_task = spawn_http_proxy(&inner_stack);
     let mut socks_task = tokio::spawn(async move { socks::serve(listen, inner_stack).await });
 
     let outcome = tokio::select! {
@@ -1406,6 +1441,9 @@ async fn run_warp_in_warp(
         result = &mut socks_task => join_outcome("socks5 server", result),
     };
 
+    if let Some(task) = &http_task {
+        task.abort();
+    }
     outer_exit.abort();
     inner_exit.abort();
     socks_task.abort();
