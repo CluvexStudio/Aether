@@ -59,6 +59,8 @@ impl WgScanMode {
                 early_exit_first: true,
                 full_subnet: false,
                 sample_per_cidr: 40,
+                anchor_port_count: 4,
+                pool_port_waves: 2,
             },
             WgScanMode::Balanced => WgStrategy {
                 concurrency: 8,
@@ -69,6 +71,8 @@ impl WgScanMode {
                 early_exit_first: false,
                 full_subnet: false,
                 sample_per_cidr: 120,
+                anchor_port_count: 4,
+                pool_port_waves: 3,
             },
             WgScanMode::Thorough => WgStrategy {
                 concurrency: 10,
@@ -79,6 +83,8 @@ impl WgScanMode {
                 early_exit_first: false,
                 full_subnet: true,
                 sample_per_cidr: 0,
+                anchor_port_count: 8,
+                pool_port_waves: 4,
             },
             WgScanMode::Stealth => WgStrategy {
                 concurrency: 3,
@@ -89,6 +95,8 @@ impl WgScanMode {
                 early_exit_first: false,
                 full_subnet: false,
                 sample_per_cidr: 50,
+                anchor_port_count: 4,
+                pool_port_waves: 2,
             },
             WgScanMode::Ironclad => WgStrategy {
                 concurrency: 4,
@@ -99,6 +107,8 @@ impl WgScanMode {
                 early_exit_first: false,
                 full_subnet: false,
                 sample_per_cidr: 120,
+                anchor_port_count: 6,
+                pool_port_waves: 3,
             },
         }
     }
@@ -115,6 +125,8 @@ struct WgStrategy {
     early_exit_first: bool,
     full_subnet: bool,
     sample_per_cidr: usize,
+    anchor_port_count: usize,
+    pool_port_waves: usize,
 }
 
 #[derive(Clone)]
@@ -126,6 +138,7 @@ pub struct WgProbe {
     pub aethernoize: AetherNoizeConfig,
     pub ports: Vec<u16>,
     pub ip: IpScan,
+    pub excluded: HashSet<SocketAddr>,
 }
 
 pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<WgProbeResult> {
@@ -142,7 +155,7 @@ pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<
             return Err(AetherError::NoCleanEndpoint);
         }
     }
-    let candidates = build_wg_candidates(&st, &probe.ports, effective_ip);
+    let candidates = build_wg_candidates(&st, &probe.ports, effective_ip, &probe.excluded);
 
     log::info!(
         "[*] wireguard scan mode={} ip={} candidates={} ports={:?} concurrency={} per_probe={:?} budget={:?}",
@@ -292,7 +305,12 @@ async fn verify_one_wg(
     }
 }
 
-fn build_wg_candidates(st: &WgStrategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u16)> {
+fn build_wg_candidates(
+    st: &WgStrategy,
+    ports: &[u16],
+    ip: IpScan,
+    excluded: &HashSet<SocketAddr>,
+) -> Vec<(IpAddr, u16)> {
     let ports: Vec<u16> = {
         let mut seen_port: HashSet<u16> = HashSet::new();
         let deduped: Vec<u16> = ports.iter().copied().filter(|p| seen_port.insert(*p)).collect();
@@ -353,18 +371,30 @@ fn build_wg_candidates(st: &WgStrategy, ports: &[u16], ip: IpScan) -> Vec<(IpAdd
         }
     }
 
-    let mut ips: Vec<IpAddr> = Vec::with_capacity(anchors.len() + pool.len());
-    ips.extend(anchors.iter().copied());
-    ips.extend(pool.iter().copied());
-
     let mut out: Vec<(IpAddr, u16)> = Vec::new();
     let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
     let port_count = ports.len();
 
-    for (idx, a) in ips.iter().enumerate() {
-        let port = ports[idx % port_count];
-        if seen.insert((*a, port)) {
-            out.push((*a, port));
+    let mut push = |ip: IpAddr, port: u16| {
+        if !excluded.contains(&SocketAddr::new(ip, port)) && seen.insert((ip, port)) {
+            out.push((ip, port));
+        }
+    };
+
+    // Test known-good anchors on the documented priority ports before spending
+    // the scan budget on randomly sampled addresses.
+    for port in ports.iter().take(st.anchor_port_count.max(1)) {
+        for anchor in &anchors {
+            push(*anchor, *port);
+        }
+    }
+
+    // Cover the sampled pool in waves. Every address gets one attempt before a
+    // second port is tried, while successive waves rotate the assigned port.
+    for wave in 0..st.pool_port_waves.max(1) {
+        for (idx, candidate_ip) in pool.iter().enumerate() {
+            let port = ports[(idx + wave) % port_count];
+            push(*candidate_ip, port);
         }
     }
 
@@ -454,4 +484,75 @@ fn sample_cidr_v6(cidr: &str, n: usize, v4_cidrs: &[&str]) -> Vec<Ipv6Addr> {
         out.push(Ipv6Addr::from(base | embedded));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn anchors_cover_priority_ports_before_the_sampled_pool() {
+        let strategy = WgScanMode::Balanced.strategy();
+        let ports = [2408, 500, 1701, 4500, 854];
+        let candidates = build_wg_candidates(
+            &strategy,
+            &ports,
+            IpScan::V4,
+            &HashSet::new(),
+        );
+
+        for seed in wireguard::wg_seeds_v4() {
+            let ip = IpAddr::V4(seed.parse().expect("wireguard seed"));
+            for port in &ports[..4] {
+                assert!(
+                    candidates.contains(&(ip, *port)),
+                    "anchor {ip} should be tested on port {port}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sampled_ips_receive_multiple_rotated_port_attempts() {
+        let mut strategy = WgScanMode::Balanced.strategy();
+        strategy.sample_per_cidr = 1;
+        let candidates = build_wg_candidates(
+            &strategy,
+            &[2408, 500, 1701, 4500],
+            IpScan::V4,
+            &HashSet::new(),
+        );
+        let anchors: HashSet<IpAddr> = wireguard::wg_seeds_v4()
+            .into_iter()
+            .map(|seed| IpAddr::V4(seed.parse().expect("wireguard seed")))
+            .collect();
+        let mut ports_per_ip: HashMap<IpAddr, HashSet<u16>> = HashMap::new();
+
+        for (ip, port) in candidates {
+            if !anchors.contains(&ip) {
+                ports_per_ip.entry(ip).or_default().insert(port);
+            }
+        }
+
+        assert!(
+            ports_per_ip.values().any(|ports| ports.len() >= 3),
+            "sampled IPs should be tried across multiple port waves"
+        );
+    }
+
+    #[test]
+    fn cooled_down_endpoint_is_excluded_from_the_scan() {
+        let strategy = WgScanMode::Turbo.strategy();
+        let peer: SocketAddr = "162.159.192.1:2408".parse().unwrap();
+        let excluded = HashSet::from([peer]);
+        let candidates = build_wg_candidates(
+            &strategy,
+            &[2408, 500, 1701, 4500],
+            IpScan::V4,
+            &excluded,
+        );
+
+        assert!(!candidates.contains(&(peer.ip(), peer.port())));
+    }
 }

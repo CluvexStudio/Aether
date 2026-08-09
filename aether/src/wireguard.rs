@@ -14,6 +14,10 @@ use rand::Rng;
 
 const TIMER_TICK: Duration = Duration::from_millis(250);
 const MAX_PACKET: usize = 65536;
+const VERIFY_RETRY_DELAYS: [Duration; 2] = [
+    Duration::from_millis(750),
+    Duration::from_millis(2_000),
+];
 
 const WG_MSG_TYPE_MIN: u8 = 1;
 const WG_MSG_TYPE_MAX: u8 = 4;
@@ -573,18 +577,25 @@ pub async fn verify_endpoint_keep_session(
     let mut recv_buf = vec![0u8; MAX_PACKET];
     let mut tmp_buf = vec![0u8; MAX_PACKET];
 
-    match tunn.encapsulate(&[], &mut out_buf) {
+    let init_packet = match tunn.encapsulate(&[], &mut out_buf) {
         TunnResult::WriteToNetwork(pkt) => {
             let mut pkt_vec = pkt.to_vec();
             inject_client_id(&mut pkt_vec, &client_id);
-            log::trace!("[wg] sending init {} bytes to {}", pkt_vec.len(), peer);
-            sock.send(&pkt_vec).await?;
+            pkt_vec
         }
         other => {
             log::warn!("[wg] unexpected encap result: {:?}", other);
             return Err(AetherError::Other("handshake init failed".into()));
         }
-    }
+    };
+
+    log::trace!("[wg] sending init {} bytes to {}", init_packet.len(), peer);
+    sock.send(&init_packet).await?;
+
+    let mut retry_index = 0usize;
+    let mut timer = tokio::time::interval(TIMER_TICK);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    timer.tick().await;
 
     let mut attempts = 0;
     loop {
@@ -651,6 +662,34 @@ pub async fn verify_endpoint_keep_session(
                     other => {
                         log::trace!("[wg] unexpected decap: {:?}", other);
                     }
+                }
+            }
+            _ = timer.tick() => {
+                if let Some(delay) = VERIFY_RETRY_DELAYS.get(retry_index) {
+                    if start.elapsed() >= *delay {
+                        retry_index += 1;
+                        log::trace!(
+                            "[wg] retransmitting init to {} after {:?} ({}/{})",
+                            peer,
+                            delay,
+                            retry_index,
+                            VERIFY_RETRY_DELAYS.len()
+                        );
+                        sock.send(&init_packet).await?;
+                    }
+                }
+
+                match tunn.update_timers(&mut out_buf) {
+                    TunnResult::WriteToNetwork(pkt) => {
+                        let mut pkt_vec = pkt.to_vec();
+                        inject_client_id(&mut pkt_vec, &client_id);
+                        log::trace!("[wg] timer generated {} byte handshake packet", pkt_vec.len());
+                        sock.send(&pkt_vec).await?;
+                    }
+                    TunnResult::Err(e) => {
+                        return Err(AetherError::Other(format!("wireguard timer failed: {e:?}")));
+                    }
+                    _ => {}
                 }
             }
             _ = tokio::time::sleep(remaining) => {
@@ -810,5 +849,42 @@ mod tests {
                 "{kind:?} should be fatal"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn endpoint_verification_retransmits_a_lost_initial_handshake() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = server.local_addr().unwrap();
+        let profile = aethernoize::from_profile("off");
+        let verifier = tokio::spawn(async move {
+            verify_endpoint(
+                peer,
+                [7u8; 32],
+                [9u8; 32],
+                [1u8, 2, 3],
+                "172.16.0.2".parse().unwrap(),
+                &profile,
+                Duration::from_secs(4),
+                None,
+            )
+            .await
+        });
+
+        let mut received = Vec::new();
+        let mut buf = [0u8; 2048];
+        for _ in 0..3 {
+            let n = tokio::time::timeout(Duration::from_secs(3), server.recv(&mut buf))
+                .await
+                .expect("handshake packet deadline")
+                .expect("handshake packet");
+            received.push(buf[..n].to_vec());
+        }
+
+        verifier.abort();
+        let _ = verifier.await;
+
+        assert_eq!(received.len(), 3);
+        assert_eq!(received[0], received[1]);
+        assert_eq!(received[1], received[2]);
     }
 }
