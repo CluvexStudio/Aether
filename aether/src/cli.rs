@@ -96,7 +96,10 @@ Advanced:
 ";
 
 pub fn parse_and_apply() -> crate::error::Result<()> {
-    let args: Vec<String> = env::args().skip(1).collect();
+    parse_args(env::args().skip(1).collect())
+}
+
+pub fn parse_args(args: Vec<String>) -> crate::error::Result<()> {
     let mut i = 0;
 
     while i < args.len() {
