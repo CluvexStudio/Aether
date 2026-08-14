@@ -201,6 +201,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — delay between fragments in ms, `n` or `a-b`. Default `2-10`.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — if set, a `:status 200` alone is enough; the end-to-end data-plane probe is skipped.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — seconds to wait for the data-plane probe to succeed before giving up on a gateway. Default `10`.
+- `AETHER_MASQUE_STARTUP_SECS` (`--startup-secs`) — total deadline for TCP/QUIC, TLS, CONNECT-IP, and initial data-plane validation. Default `30`.
 - `AETHER_MASQUE_RECONNECT_SECS` (`--reconnect-secs`) — delay before automatically reconnecting after the MASQUE tunnel drops or fails validation. Default `2`.
 - `AETHER_WG_RECONNECT_SECS` — delay before automatically reconnecting after the WireGuard tunnel drops. Default `2`.
 
@@ -219,6 +220,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_PEER` or `AETHER_WG_PEER` (`--peer`, `--wg-peer`) — if you want to give a fixed address yourself and bypass the scan.
 - `AETHER_CONFIG` (`--config`) — the path of the base config file. Default `aether.toml`.
 - `AETHER_WG_CONFIG` and `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — the config path specific to each protocol.
+- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — how long an endpoint that fails twice is excluded from rescans. Default `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — override the TLS key-share groups advertised in the handshake. Default mimics Chrome (`P-256:X25519:P-384`).
 
 ## Practical examples
@@ -265,8 +267,12 @@ AETHER_QUICK_RECONNECT=1 ./target/release/aether --masque
 
 You can run the official Aether Docker image directly from the GitHub Container Registry (GHCR), which provides an isolated environment without needing to install Rust or C++ compilers.
 
+> **The SOCKS5 proxy has no authentication.** The commands below publish the port to `127.0.0.1` only. Writing `-p 1819:1819` instead would listen on every interface of the host and let anyone on the network use your tunnel as an open relay.
+
+The `-v aether-data:/data` volume keeps the WARP identity across restarts. Skip it and every run registers a fresh device, which is what eventually gets your address rate limited by Cloudflare.
+
 ```bash
-docker run -it -p 1819:1819 \
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data \
   -e AETHER_PROTOCOL=masque \
   -e AETHER_SCAN=balanced \
   ghcr.io/cluvexstudio/aether:latest
@@ -277,7 +283,7 @@ If you prefer to build the image locally:
 
 ```bash
 docker build -t aether .
-docker run -it -p 1819:1819 aether
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data aether
 ```
 
 ## Testing whether it works

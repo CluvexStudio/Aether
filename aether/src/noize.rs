@@ -41,6 +41,18 @@ impl NoizeConfig {
         }
     }
 
+    pub fn light() -> Self {
+        Self {
+            jc_before_hs: 1,
+            jc_after_i1: 0,
+            jmin: 32,
+            jmax: 96,
+            i1: Some("<b 0d0a0d0a><t><r 16>".to_string()),
+            i2: None,
+            junk_interval: Duration::from_millis(3),
+        }
+    }
+
     pub fn gfw() -> Self {
         Self {
             jc_before_hs: 2,
@@ -61,7 +73,8 @@ impl NoizeConfig {
 pub fn from_profile(name: &str) -> NoizeConfig {
     match name {
         "off" | "none" => NoizeConfig::off(),
-        "gfw" => NoizeConfig::gfw(),
+        "light" => NoizeConfig::light(),
+        "gfw" | "aggressive" | "heavy" => NoizeConfig::gfw(),
         _ => NoizeConfig::firewall(),
     }
 }
@@ -182,4 +195,50 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
     }
 
     log::trace!("obfuscation pre-handshake complete");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_profile_the_app_offers_maps_to_a_distinct_config() {
+        let off = from_profile("off");
+        let light = from_profile("light");
+        let balanced = from_profile("balanced");
+        let aggressive = from_profile("aggressive");
+
+        assert!(!off.is_enabled());
+        assert!(light.is_enabled());
+        assert!(balanced.is_enabled());
+        assert!(aggressive.is_enabled());
+
+        assert_ne!(light.jmax, balanced.jmax);
+        assert_ne!(balanced.jmax, aggressive.jmax);
+    }
+
+    #[test]
+    fn noise_grows_with_the_profile_level() {
+        let light = from_profile("light");
+        let balanced = from_profile("balanced");
+        let aggressive = from_profile("aggressive");
+
+        assert!(light.jmax < balanced.jmax);
+        assert!(balanced.jmax < aggressive.jmax);
+    }
+
+    #[test]
+    fn the_legacy_profile_names_still_work() {
+        assert_eq!(from_profile("firewall").jmax, from_profile("balanced").jmax);
+        assert_eq!(from_profile("gfw").jmax, from_profile("aggressive").jmax);
+        assert!(!from_profile("none").is_enabled());
+    }
+
+    #[test]
+    fn an_unknown_profile_falls_back_to_the_balanced_default() {
+        assert_eq!(
+            from_profile("something-else").jmax,
+            from_profile("balanced").jmax
+        );
+    }
 }

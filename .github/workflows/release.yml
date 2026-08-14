@@ -423,7 +423,7 @@ jobs:
     name: Publish release
     needs: [desktop, linux, linux-armv7, linux-armv7-musl, linux-musl, android]
     runs-on: ubuntu-latest
-    if: ${{ always() }} && startsWith(github.ref, 'refs/tags/') 
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -452,57 +452,30 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v1.4.0
+            Aether v1.6.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            What's new in v1.4.0:
+            What's new in v1.6.0:
 
-            - Security fix: MASQUE connections now verify the Cloudflare edge certificate against pinned SPKI hashes instead of skipping verification entirely. Before this, anyone able to intercept the connection could present a fake certificate and the client would accept it silently. Both the HTTP/3 and HTTP/2 transports are covered.
-            - Fixed WireGuard and WARP-in-WARP (gool) reporting "connected" while the tunnel was actually dead. Both now run a continuous health check and reconnect automatically if no real data has come back from the peer for a while, instead of sitting there silently with a socks5 proxy that leads nowhere.
-            - Fixed a memory/task leak in WireGuard, MASQUE HTTP/2, and MASQUE HTTP/3: every reconnect used to leave old background tasks running instead of shutting them down, so long-running sessions with frequent drops would slowly pile up idle tasks and memory.
-            - gool (WARP-in-WARP) now reconnects automatically like the other two modes. Previously, if the outer tunnel dropped, the whole process just exited.
-            - `--log-level` replaces the old all-or-nothing `--verbose`. Pick error, warn, info, debug or trace. info stays quiet, debug adds tunnel internals useful for troubleshooting, trace adds full per-packet detail. `--verbose` still works as a shortcut for debug.
-            - Aether now reads the machine's CPU count and RAM at startup and scales scan concurrency, socket buffers, and internal queue sizes accordingly, so it doesn't hog resources on a router or a small board. Override with `--perf low|medium|high` if you want to force it.
-            - New fully static builds for x86_64 and aarch64 musl, on top of the existing armv7 musl build. Covers OpenWrt on x86_64/arm64 boxes and Raspberry Pi 4/5 running a musl userland.
+            New
 
-            This release includes prebuilt binaries for:
+            - `--http-proxy <addr>` exposes an HTTP CONNECT proxy next to the SOCKS5 one, for clients that cannot speak SOCKS.
+            - `--noize light` is a gentler obfuscation profile for networks that only need a nudge.
+            - Aether also builds as a library now (`libaether.a`, `libaether.so`) with a C API, so it can be linked into an app instead of being spawned as a separate process. The CLI is unchanged.
 
-            - Linux x86_64, built on Fedora latest (aether-linux-x86_64.tar.gz)
-            - Linux arm64 / aarch64, built on Fedora latest (aether-linux-arm64.tar.gz)
-            - Linux armv7 / 32-bit ARM, e.g. Raspberry Pi 2/3 (aether-linux-armv7.tar.gz)
-            - Linux armv7 musl / 32-bit ARM, fully static, for OpenWrt routers and other musl-based systems (aether-linux-armv7-musl.tar.gz)
-            - Linux x86_64 musl, fully static, for OpenWrt and other musl-based x86_64 systems (aether-linux-x86_64-musl.tar.gz)
-            - Linux aarch64 musl, fully static, for OpenWrt arm64 and Raspberry Pi 4/5 (aether-linux-aarch64-musl.tar.gz)
-            - macOS arm64 / Apple Silicon (aether-macos-arm64.tar.gz)
-            - macOS x86_64 / Intel (aether-macos-x86_64.tar.gz)
-            - Windows x86_64 (aether-windows-x86_64.zip)
-            - Android / Termux arm64 (aether-android-arm64.tar.gz)
-            - Android / Termux armv7 (aether-android-armv7.tar.gz)
-            - Android / Termux x86_64 (aether-android-x86_64.tar.gz)
+            Fixes
 
-            Each archive ships with a matching .sha256 file, and a combined SHA256SUMS.txt lists every checksum.
+            - The SOCKS5 listener could shut down for good after a single transient accept error, and every connection after that was refused until Aether was restarted.
+            - A Zero Trust email code could only be typed into a terminal, so a graphical client could never finish signing in. The code can now be answered on standard input, and Aether says when it is waiting for one.
+            - The WireGuard scan gave up on an endpoint when the first handshake packet was lost. It retransmits now, so a lossy network no longer looks like a dead endpoint.
+            - The scan only tried one port per address, so most of the documented fallback ports were never reached. Each candidate covers the priority ports before the sweep widens.
+            - An endpoint that just failed is put on a cooldown instead of being picked again straight away, including when a saved endpoint is reused on a quick reconnect. `AETHER_WG_ENDPOINT_COOLDOWN_SECS` sets the window, five minutes by default. From #76.
+            - `--startup-secs` bounds how long a MASQUE tunnel may take to come up instead of waiting forever.
 
-            Quick start (Termux, one-line install):
+            Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
-               curl -fsSL https://raw.githubusercontent.com/CluvexStudio/aether/main/aether.sh -o aether.sh && chmod +x aether.sh && ./aether.sh install
-
-            Quick start (Windows):
-
-            1. Download aether-windows-x86_64.zip and extract it.
-            2. Double-click run-aether.bat. It opens a terminal, runs aether.exe, and stays open afterwards so you can read any errors.
-
-            Quick start (other platforms):
-
-            1. Download the archive for your platform and extract it.
-            2. Run the binary and answer the prompts, or set the environment variables listed in the guides.
-            3. Point your client at socks5h://127.0.0.1:1819 and verify with:
-               curl -x socks5h://127.0.0.1:1819 https://www.cloudflare.com/cdn-cgi/trace
-
-            Verify a download (Linux/macOS):
-               sha256sum -c aether-linux-x86_64.tar.gz.sha256
-
-            See README.md and the Docs directory for transport selection, obfuscation profiles, the HTTP/2 vs HTTP/3 choice in MASQUE, and the full environment-variable reference.
+            See README.md and the Docs directory for install steps, transport selection, obfuscation profiles, and the full environment-variable reference.
 
   # ------------------------------------------------------------------
   # Build and push the Docker image to GitHub Container Registry (GHCR)

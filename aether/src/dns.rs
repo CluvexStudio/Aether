@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
-use tokio::time::timeout;
+use tokio::time::timeout_at;
 
 use crate::error::{AetherError, Result};
 
@@ -37,18 +37,82 @@ async fn query_ech(server: SocketAddr, host: &str) -> Result<Vec<u8>> {
     let sock = UdpSocket::bind(bind).await?;
     sock.connect(server).await?;
 
-    let query = build_query(host, RR_HTTPS);
+    let (query, id) = build_query(host, RR_HTTPS);
     sock.send(&query).await?;
 
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     let mut buf = [0u8; 4096];
-    let n = timeout(Duration::from_secs(3), sock.recv(&mut buf))
-        .await
-        .map_err(|_| AetherError::Ech("dns timeout".into()))??;
 
-    parse_https_ech(&buf[..n]).ok_or_else(|| AetherError::Ech("no ech svcparam".into()))
+    loop {
+        let n = timeout_at(deadline, sock.recv(&mut buf))
+            .await
+            .map_err(|_| AetherError::Ech("dns timeout".into()))??;
+
+        if !response_matches(&buf[..n], id, host, RR_HTTPS) {
+            log::debug!("discarding an ech dns reply that does not match the query");
+            continue;
+        }
+
+        return parse_https_ech(&buf[..n])
+            .ok_or_else(|| AetherError::Ech("no ech svcparam".into()));
+    }
 }
 
-fn build_query(name: &str, qtype: u16) -> Vec<u8> {
+pub fn response_matches(
+    msg: &[u8],
+    expected_id: u16,
+    expected_name: &str,
+    expected_qtype: u16,
+) -> bool {
+    if msg.len() < 12 {
+        return false;
+    }
+    if u16::from_be_bytes([msg[0], msg[1]]) != expected_id {
+        return false;
+    }
+    if msg[2] & 0x80 == 0 {
+        return false;
+    }
+    if u16::from_be_bytes([msg[4], msg[5]]) != 1 {
+        return false;
+    }
+
+    let mut pos = 12;
+    for label in expected_name.split('.') {
+        if label.is_empty() {
+            continue;
+        }
+        let len = match msg.get(pos) {
+            Some(value) => *value as usize,
+            None => return false,
+        };
+        if len != label.len() {
+            return false;
+        }
+        pos += 1;
+        let end = match pos.checked_add(len) {
+            Some(value) if value <= msg.len() => value,
+            _ => return false,
+        };
+        if !msg[pos..end].eq_ignore_ascii_case(label.as_bytes()) {
+            return false;
+        }
+        pos = end;
+    }
+
+    if msg.get(pos) != Some(&0) {
+        return false;
+    }
+    pos += 1;
+
+    if pos + 4 > msg.len() {
+        return false;
+    }
+
+    u16::from_be_bytes([msg[pos], msg[pos + 1]]) == expected_qtype
+}
+
+fn build_query(name: &str, qtype: u16) -> (Vec<u8>, u16) {
     let mut q = Vec::with_capacity(32 + name.len());
     let id: u16 = rand::random();
     q.extend_from_slice(&id.to_be_bytes());
@@ -65,7 +129,7 @@ fn build_query(name: &str, qtype: u16) -> Vec<u8> {
     q.push(0x00);
     q.extend_from_slice(&qtype.to_be_bytes());
     q.extend_from_slice(&[0x00, 0x01]);
-    q
+    (q, id)
 }
 
 fn parse_https_ech(msg: &[u8]) -> Option<Vec<u8>> {
@@ -134,5 +198,89 @@ fn skip_name(buf: &[u8], mut pos: usize) -> Option<usize> {
             return Some(pos + 1);
         }
         pos += 1 + len as usize;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reply(id: u16, name: &str, qtype: u16, qr: bool, qdcount: u16) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&id.to_be_bytes());
+        msg.push(if qr { 0x81 } else { 0x01 });
+        msg.push(0x80);
+        msg.extend_from_slice(&qdcount.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&[0, 0, 0, 0]);
+        for label in name.split('.') {
+            msg.push(label.len() as u8);
+            msg.extend_from_slice(label.as_bytes());
+        }
+        msg.push(0);
+        msg.extend_from_slice(&qtype.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg
+    }
+
+    #[test]
+    fn build_query_reports_the_id_it_wrote() {
+        let (query, id) = build_query("cloudflare-ech.com", RR_HTTPS);
+        assert_eq!(u16::from_be_bytes([query[0], query[1]]), id);
+    }
+
+    #[test]
+    fn accepts_a_reply_that_matches_the_query() {
+        let msg = reply(0x1234, "cloudflare-ech.com", RR_HTTPS, true, 1);
+        assert!(response_matches(&msg, 0x1234, "cloudflare-ech.com", RR_HTTPS));
+    }
+
+    #[test]
+    fn rejects_a_spoofed_reply_with_the_wrong_transaction_id() {
+        let msg = reply(0x9999, "cloudflare-ech.com", RR_HTTPS, true, 1);
+        assert!(!response_matches(&msg, 0x1234, "cloudflare-ech.com", RR_HTTPS));
+    }
+
+    #[test]
+    fn rejects_a_reply_for_a_different_name() {
+        let msg = reply(0x1234, "attacker.example", RR_HTTPS, true, 1);
+        assert!(!response_matches(&msg, 0x1234, "cloudflare-ech.com", RR_HTTPS));
+    }
+
+    #[test]
+    fn rejects_a_reply_for_a_different_record_type() {
+        let msg = reply(0x1234, "cloudflare-ech.com", 1, true, 1);
+        assert!(!response_matches(&msg, 0x1234, "cloudflare-ech.com", RR_HTTPS));
+    }
+
+    #[test]
+    fn rejects_a_message_that_is_not_a_response() {
+        let msg = reply(0x1234, "cloudflare-ech.com", RR_HTTPS, false, 1);
+        assert!(!response_matches(&msg, 0x1234, "cloudflare-ech.com", RR_HTTPS));
+    }
+
+    #[test]
+    fn rejects_a_reply_with_an_unexpected_question_count() {
+        let msg = reply(0x1234, "cloudflare-ech.com", RR_HTTPS, true, 2);
+        assert!(!response_matches(&msg, 0x1234, "cloudflare-ech.com", RR_HTTPS));
+    }
+
+    #[test]
+    fn rejects_truncated_input_without_panicking() {
+        let msg = reply(0x1234, "cloudflare-ech.com", RR_HTTPS, true, 1);
+        for cut in 0..msg.len() {
+            assert!(!response_matches(
+                &msg[..cut],
+                0x1234,
+                "cloudflare-ech.com",
+                RR_HTTPS
+            ));
+        }
+    }
+
+    #[test]
+    fn name_comparison_is_case_insensitive() {
+        let msg = reply(0x1234, "CloudFlare-ECH.com", RR_HTTPS, true, 1);
+        assert!(response_matches(&msg, 0x1234, "cloudflare-ech.com", RR_HTTPS));
     }
 }

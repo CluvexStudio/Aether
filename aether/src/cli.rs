@@ -5,6 +5,8 @@ Usage: aether [OPTIONS]
 
 Connection:
   --bind <addr>            local SOCKS5 listen address (default 127.0.0.1:1819)
+  --http-proxy <addr>      also expose an HTTP CONNECT proxy on this address
+                           (off by default, e.g. 127.0.0.1:1820)
   --quick-reconnect        auto-accept reconnecting with the last known working gateway
   --no-quick-reconnect     always scan fresh, ignore any saved last-connection gateway
   -4                       scan/connect over IPv4 only (default)
@@ -15,7 +17,8 @@ Connection:
 
 Protocol:
   --masque                 use MASQUE over QUIC/HTTP-3 (default)
-  --wg, --wireguard        use classic WireGuard
+  --wg, --wireguard, --warp
+                           use classic WireGuard
   --gool, --wiw            use WARP-in-WARP (wireguard tunneled in wireguard)
 
 Scan mode:
@@ -35,7 +38,9 @@ MASQUE transport:
   --ech <auto|base64>      enable Encrypted Client Hello
   --no-data-check          skip the end-to-end data-plane validation
   --validate-secs <n>      seconds to wait for data-plane validation (default 10)
+  --startup-secs <n>       total MASQUE startup deadline (default 30)
   --reconnect-secs <n>     delay before reconnecting after a tunnel drop (default 2)
+  --dns <list>             resolvers used inside the tunnel (default 1.1.1.1,1.0.0.1)
   --fragment               fragment the TLS ClientHello on the HTTP/2 transport
   --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
   --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
@@ -43,6 +48,33 @@ MASQUE transport:
 WireGuard:
   --keepalive <n>          persistent keepalive interval in seconds (default 5)
   --no-profile-retry       don't retry other obfuscation profiles during scan
+
+Zero Trust (WARP for organizations):
+  --team <name>            enrol into a Zero Trust organization by team name
+  --access-id <id>         service token client id (headless enrolment)
+  --access-secret <secret> service token client secret (headless enrolment)
+  --access-email <addr>    sign in with a one-time code emailed to this address
+  --access-token <jwt>     an enrolment token you already obtained by signing in
+                           at https://<team>.cloudflareaccess.com/warp
+  --gateway                send http and https through the organization's gateway
+                           proxy so its filtering and logging apply (off by default:
+                           it adds a hop inside the tunnel and logs your browsing)
+
+Routing (which traffic goes where):
+  --route-block <list>     never let these reach the network at all
+  --route-direct <list>    send these straight out, bypassing the tunnel
+  --routes <path>          load both lists from a file with [block] and [direct]
+                           sections
+                           list entries are comma or newline separated and may be:
+                             example.com          the name and every subdomain
+                             full:example.com     that exact name only
+                             keyword:doubleclick  any name containing it
+                             regexp:^ad[0-9]+     a regular expression
+                             10.0.0.0/8           a network, or a bare address
+                             port:25              a port, or port:3000-3010
+                             private              lan, loopback and cgnat space
+                           block is checked first, then direct, otherwise the
+                           tunnel is used
 
 Config files:
   --config <path>          base identity config path (default aether.toml)
@@ -64,7 +96,10 @@ Advanced:
 ";
 
 pub fn parse_and_apply() -> crate::error::Result<()> {
-    let args: Vec<String> = env::args().skip(1).collect();
+    parse_args(env::args().skip(1).collect())
+}
+
+pub fn parse_args(args: Vec<String>) -> crate::error::Result<()> {
     let mut i = 0;
 
     while i < args.len() {
@@ -91,6 +126,7 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             }
 
             "--bind" => set("AETHER_SOCKS", next_value!()),
+            "--http-proxy" => set("AETHER_HTTP_PROXY", next_value!()),
             "--quick-reconnect" => set("AETHER_QUICK_RECONNECT", "1"),
             "--no-quick-reconnect" => set("AETHER_QUICK_RECONNECT", "0"),
 
@@ -103,7 +139,7 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "--wg-peer" => set("AETHER_WG_PEER", next_value!()),
 
             "--masque" => set("AETHER_PROTOCOL", "masque"),
-            "--wg" | "--wireguard" => set("AETHER_PROTOCOL", "wg"),
+            "--wg" | "--wireguard" | "--warp" => set("AETHER_PROTOCOL", "wg"),
             "--gool" | "--wiw" => set("AETHER_PROTOCOL", "gool"),
             "--protocol" => set("AETHER_PROTOCOL", next_value!()),
 
@@ -123,8 +159,18 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
                 set("AETHER_MASQUE_NO_DATA_CHECK", "1");
                 set("AETHER_WG_NO_DATA_CHECK", "1");
             }
-            "--validate-secs" => set("AETHER_MASQUE_VALIDATE_SECS", next_value!()),
-            "--reconnect-secs" => set("AETHER_MASQUE_RECONNECT_SECS", next_value!()),
+            "--validate-secs" => {
+                let value = next_value!().clone();
+                set("AETHER_MASQUE_VALIDATE_SECS", &value);
+                set("AETHER_WG_VALIDATE_SECS", &value);
+            }
+            "--startup-secs" => set("AETHER_MASQUE_STARTUP_SECS", next_value!()),
+            "--reconnect-secs" => {
+                let value = next_value!().clone();
+                set("AETHER_MASQUE_RECONNECT_SECS", &value);
+                set("AETHER_WG_RECONNECT_SECS", &value);
+            }
+            "--dns" => set("AETHER_DNS", next_value!()),
             "--fragment" => set("AETHER_MASQUE_H2_FRAGMENT", "1"),
             "--fragment-size" => set("AETHER_MASQUE_H2_FRAGMENT_SIZE", next_value!()),
             "--fragment-delay" => set("AETHER_MASQUE_H2_FRAGMENT_DELAY", next_value!()),
@@ -135,6 +181,17 @@ pub fn parse_and_apply() -> crate::error::Result<()> {
             "--config" => set("AETHER_CONFIG", next_value!()),
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
+
+            "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
+            "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),
+            "--access-secret" => set("AETHER_ACCESS_CLIENT_SECRET", next_value!()),
+            "--access-token" => set("AETHER_ACCESS_TOKEN", next_value!()),
+            "--access-email" => set("AETHER_ACCESS_EMAIL", next_value!()),
+            "--gateway" => set("AETHER_GATEWAY", "1"),
+
+            "--route-block" => set("AETHER_ROUTE_BLOCK", next_value!()),
+            "--route-direct" => set("AETHER_ROUTE_DIRECT", next_value!()),
+            "--routes" => set("AETHER_ROUTES_FILE", next_value!()),
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
             "--perf" => set("AETHER_PERF_PROFILE", next_value!()),

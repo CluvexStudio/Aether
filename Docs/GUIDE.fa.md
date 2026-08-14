@@ -203,6 +203,7 @@ Reconnect to it now without rescanning? [Y/n]:
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — تأخیر بین تکه‌ها به میلی‌ثانیه، `n` یا `a-b`. پیش‌فرض `2-10`.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — اگه این رو بذاری، فقط `:status 200` کافیه؛ پروب end-to-end دیتاپلین انجام نمی‌شه.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — چند ثانیه صبر کنه تا پروب دیتاپلین موفق بشه قبل از اینکه از یه گیت‌وی صرف‌نظر کنه. پیش‌فرض `10`.
+- `AETHER_MASQUE_STARTUP_SECS` (`--startup-secs`) — مهلت کلی برای اتصال TCP/QUIC، TLS، CONNECT-IP و تأیید اولیهٔ دیتاپلین. پیش‌فرض `30`.
 - `AETHER_MASQUE_RECONNECT_SECS` (`--reconnect-secs`) — تأخیر قبل از اتصال خودکار دوباره بعد از قطع تونل MASQUE یا شکست تأیید. پیش‌فرض `2`.
 - `AETHER_WG_RECONNECT_SECS` — تأخیر قبل از اتصال خودکار دوباره بعد از قطع تونل WireGuard. پیش‌فرض `2`.
 
@@ -221,6 +222,7 @@ Reconnect to it now without rescanning? [Y/n]:
 - `AETHER_PEER` یا `AETHER_WG_PEER` (`--peer`, `--wg-peer`) — اگه بخوای خودت یه آدرس ثابت بدی و اسکن رو دور بزنی.
 - `AETHER_CONFIG` (`--config`) — مسیر فایل کانفیگ پایه. پیش‌فرض `aether.toml`.
 - `AETHER_WG_CONFIG` و `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — مسیر فایل کانفیگ مخصوص هر پروتکل.
+- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — مدت حذف موقت نقطه‌ای که دو بار پشت‌سرهم شکست خورده از اسکن‌ها. پیش‌فرض `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — بازنویسی گروه‌های TLS key-share که توی دست‌دادن اعلام می‌شن. پیش‌فرض شبیه کروم هست (`P-256:X25519:P-384`).
 
 ## مثال‌های عملی
@@ -267,8 +269,12 @@ AETHER_QUICK_RECONNECT=1 ./target/release/aether --masque
 
 شما می‌توانید ایمیج رسمی Aether را مستقیماً از GitHub Container Registry (GHCR) اجرا کنید که یه محیط ایزوله بهت می‌ده و نیازی به نصب Rust یا ابزارهای C++ روی سیستم خودت نداری.
 
+> **پراکسی SOCKS5 هیچ احراز هویتی ندارد.** دستورهای زیر پورت را فقط روی `127.0.0.1` منتشر می‌کنند. اگر به‌جایش `-p 1819:1819` بنویسی، روی همه‌ی اینترفیس‌های سیستم گوش می‌دهد و هر کسی در شبکه می‌تواند تونل تو را مانند یک رله‌ی باز مصرف کند.
+
+والیوم `-v aether-data:/data` هویت WARP را بین ریستارت‌ها نگه می‌دارد. بدون آن هر اجرا یک دستگاه نو ثبت می‌کند، همان چیزی که در نهایت باعث محدود شدن آدرست توسط Cloudflare می‌شود.
+
 ```bash
-docker run -it -p 1819:1819 \
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data \
   -e AETHER_PROTOCOL=masque \
   -e AETHER_SCAN=balanced \
   ghcr.io/cluvexstudio/aether:latest
@@ -279,7 +285,7 @@ docker run -it -p 1819:1819 \
 
 ```bash
 docker build -t aether .
-docker run -it -p 1819:1819 aether
+docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data aether
 ```
 
 ## تست اینکه واقعاً کار می‌کنه یا نه

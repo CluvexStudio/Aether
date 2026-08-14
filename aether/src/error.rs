@@ -29,6 +29,9 @@ pub enum AetherError {
     #[error("api: {0}")]
     Api(String),
 
+    #[error("cancelled")]
+    Cancelled,
+
     #[error("other: {0}")]
     Other(String),
 }
