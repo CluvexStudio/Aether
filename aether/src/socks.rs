@@ -119,28 +119,34 @@ pub async fn serve(listen: SocketAddr, stack: StackHandle) -> Result<()> {
     log::info!("socks5 listening on {listen}");
     let bind_ip = listen.ip();
 
+    let mut clients = tokio::task::JoinSet::new();
     loop {
-        let (sock, peer) = match listener.accept().await {
-            Ok(accepted) => accepted,
-            Err(error) => {
-                if let Some(delay) = accept_backoff(&error) {
-                    log::warn!(
-                        "socks5 accept failed: {error}; the listener stays open and retries"
-                    );
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-                log::error!("socks5 listener cannot continue: {error}");
-                return Err(error.into());
+        tokio::select! {
+            accept = listener.accept() => {
+                let (sock, peer) = match accept {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        if let Some(delay) = accept_backoff(&error) {
+                            log::warn!(
+                                "socks5 accept failed: {error}; the listener stays open and retries"
+                            );
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        log::error!("socks5 listener cannot continue: {error}");
+                        return Err(error.into());
+                    }
+                };
+                let stack = stack.clone();
+                clients.spawn(async move {
+                    if let Err(e) = handle_client(sock, stack, bind_ip).await {
+                        log::debug!("socks client {peer} ended: {e}");
+                    }
+                });
             }
-        };
-
-        let stack = stack.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(sock, stack, bind_ip).await {
-                log::debug!("socks client {peer} ended: {e}");
-            }
-        });
+            // Reap finished clients so JoinSet does not grow without bound.
+            Some(_) = clients.join_next(), if !clients.is_empty() => {}
+        }
     }
 }
 

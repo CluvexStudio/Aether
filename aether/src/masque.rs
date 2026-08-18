@@ -151,12 +151,19 @@ pub struct CapsuleParser {
     buf: Vec<u8>,
 }
 
+const MAX_CAPSULE_BUF: usize = 256 * 1024;
+
 impl CapsuleParser {
     pub fn new() -> Self {
         Self { buf: Vec::new() }
     }
 
     pub fn push(&mut self, data: &[u8]) {
+        if self.buf.len().saturating_add(data.len()) > MAX_CAPSULE_BUF {
+            log::warn!("capsule parser buffer exceeded {MAX_CAPSULE_BUF} bytes; resetting");
+            self.buf.clear();
+            return;
+        }
         self.buf.extend_from_slice(data);
     }
 

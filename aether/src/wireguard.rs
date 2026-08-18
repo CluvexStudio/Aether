@@ -1,5 +1,4 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -161,7 +160,6 @@ impl WgTunnel {
         let tunn_h = self.tunn.clone();
         let inbound_tx = self.inbound_tx.clone();
         let obf_sent = self.obf_sent.clone();
-        let post_hs_junk_sent = Arc::new(AtomicBool::new(false));
         let aethernoize = self.aethernoize.clone();
         let aethernoize_t = self.aethernoize.clone();
         let client_id = self.client_id;
@@ -228,9 +226,10 @@ impl WgTunnel {
         });
 
         let send_task = tokio::spawn(async move {
+            let mut out_buf = vec![0u8; MAX_PACKET];
+            let mut post_hs_junk_sent = false;
             while let Some(ip_packet) = outbound_rx.recv().await {
                 let mut tunn = tunn_w.lock().await;
-                let mut out_buf = vec![0u8; MAX_PACKET];
 
                 match tunn.encapsulate(&ip_packet, &mut out_buf) {
                     TunnResult::Done => {}
@@ -253,14 +252,10 @@ impl WgTunnel {
 
                         let _ = sock_w.send(&pkt_vec).await;
 
-                        if aethernoize.jc_after_hs > 0
-                            && !post_hs_junk_sent.swap(true, Ordering::SeqCst)
-                        {
-                            let sock_clone = sock_w.clone();
-                            let cfg_clone = aethernoize.clone();
-                            tokio::spawn(async move {
-                                aethernoize::send_post_handshake_junk(&sock_clone, peer, &cfg_clone).await;
-                            });
+                        // Post-handshake junk once only — not on every data packet.
+                        if aethernoize.jc_after_hs > 0 && !post_hs_junk_sent {
+                            post_hs_junk_sent = true;
+                            aethernoize::send_post_handshake_junk(&sock_w, peer, &aethernoize).await;
                         }
                     }
                     TunnResult::WriteToTunnelV4(_, _) | TunnResult::WriteToTunnelV6(_, _) => {}
@@ -270,25 +265,19 @@ impl WgTunnel {
 
         let timer_task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(TIMER_TICK);
+            let mut tmp = vec![0u8; MAX_PACKET];
             loop {
                 interval.tick().await;
                 let mut tunn = tunn_t.lock().await;
-                let mut tmp = vec![0u8; MAX_PACKET];
                 if let TunnResult::WriteToNetwork(pkt) = tunn.update_timers(&mut tmp) {
                     let mut pkt_vec = pkt.to_vec();
                     inject_client_id(&mut pkt_vec, &client_id);
                     drop(tunn);
 
                     if aethernoize_t.is_enabled() {
-                        let sock_j = sock_t.clone();
-                        let cfg_j = aethernoize_t.clone();
-                        tokio::spawn(async move {
-                            aethernoize::send_keepalive_junk(&sock_j, &cfg_j).await;
-                            let _ = sock_j.send(&pkt_vec).await;
-                        });
-                    } else {
-                        let _ = sock_t.send(&pkt_vec).await;
+                        aethernoize::send_keepalive_junk(&sock_t, &aethernoize_t).await;
                     }
+                    let _ = sock_t.send(&pkt_vec).await;
                 }
             }
         });
