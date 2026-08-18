@@ -29,6 +29,9 @@ pub enum AetherError {
     #[error("api: {0}")]
     Api(String),
 
+    #[error("identity refused: {0}")]
+    IdentityRefused(String),
+
     #[error("cancelled")]
     Cancelled,
 

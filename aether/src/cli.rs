@@ -127,6 +127,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<()> {
 
             "--bind" => set("AETHER_SOCKS", next_value!()),
             "--http-proxy" => set("AETHER_HTTP_PROXY", next_value!()),
+            "--upstream" => set("AETHER_UPSTREAM", next_value!()),
             "--quick-reconnect" => set("AETHER_QUICK_RECONNECT", "1"),
             "--no-quick-reconnect" => set("AETHER_QUICK_RECONNECT", "0"),
 

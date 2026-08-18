@@ -18,6 +18,8 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 - WireGuard support
 - Nested WireGuard mode (`gool`)
 - Traffic obfuscation
+- Routing rules by domain, address, or port, matched from the TLS server name so they keep working behind a tun front end
+- Upstream proxy support, so Aether can dial out through another VPN or proxy already running on the machine
 - Automatic reconnection, and quick-reconnect to your last known-good gateway to skip rescanning
 - Local SOCKS5 proxy
 - Command-line flags, environment variables, or interactive prompts — your choice
