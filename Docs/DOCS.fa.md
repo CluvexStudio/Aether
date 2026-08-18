@@ -278,7 +278,10 @@ aether --masque --h2 --upstream http://proxy.example:8080
 به‌عنوان پروسه اجرا کند. کلاینت iOS به همین نیاز دارد، و یک برنامه‌ی Go هم
 می‌تواند از راه cgo از ایتر استفاده کند.
 
+از ریشهٔ مخزن ابتدا وارد کریت `aether` شوید:
+
 ```sh
+cd aether
 cargo build --release                # باینری و هر دو کتابخانه
 cargo build --release --bin aether   # فقط باینری
 ```

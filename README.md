@@ -64,16 +64,17 @@ The `quiche` repository must be placed alongside `aether`:
   quiche/
 ```
 
-Build:
+Build from the repository root:
 
 ```bash
+cd aether
 cargo build --release
 ```
 
-Binary:
+The binary is written to:
 
 ```text
-target/release/aether
+aether/target/release/aether
 ```
 
 ## Docker
@@ -111,18 +112,18 @@ docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data aether
 Run with no arguments and answer the prompts:
 
 ```bash
-./target/release/aether
+./aether/target/release/aether
 ```
 
 Or skip the prompts with flags:
 
 ```bash
-./target/release/aether --masque -4 --scan turbo --noize firewall
+./aether/target/release/aether --masque -4 --scan turbo --noize firewall
 ```
 
 On Windows, double-click `run-aether.bat` (included in the release zip) instead — it opens a terminal, runs `aether.exe`, and keeps the window open afterwards so you can read any errors.
 
-Every prompt has a flag and an environment variable equivalent. Run `./target/release/aether --help` for the full list, or see the guides linked below.
+Every prompt has a flag and an environment variable equivalent. Run `./aether/target/release/aether --help` for the full list, or see the guides linked below.
 
 After startup, a SOCKS5 proxy will be available at:
 
