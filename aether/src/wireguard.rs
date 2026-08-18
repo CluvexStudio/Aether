@@ -104,14 +104,7 @@ pub struct EstablishedSession {
 
 impl WgTunnel {
     pub async fn new(cfg: WgConfig, inbound_tx: mpsc::Sender<Vec<u8>>) -> Result<Self> {
-        let bind_addr = if cfg.peer_endpoint.is_ipv4() {
-            "0.0.0.0:0"
-        } else {
-            "[::]:0"
-        };
-
-        let sock = UdpSocket::bind(bind_addr).await?;
-        sock.connect(cfg.peer_endpoint).await?;
+        let (sock, _) = crate::upstream::bind_via_upstream(cfg.peer_endpoint).await?;
 
         let local_secret = StaticSecret::from(cfg.local_private_key);
         let peer_public = PublicKey::from(cfg.peer_public_key);
@@ -556,9 +549,7 @@ pub async fn verify_endpoint_keep_session(
     let data_check = std::env::var("AETHER_WG_NO_DATA_CHECK").is_err();
     log::trace!("[wg] verify {} obf={} data_check={}", peer, aethernoize.is_enabled(), data_check);
 
-    let bind = if peer.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-    let sock = UdpSocket::bind(bind).await?;
-    sock.connect(peer).await?;
+    let (sock, _) = crate::upstream::bind_via_upstream(peer).await?;
 
     let start = Instant::now();
     let deadline = start + timeout;

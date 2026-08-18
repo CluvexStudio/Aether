@@ -334,6 +334,112 @@ impl UdpRelay {
     }
 }
 
+struct Detour {
+    shim: SocketAddr,
+    peer: SocketAddr,
+}
+
+fn detours() -> &'static std::sync::Mutex<std::collections::HashMap<SocketAddr, Detour>> {
+    static DETOURS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<SocketAddr, Detour>>,
+    > = std::sync::OnceLock::new();
+    DETOURS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+pub fn relay_target(local: SocketAddr, intended: SocketAddr) -> SocketAddr {
+    match detours().lock() {
+        Ok(map) => map.get(&local).map(|d| d.shim).unwrap_or(intended),
+        Err(_) => intended,
+    }
+}
+
+pub fn real_source(local: SocketAddr, observed: SocketAddr) -> SocketAddr {
+    match detours().lock() {
+        Ok(map) => match map.get(&local) {
+            Some(detour) if detour.shim == observed => detour.peer,
+            _ => observed,
+        },
+        Err(_) => observed,
+    }
+}
+
+pub async fn attach_detour(socket: &UdpSocket, peer: SocketAddr) -> Result<()> {
+    let proxy = match configured() {
+        Some(proxy) => proxy,
+        None => return Ok(()),
+    };
+
+    let relay = proxy.associate().await?;
+    let shim = UdpSocket::bind("127.0.0.1:0").await?;
+    let shim_address = shim.local_addr()?;
+    let client = socket.local_addr()?;
+
+    if let Ok(mut map) = detours().lock() {
+        map.insert(
+            client,
+            Detour {
+                shim: shim_address,
+                peer,
+            },
+        );
+    }
+
+    log::info!(
+        "[+] {peer} is reached through the upstream relay at {}",
+        relay.relay()
+    );
+
+    tokio::spawn(async move {
+        if let Err(error) = pump(shim, client, peer, relay).await {
+            log::warn!("[-] the upstream udp relay for {peer} stopped: {error}");
+        }
+        if let Ok(mut map) = detours().lock() {
+            map.remove(&client);
+        }
+    });
+
+    Ok(())
+}
+
+pub async fn bind_via_upstream(peer: SocketAddr) -> Result<(UdpSocket, SocketAddr)> {
+    let bind = if peer.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+
+    let socket = UdpSocket::bind(bind).await?;
+    attach_detour(&socket, peer).await?;
+
+    let local = socket.local_addr()?;
+    let target = relay_target(local, peer);
+    socket.connect(target).await?;
+
+    Ok((socket, target))
+}
+
+async fn pump(
+    shim: UdpSocket,
+    client: SocketAddr,
+    peer: SocketAddr,
+    relay: UdpRelay,
+) -> std::io::Result<()> {
+    let mut from_client = vec![0u8; 65535];
+    let mut from_relay = vec![0u8; 65535];
+
+    loop {
+        tokio::select! {
+            read = shim.recv_from(&mut from_client) => {
+                let (len, origin) = read?;
+                if origin != client {
+                    continue;
+                }
+                relay.send_to(&from_client[..len], peer).await?;
+            }
+            read = relay.recv_from(&mut from_relay) => {
+                let (len, _origin) = read?;
+                shim.send_to(&from_relay[..len], client).await?;
+            }
+        }
+    }
+}
+
 fn split_endpoint(endpoint: &str) -> Result<(String, u16)> {
     let malformed = || {
         AetherError::Other(format!(
@@ -645,6 +751,77 @@ mod tests {
         for cut in 0..framed.len() {
             assert!(decode_udp_header(&framed[..cut]).is_none(), "cut {cut}");
         }
+    }
+
+    async fn fake_socks_udp_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let (mut control, _) = listener.accept().await.unwrap();
+
+            let mut greeting = [0u8; 3];
+            control.read_exact(&mut greeting).await.unwrap();
+            control.write_all(&[VER, AUTH_NONE]).await.unwrap();
+
+            let mut head = [0u8; 4];
+            control.read_exact(&mut head).await.unwrap();
+            assert_eq!(head[1], CMD_ASSOCIATE);
+            let mut rest = [0u8; 6];
+            control.read_exact(&mut rest).await.unwrap();
+
+            let relay = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let relay_address = relay.local_addr().unwrap();
+
+            let mut answer = vec![VER, REP_OK, 0x00];
+            answer.extend_from_slice(&encode_address(relay_address));
+            control.write_all(&answer).await.unwrap();
+
+            let mut buf = vec![0u8; 4096];
+            let (len, from) = relay.recv_from(&mut buf).await.unwrap();
+            let (target, offset) = decode_udp_header(&buf[..len]).unwrap();
+
+            let mut echo = encode_udp_header(target);
+            echo.extend_from_slice(b"pong:");
+            echo.extend_from_slice(&buf[offset..len]);
+            relay.send_to(&echo, from).await.unwrap();
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            drop(control);
+        });
+
+        (address, handle)
+    }
+
+    #[tokio::test]
+    async fn a_datagram_makes_the_round_trip_through_a_socks5_relay() {
+        let (proxy_address, server) = fake_socks_udp_server().await;
+        std::env::set_var("AETHER_UPSTREAM", format!("socks5://{proxy_address}"));
+
+        let proxy = Upstream::parse(&format!("socks5://{proxy_address}")).unwrap();
+        let relay = proxy.associate().await.unwrap();
+
+        let peer: SocketAddr = "203.0.113.9:2408".parse().unwrap();
+        relay.send_to(b"ping", peer).await.unwrap();
+
+        let mut out = vec![0u8; 1024];
+        let (len, origin) =
+            tokio::time::timeout(Duration::from_secs(3), relay.recv_from(&mut out))
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(&out[..len], b"pong:ping");
+        assert_eq!(origin, peer);
+
+        std::env::remove_var("AETHER_UPSTREAM");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn an_http_proxy_cannot_be_asked_to_carry_udp() {
+        let proxy = Upstream::parse("http://127.0.0.1:8080").unwrap();
+        assert!(proxy.associate().await.is_err());
     }
 
     #[test]
