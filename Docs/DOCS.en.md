@@ -16,6 +16,7 @@ process: the tunnel, a user-space TCP/IP stack, and the proxy.
 - [Obfuscation](#obfuscation)
 - [Zero Trust](#zero-trust)
 - [Routing rules](#routing-rules)
+- [Upstream proxy](#upstream-proxy)
 - [Identity files](#identity-files)
 - [Using Aether as a library](#using-aether-as-a-library)
 - [Environment variables](#environment-variables)
@@ -191,6 +192,52 @@ Rules apply to TCP and UDP. Per-application rules are deliberately not here: in
 tun mode the traffic has already lost its application identity by the time it
 reaches Aether, so that split belongs to the platform client.
 
+### Name rules behind a tun
+
+Name rules also match when the proxy is handed an address instead of a name, which
+is what a tun front end does. Aether reads the name from the TLS server name or the
+HTTP `Host` header of the first bytes and decides on that; address and port rules
+still apply when no name is found.
+
+The name is used for the decision only, so the connection still goes to the address
+the client asked for.
+
+| Variable | Default | Sets |
+| --- | --- | --- |
+| `AETHER_ROUTE_SNIFF` | on | `0` turns it off |
+| `AETHER_ROUTE_SNIFF_MS` | `400` | how long to wait for those first bytes |
+
+## Upstream proxy
+
+`--upstream` sends everything Aether dials through another proxy, which is how you
+chain it behind a VPN or proxy app already running on the machine.
+
+```sh
+aether --upstream socks5://127.0.0.1:1080
+aether --upstream socks5://alice:s3cret@127.0.0.1:1080
+aether --upstream http://proxy.example:8080
+```
+
+A bare `host:port` is read as SOCKS5. Bracket an IPv6 address. Percent-encode a
+password containing `@` or `:`, so `p@ss` is written `p%40ss`.
+
+| Proxy | Carries |
+| --- | --- |
+| SOCKS5 with UDP associate | every transport: MASQUE on HTTP/3 and HTTP/2, WireGuard, `gool` |
+| HTTP CONNECT | the HTTP/2 carrier only, since CONNECT cannot carry UDP |
+
+With an HTTP proxy, add `--h2` so the whole tunnel stays on TCP:
+
+```sh
+aether --masque --h2 --upstream http://proxy.example:8080
+```
+
+The endpoint scan, the registration calls and the ECH lookup go through the proxy
+too. A destination matched by `--route-direct` does not, because that rule exists to
+bypass the tunnel.
+
+The same setting is available as `AETHER_UPSTREAM`.
+
 ## Identity files
 
 On first run Aether registers a device and writes the credentials next to the
@@ -206,6 +253,23 @@ device.
 
 Override any of them with `--config`, `--wg-config`, `--masque-config`. The files
 contain private keys and are written owner-readable only.
+
+### When an identity stops being accepted
+
+Cloudflare can stop accepting a device that is still in your file. The handshake
+keeps succeeding in that state and no traffic passes, so Aether checks the saved
+identity on startup and reports it:
+
+```text
+[-] cloudflare no longer accepts the saved identity for device <id>
+[-] the tunnel will handshake but carry no traffic until this identity is replaced
+```
+
+It then registers a fresh device and rewrites the file. Set `AETHER_REPROVISION=0`
+to be told without anything being replaced.
+
+Only the account API refusing the device counts. Being offline or rate limited does
+not discard an identity.
 
 ## Using Aether as a library
 
@@ -261,6 +325,9 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_ACCESS_TOKEN` | an enrolment token you already hold |
 | `AETHER_GATEWAY` | route HTTP through the organization gateway |
 | `AETHER_ROUTE_BLOCK`, `AETHER_ROUTE_DIRECT`, `AETHER_ROUTES_FILE` | routing rules |
+| `AETHER_ROUTE_SNIFF`, `AETHER_ROUTE_SNIFF_MS` | reading the name off the first bytes |
+| `AETHER_UPSTREAM` | dial out through another proxy |
+| `AETHER_REPROVISION` | replace an identity Cloudflare refuses |
 | `AETHER_CONFIG`, `AETHER_WG_CONFIG`, `AETHER_MASQUE_CONFIG` | identity paths |
 | `AETHER_TLS_GROUPS` | TLS key share groups |
 | `AETHER_PERF_PROFILE` | `low`, `medium`, `high` |
