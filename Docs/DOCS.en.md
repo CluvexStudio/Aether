@@ -278,7 +278,10 @@ with a C API, so a host application can link the core instead of spawning it.
 This is what the iOS client needs, and it lets a Go program use Aether through
 cgo.
 
+From the repository root, enter the `aether` crate before building:
+
 ```sh
+cd aether
 cargo build --release            # binary and both libraries
 cargo build --release --bin aether   # binary only
 ```

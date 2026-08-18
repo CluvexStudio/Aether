@@ -66,16 +66,17 @@ aether
   quiche/
 ```
 
-ساخت پروژه:
+ساخت پروژه از ریشهٔ مخزن:
 
 ```bash
+cd aether
 cargo build --release
 ```
 
-فایل نهایی:
+فایل نهایی در مسیر زیر ساخته می‌شود:
 
 ```text
-target/release/aether
+aether/target/release/aether
 ```
 
 ## داکر (Docker)
@@ -113,18 +114,18 @@ docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data aether
 برنامه را بدون هیچ آرگومانی اجرا کنید و به سؤال‌ها جواب بدید:
 
 ```bash
-./target/release/aether
+./aether/target/release/aether
 ```
 
 یا با پرچم‌ها از سؤال‌ها رد شید:
 
 ```bash
-./target/release/aether --masque -4 --scan turbo --noize firewall
+./aether/target/release/aether --masque -4 --scan turbo --noize firewall
 ```
 
 روی ویندوز، به‌جای اون کافیه روی `run-aether.bat` (که همراه zip ریلیز میاد) دابل‌کلیک کنی — یه ترمینال باز می‌کنه، `aether.exe` رو اجرا می‌کنه، و بعدش پنجره رو باز نگه می‌داره تا هر خطایی رو بتونی بخونی.
 
-هر سؤال یه پرچم و یه متغیر محیطی معادل داره. برای لیست کامل `./target/release/aether --help` رو بزن، یا به راهنماهای پایین‌تر مراجعه کن.
+هر سؤال یه پرچم و یه متغیر محیطی معادل داره. برای لیست کامل `./aether/target/release/aether --help` رو بزن، یا به راهنماهای پایین‌تر مراجعه کن.
 
 پس از اجرا، پراکسی SOCKS5 روی آدرس زیر در دسترس خواهد بود:
 
