@@ -223,6 +223,18 @@ impl RuleSet {
         self.block.is_empty() && self.direct.is_empty()
     }
 
+    pub fn has_domain_rules(&self) -> bool {
+        self.block.iter().chain(self.direct.iter()).any(|rule| {
+            matches!(
+                rule,
+                Matcher::DomainSuffix(_)
+                    | Matcher::DomainFull(_)
+                    | Matcher::DomainKeyword(_)
+                    | Matcher::DomainRegex(_)
+            )
+        })
+    }
+
     pub fn decide(&self, host: Host<'_>, port: u16) -> Action {
         if self.block.iter().any(|rule| rule.matches(host, port)) {
             return Action::Block;
@@ -402,6 +414,16 @@ mod tests {
         assert!(is_private("fd00::1".parse().unwrap()));
         assert!(is_private("fe80::1".parse().unwrap()));
         assert!(!is_private("2606:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn domain_rules_are_reported_so_a_tunnel_can_recover_the_name() {
+        assert!(!rules("", "").has_domain_rules());
+        assert!(!rules("10.0.0.0/8, port:25", "private").has_domain_rules());
+        assert!(rules("ads.example", "").has_domain_rules());
+        assert!(rules("", "keyword:internal").has_domain_rules());
+        assert!(rules("", r"regexp:^ad[0-9]+\.").has_domain_rules());
+        assert!(rules("full:example.com", "").has_domain_rules());
     }
 
     #[test]

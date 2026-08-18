@@ -16,6 +16,8 @@ pub mod netstack;
 pub mod noize;
 pub mod prober;
 pub mod routing;
+pub mod sniff;
+pub mod upstream;
 pub mod quic;
 pub mod socks;
 pub mod sysprofile;

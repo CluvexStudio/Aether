@@ -466,21 +466,90 @@ fn skip_name(buf: &[u8], mut pos: usize) -> Option<usize> {
     }
 }
 
+fn decide_route(
+    set: &RuleSet,
+    target: &Target,
+    sniffed: Option<&str>,
+    port: u16,
+) -> Action {
+    match sniffed {
+        Some(name) => match set.decide(Host::Domain(name), port) {
+            Action::Proxy => set.decide(host_of(target), port),
+            decided => decided,
+        },
+        None => set.decide(host_of(target), port),
+    }
+}
+
+fn sniff_enabled() -> bool {
+    !matches!(
+        std::env::var("AETHER_ROUTE_SNIFF").as_deref(),
+        Ok("0") | Ok("off") | Ok("false")
+    )
+}
+
+fn sniff_window() -> Duration {
+    let ms = std::env::var("AETHER_ROUTE_SNIFF_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(400);
+    Duration::from_millis(ms)
+}
+
+async fn read_sniff_head(sock: &mut TcpStream) -> Option<Vec<u8>> {
+    let mut head = vec![0u8; crate::sniff::PEEK_BUDGET];
+    match tokio::time::timeout(sniff_window(), sock.read(&mut head)).await {
+        Ok(Ok(0)) => None,
+        Ok(Ok(read)) => {
+            head.truncate(read);
+            Some(head)
+        }
+        Ok(Err(_)) => None,
+        Err(_) => Some(Vec::new()),
+    }
+}
+
 async fn handle_connect(
     mut sock: TcpStream,
     stack: StackHandle,
     target: Target,
     port: u16,
 ) -> Result<()> {
-    match routes().decide(host_of(&target), port) {
+    let mut head = Vec::new();
+    let mut replied = false;
+    let mut named: Option<String> = None;
+
+    if matches!(target, Target::Ip(_)) && sniff_enabled() && routes().has_domain_rules() {
+        reply_bound(&mut sock, "0.0.0.0:0".parse().unwrap()).await?;
+        replied = true;
+
+        head = match read_sniff_head(&mut sock).await {
+            Some(bytes) => bytes,
+            None => return Ok(()),
+        };
+
+        if head.is_empty() {
+            log::trace!("[route] {target}:{port} sent nothing to read a name from");
+        } else {
+            named = crate::sniff::hostname(&head);
+            if let Some(name) = &named {
+                log::debug!("[route] {target}:{port} announced itself as {name}");
+            }
+        }
+    }
+
+    match decide_route(routes(), &target, named.as_deref(), port) {
         Action::Block => {
             log::debug!("[route] block tcp {target}:{port}");
-            let _ = reply(&mut sock, REP_NOT_ALLOWED).await;
+            if !replied {
+                let _ = reply(&mut sock, REP_NOT_ALLOWED).await;
+            }
             return Ok(());
         }
         Action::Direct => {
             log::debug!("[route] direct tcp {target}:{port}");
-            return handle_direct(sock, target, port).await;
+            return handle_direct(sock, target, port, head, replied).await;
         }
         Action::Proxy => {}
     }
@@ -541,9 +610,16 @@ async fn handle_connect(
         }
     };
 
-    reply_bound(&mut sock, "0.0.0.0:0".parse().unwrap()).await?;
+    if !replied {
+        reply_bound(&mut sock, "0.0.0.0:0".parse().unwrap()).await?;
+    }
 
     let (sender, mut from_stack, leftover) = conn;
+
+    if !head.is_empty() && sender.send(head).await.is_err() {
+        return Ok(());
+    }
+
     let (mut rd, mut wr) = sock.into_split();
 
     if !leftover.is_empty() && wr.write_all(&leftover).await.is_err() {
@@ -610,13 +686,19 @@ fn udp_source_allowed(
     }
 }
 
-async fn handle_direct(mut sock: TcpStream, target: Target, port: u16) -> Result<()> {
+async fn handle_direct(
+    mut sock: TcpStream,
+    target: Target,
+    port: u16,
+    head: Vec<u8>,
+    replied: bool,
+) -> Result<()> {
     let address = match &target {
         Target::Domain(name) => format!("{name}:{port}"),
         Target::Ip(ip) => SocketAddr::new(*ip, port).to_string(),
     };
 
-    let upstream = match tokio::time::timeout(
+    let mut upstream = match tokio::time::timeout(
         Duration::from_secs(10),
         TcpStream::connect(&address),
     )
@@ -625,18 +707,29 @@ async fn handle_direct(mut sock: TcpStream, target: Target, port: u16) -> Result
         Ok(Ok(stream)) => stream,
         Ok(Err(error)) => {
             log::debug!("[route] direct connect to {address} failed: {error}");
-            let _ = reply(&mut sock, REP_GENERAL).await;
+            if !replied {
+                let _ = reply(&mut sock, REP_GENERAL).await;
+            }
             return Ok(());
         }
         Err(_) => {
             log::debug!("[route] direct connect to {address} timed out");
-            let _ = reply(&mut sock, REP_GENERAL).await;
+            if !replied {
+                let _ = reply(&mut sock, REP_GENERAL).await;
+            }
             return Ok(());
         }
     };
 
     let _ = upstream.set_nodelay(true);
-    reply_bound(&mut sock, "0.0.0.0:0".parse().unwrap()).await?;
+
+    if !head.is_empty() && upstream.write_all(&head).await.is_err() {
+        return Ok(());
+    }
+
+    if !replied {
+        reply_bound(&mut sock, "0.0.0.0:0".parse().unwrap()).await?;
+    }
 
     let (mut client_rd, mut client_wr) = sock.into_split();
     let (mut remote_rd, mut remote_wr) = upstream.into_split();
@@ -1541,5 +1634,115 @@ mod http_proxy_tests {
     fn a_malformed_line_is_rejected() {
         assert!(parse_request_line("").is_none());
         assert!(parse_request_line("CONNECT").is_none());
+    }
+}
+
+#[cfg(test)]
+mod sniff_route_tests {
+    use super::*;
+
+    fn ip(value: &str) -> Target {
+        Target::Ip(value.parse().unwrap())
+    }
+
+    #[test]
+    fn a_domain_rule_reaches_traffic_that_arrived_as_an_address() {
+        let set = RuleSet::parse("ads.example", "");
+        assert_eq!(
+            decide_route(&set, &ip("93.184.216.34"), None, 443),
+            Action::Proxy
+        );
+        assert_eq!(
+            decide_route(&set, &ip("93.184.216.34"), Some("ads.example"), 443),
+            Action::Block
+        );
+        assert_eq!(
+            decide_route(&set, &ip("93.184.216.34"), Some("tracker.ads.example"), 443),
+            Action::Block
+        );
+    }
+
+    #[test]
+    fn a_sniffed_name_can_send_traffic_direct() {
+        let set = RuleSet::parse("", "internal.example");
+        assert_eq!(
+            decide_route(&set, &ip("10.1.2.3"), Some("internal.example"), 443),
+            Action::Direct
+        );
+    }
+
+    #[test]
+    fn an_address_rule_still_applies_when_the_name_says_nothing() {
+        let set = RuleSet::parse("10.0.0.0/8", "");
+        assert_eq!(
+            decide_route(&set, &ip("10.1.2.3"), Some("unlisted.example"), 443),
+            Action::Block
+        );
+    }
+
+    #[test]
+    fn a_name_that_matches_nothing_leaves_the_address_decision_alone() {
+        let set = RuleSet::parse("ads.example", "private");
+        assert_eq!(
+            decide_route(&set, &ip("192.168.1.5"), Some("unlisted.example"), 443),
+            Action::Direct
+        );
+    }
+
+    #[test]
+    fn a_domain_target_is_decided_on_its_own_name() {
+        let set = RuleSet::parse("ads.example", "");
+        let target = Target::Domain("ads.example".to_string());
+        assert_eq!(decide_route(&set, &target, None, 443), Action::Block);
+    }
+
+    #[tokio::test]
+    async fn a_server_speaks_first_protocol_survives_the_sniff_window() {
+        std::env::set_var("AETHER_ROUTE_SNIFF_MS", "50");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let quiet = tokio::spawn(async move {
+            let _client = tokio::net::TcpStream::connect(address).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        });
+
+        let (mut server, _) = listener.accept().await.unwrap();
+        let head = read_sniff_head(&mut server).await;
+        std::env::remove_var("AETHER_ROUTE_SNIFF_MS");
+
+        assert_eq!(
+            head,
+            Some(Vec::new()),
+            "a client that waits for a greeting must not be treated as gone"
+        );
+        quiet.abort();
+    }
+
+    #[tokio::test]
+    async fn a_client_that_hangs_up_is_reported_as_gone() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let client = tokio::net::TcpStream::connect(address).await.unwrap();
+            drop(client);
+        });
+
+        let (mut server, _) = listener.accept().await.unwrap();
+        assert_eq!(read_sniff_head(&mut server).await, None);
+    }
+
+    #[test]
+    fn sniffing_is_on_unless_it_is_turned_off() {
+        std::env::remove_var("AETHER_ROUTE_SNIFF");
+        assert!(sniff_enabled());
+        std::env::set_var("AETHER_ROUTE_SNIFF", "0");
+        assert!(!sniff_enabled());
+        std::env::set_var("AETHER_ROUTE_SNIFF", "off");
+        assert!(!sniff_enabled());
+        std::env::set_var("AETHER_ROUTE_SNIFF", "1");
+        assert!(sniff_enabled());
+        std::env::remove_var("AETHER_ROUTE_SNIFF");
     }
 }
