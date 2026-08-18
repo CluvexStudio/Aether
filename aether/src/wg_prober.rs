@@ -59,8 +59,7 @@ impl WgScanMode {
                 early_exit_first: true,
                 full_subnet: false,
                 sample_per_cidr: 40,
-                anchor_port_count: 4,
-                pool_port_waves: 2,
+                pool_port_waves: 1,
             },
             WgScanMode::Balanced => WgStrategy {
                 concurrency: 8,
@@ -71,7 +70,6 @@ impl WgScanMode {
                 early_exit_first: false,
                 full_subnet: false,
                 sample_per_cidr: 120,
-                anchor_port_count: 4,
                 pool_port_waves: 3,
             },
             WgScanMode::Thorough => WgStrategy {
@@ -83,7 +81,6 @@ impl WgScanMode {
                 early_exit_first: false,
                 full_subnet: true,
                 sample_per_cidr: 0,
-                anchor_port_count: 8,
                 pool_port_waves: 4,
             },
             WgScanMode::Stealth => WgStrategy {
@@ -95,7 +92,6 @@ impl WgScanMode {
                 early_exit_first: false,
                 full_subnet: false,
                 sample_per_cidr: 50,
-                anchor_port_count: 4,
                 pool_port_waves: 2,
             },
             WgScanMode::Ironclad => WgStrategy {
@@ -107,7 +103,6 @@ impl WgScanMode {
                 early_exit_first: false,
                 full_subnet: false,
                 sample_per_cidr: 120,
-                anchor_port_count: 6,
                 pool_port_waves: 3,
             },
         }
@@ -125,7 +120,6 @@ struct WgStrategy {
     early_exit_first: bool,
     full_subnet: bool,
     sample_per_cidr: usize,
-    anchor_port_count: usize,
     pool_port_waves: usize,
 }
 
@@ -416,20 +410,13 @@ fn build_wg_candidates(
         }
     };
 
-    // Test known-good anchors on the documented priority ports before spending
-    // the scan budget on randomly sampled addresses.
-    for port in ports.iter().take(st.anchor_port_count.max(1)) {
-        for anchor in &anchors {
-            push(*anchor, *port);
-        }
-    }
+    let mut ips: Vec<IpAddr> = Vec::with_capacity(anchors.len() + pool.len());
+    ips.extend(anchors.iter().copied());
+    ips.extend(pool.iter().copied());
 
-    // Cover the sampled pool in waves. Every address gets one attempt before a
-    // second port is tried, while successive waves rotate the assigned port.
     for wave in 0..st.pool_port_waves.max(1) {
-        for (idx, candidate_ip) in pool.iter().enumerate() {
-            let port = ports[(idx + wave) % port_count];
-            push(*candidate_ip, port);
+        for (idx, candidate_ip) in ips.iter().enumerate() {
+            push(*candidate_ip, ports[(idx + wave) % port_count]);
         }
     }
 
@@ -527,25 +514,59 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn anchors_cover_priority_ports_before_the_sampled_pool() {
-        let strategy = WgScanMode::Balanced.strategy();
+    fn anchors_come_first_but_each_on_its_own_port() {
+        let strategy = WgScanMode::Turbo.strategy();
         let ports = [2408, 500, 1701, 4500, 854];
-        let candidates = build_wg_candidates(
-            &strategy,
-            &ports,
-            IpScan::V4,
-            &HashSet::new(),
+        let candidates = build_wg_candidates(&strategy, &ports, IpScan::V4, &HashSet::new());
+
+        for (idx, seed) in wireguard::wg_seeds_v4().iter().enumerate() {
+            let ip = IpAddr::V4(seed.parse().expect("wireguard seed"));
+            assert_eq!(
+                candidates[idx],
+                (ip, ports[idx % ports.len()]),
+                "anchor {ip} should be tried once, on a port of its own"
+            );
+        }
+    }
+
+    #[test]
+    fn the_front_of_the_scan_never_hammers_one_port() {
+        let strategy = WgScanMode::Turbo.strategy();
+        let ports = [2408, 500, 1701, 4500, 854];
+        let candidates = build_wg_candidates(&strategy, &ports, IpScan::V4, &HashSet::new());
+
+        let head: HashSet<u16> = candidates[..ports.len()].iter().map(|(_, p)| *p).collect();
+        assert_eq!(
+            head.len(),
+            ports.len(),
+            "the first candidates must spread across ports, not stack on 2408"
         );
 
-        for seed in wireguard::wg_seeds_v4() {
-            let ip = IpAddr::V4(seed.parse().expect("wireguard seed"));
-            for port in &ports[..4] {
-                assert!(
-                    candidates.contains(&(ip, *port)),
-                    "anchor {ip} should be tested on port {port}"
-                );
-            }
+        let on_2408 = candidates.iter().take(20).filter(|(_, p)| *p == 2408).count();
+        assert!(on_2408 <= 4, "port 2408 took {on_2408} of the first twenty slots");
+    }
+
+    #[test]
+    fn turbo_tries_every_address_once_before_repeating_any() {
+        let strategy = WgScanMode::Turbo.strategy();
+        let ports = [2408, 500, 1701, 4500, 854];
+        let candidates = build_wg_candidates(&strategy, &ports, IpScan::V4, &HashSet::new());
+
+        let mut per_ip: std::collections::HashMap<IpAddr, usize> =
+            std::collections::HashMap::new();
+        for (ip, _) in &candidates {
+            *per_ip.entry(*ip).or_default() += 1;
         }
+
+        let repeated = per_ip.values().filter(|count| **count > 1).count();
+        assert!(
+            repeated <= wireguard::wg_seeds_v4().len(),
+            "only an anchor that the pool also sampled may appear twice, saw {repeated}"
+        );
+        assert!(
+            per_ip.values().all(|count| *count <= 2),
+            "no address should be tried more than twice in turbo"
+        );
     }
 
     #[test]
@@ -635,3 +656,4 @@ mod tests {
         assert!(!candidates.contains(&(peer.ip(), peer.port())));
     }
 }
+
