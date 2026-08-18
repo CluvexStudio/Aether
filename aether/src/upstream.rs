@@ -392,6 +392,11 @@ pub async fn attach_detour(socket: &UdpSocket, peer: SocketAddr) -> Result<()> {
         None => return Ok(()),
     };
 
+    if crate::routing::is_private(peer.ip()) {
+        log::debug!("[*] {peer} is local, reaching it without the upstream proxy");
+        return Ok(());
+    }
+
     let relay = proxy.associate().await?;
     let shim = UdpSocket::bind("127.0.0.1:0").await?;
     let shim_address = shim.local_addr()?;
@@ -845,6 +850,27 @@ mod tests {
     async fn an_http_proxy_cannot_be_asked_to_carry_udp() {
         let proxy = Upstream::parse("http://127.0.0.1:8080").unwrap();
         assert!(proxy.associate().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_local_peer_is_reached_without_the_proxy() {
+        std::env::set_var("AETHER_UPSTREAM", "socks5://127.0.0.1:9");
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        for local in ["127.0.0.1:53", "10.0.0.1:2408", "192.168.1.1:443"] {
+            let peer: SocketAddr = local.parse().unwrap();
+            assert!(
+                attach_detour(&socket, peer).await.is_ok(),
+                "{local} must not be sent through the proxy"
+            );
+            assert_eq!(
+                relay_target(socket.local_addr().unwrap(), peer),
+                peer,
+                "{local} should still be dialled directly"
+            );
+        }
+
+        std::env::remove_var("AETHER_UPSTREAM");
     }
 
     #[test]
