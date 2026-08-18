@@ -149,6 +149,7 @@ pub struct Identity {
     pub organization: String,
     pub gateway_proxy: String,
     pub assigned_endpoint: String,
+    pub refused: bool,
 }
 
 pub struct MasqueKeyPair {
@@ -222,11 +223,20 @@ pub fn generate_masque_keypair() -> Result<MasqueKeyPair> {
 }
 
 fn http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .user_agent(consts::UA_REGISTER)
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| AetherError::Api(e.to_string()))
+        .timeout(std::time::Duration::from_secs(20));
+
+    if let Some(upstream) = crate::upstream::configured() {
+        match upstream.as_reqwest_proxy() {
+            Ok(proxy) => builder = builder.proxy(proxy),
+            Err(error) => {
+                log::warn!("[-] the api calls could not be sent through the proxy: {error}")
+            }
+        }
+    }
+
+    builder.build().map_err(|e| AetherError::Api(e.to_string()))
 }
 
 const API_ATTEMPTS: u32 = 5;
@@ -247,6 +257,13 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Durati
     Some(std::time::Duration::from_secs(
         seconds.min(API_RETRY_AFTER_CAP_SECS),
     ))
+}
+
+fn refuses_identity(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+    )
 }
 
 fn worth_retrying(status: reqwest::StatusCode) -> bool {
@@ -319,11 +336,15 @@ async fn fallback_call(
         });
     }
 
-    Err(AetherError::Api(format!(
+    let described = format!(
         "{label} over {}: {}",
         response.route,
         describe_status(response.status, &response.body)
-    )))
+    );
+    if matches!(response.status, 401 | 404 | 410) {
+        return Err(AetherError::IdentityRefused(described));
+    }
+    Err(AetherError::Api(described))
 }
 
 fn describe_status(status: u16, body: &str) -> String {
@@ -419,7 +440,12 @@ where
                 .map_err(|e| AetherError::Api(format!("{label} decode: {e}; body={body}")));
         }
 
-        last_error = AetherError::Api(format!("{label}: {}", describe_rejection(status, &body)));
+        let described = format!("{label}: {}", describe_rejection(status, &body));
+        last_error = if refuses_identity(status) {
+            AetherError::IdentityRefused(described)
+        } else {
+            AetherError::Api(described)
+        };
 
         if !worth_retrying(status) {
             return Err(last_error);
@@ -703,8 +729,22 @@ pub fn endpoint_from(reg: &AccountData) -> String {
 pub async fn refresh_profile(identity: Identity) -> Identity {
     let reg = match fetch_device(&identity.device_id, &identity.access_token).await {
         Ok(reg) => reg,
+        Err(AetherError::IdentityRefused(reason)) => {
+            log::warn!(
+                "[-] cloudflare no longer accepts the saved identity for device {}: {reason}",
+                identity.device_id
+            );
+            log::warn!(
+                "[-] the tunnel will handshake but carry no traffic until this identity is replaced"
+            );
+            return Identity {
+                refused: true,
+                ..identity
+            };
+        }
         Err(error) => {
-            log::debug!("[!] could not refresh the device profile: {error}");
+            log::warn!("[!] could not reach the account api to check the identity: {error}");
+            log::warn!("[!] carrying on with the saved profile; it may be out of date");
             return identity;
         }
     };
@@ -737,6 +777,7 @@ pub async fn refresh_profile(identity: Identity) -> Identity {
         organization,
         gateway_proxy,
         assigned_endpoint,
+        refused: false,
         ..identity
     }
 }
@@ -783,6 +824,7 @@ fn finish_provision(reg: AccountData, wg_private: [u8; 32]) -> Result<Identity> 
         organization,
         gateway_proxy,
         assigned_endpoint,
+        refused: false,
     })
 }
 
@@ -941,6 +983,7 @@ mod tests {
             organization: String::new(),
             gateway_proxy: String::new(),
             assigned_endpoint: String::new(),
+            refused: false,
         }
     }
 
@@ -1051,5 +1094,61 @@ mod tests {
         assert!(!pair.cert_pem.is_empty());
         assert!(!pair.key_pem.is_empty());
         assert!(!masque_cert_expiring(now_unix()));
+    }
+}
+
+#[cfg(test)]
+mod identity_refusal_tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn the_codes_that_mean_the_identity_is_gone() {
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::NOT_FOUND,
+            StatusCode::GONE,
+        ] {
+            assert!(refuses_identity(status), "{status} means a dead identity");
+        }
+    }
+
+    #[test]
+    fn a_flagged_network_is_not_mistaken_for_a_dead_identity() {
+        assert!(
+            !refuses_identity(StatusCode::FORBIDDEN),
+            "403 is cloudflare refusing the address, the identity may be fine"
+        );
+        assert!(
+            !refuses_identity(StatusCode::TOO_MANY_REQUESTS),
+            "429 is rate limiting, not a dead identity"
+        );
+    }
+
+    #[test]
+    fn a_server_or_transport_problem_is_not_a_dead_identity() {
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
+            StatusCode::REQUEST_TIMEOUT,
+        ] {
+            assert!(
+                !refuses_identity(status),
+                "{status} should be retried, not treated as a dead identity"
+            );
+        }
+    }
+
+    #[test]
+    fn anything_worth_retrying_is_never_called_a_dead_identity() {
+        for code in 400..600u16 {
+            let status = StatusCode::from_u16(code).unwrap();
+            assert!(
+                !(worth_retrying(status) && refuses_identity(status)),
+                "{status} cannot be both retryable and a dead identity"
+            );
+        }
     }
 }

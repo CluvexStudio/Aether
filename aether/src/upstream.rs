@@ -124,6 +124,29 @@ impl Upstream {
         format!("{}:{}", self.host, self.port)
     }
 
+    pub fn url(&self) -> String {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        let scheme = match self.kind {
+            Kind::Socks5 => "socks5h",
+            Kind::Http => "http",
+        };
+        format!("{scheme}://{host}:{}", self.port)
+    }
+
+    pub fn as_reqwest_proxy(&self) -> Result<reqwest::Proxy> {
+        let proxy = reqwest::Proxy::all(self.url())
+            .map_err(|error| AetherError::Other(format!("{} is unusable: {error}", self.url())))?;
+
+        match &self.user {
+            Some(user) => Ok(proxy.basic_auth(user, self.password.as_deref().unwrap_or(""))),
+            None => Ok(proxy),
+        }
+    }
+
     pub async fn connect(&self, target: SocketAddr) -> Result<TcpStream> {
         let attempt = async {
             let mut stream = TcpStream::connect(self.endpoint()).await?;
@@ -822,6 +845,40 @@ mod tests {
     async fn an_http_proxy_cannot_be_asked_to_carry_udp() {
         let proxy = Upstream::parse("http://127.0.0.1:8080").unwrap();
         assert!(proxy.associate().await.is_err());
+    }
+
+    #[test]
+    fn the_proxy_url_handed_to_the_api_client_is_well_formed() {
+        assert_eq!(
+            Upstream::parse("socks5://127.0.0.1:1080").unwrap().url(),
+            "socks5h://127.0.0.1:1080"
+        );
+        assert_eq!(
+            Upstream::parse("http://proxy.example:8080").unwrap().url(),
+            "http://proxy.example:8080"
+        );
+        assert_eq!(
+            Upstream::parse("socks5://[::1]:1080").unwrap().url(),
+            "socks5h://[::1]:1080",
+            "an ipv6 proxy host has to stay bracketed"
+        );
+    }
+
+    #[test]
+    fn every_shape_of_proxy_is_accepted_by_the_api_client() {
+        for raw in [
+            "socks5://127.0.0.1:1080",
+            "socks5://alice:s3cret@127.0.0.1:1080",
+            "http://proxy.example:8080",
+            "http://alice:s3cret@proxy.example:8080",
+            "socks5://[::1]:1080",
+        ] {
+            let upstream = Upstream::parse(raw).unwrap();
+            assert!(
+                upstream.as_reqwest_proxy().is_ok(),
+                "{raw} should be usable for the api calls"
+            );
+        }
     }
 
     #[test]

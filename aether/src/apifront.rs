@@ -246,10 +246,16 @@ async fn exchange(
     address: SocketAddr,
     fingerprint: Fingerprint,
 ) -> Result<ApiResponse> {
-    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
-        .await
-        .map_err(|_| AetherError::Api(format!("connect to {address} timed out")))?
-        .map_err(|e| AetherError::Api(format!("connect to {address}: {e}")))?;
+    let tcp = match crate::upstream::configured() {
+        Some(proxy) => tokio::time::timeout(CONNECT_TIMEOUT, proxy.connect(address))
+            .await
+            .map_err(|_| AetherError::Api(format!("connect to {address} timed out")))?
+            .map_err(|e| AetherError::Api(format!("connect to {address} through the proxy: {e}")))?,
+        None => tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
+            .await
+            .map_err(|_| AetherError::Api(format!("connect to {address} timed out")))?
+            .map_err(|e| AetherError::Api(format!("connect to {address}: {e}")))?,
+    };
     tcp.set_nodelay(true).ok();
 
     let config = fingerprint.configure()?;
