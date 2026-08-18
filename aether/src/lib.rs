@@ -444,12 +444,25 @@ fn derive_sibling_path(base: &str, suffix: &str) -> String {
     }
 }
 
+fn keep_saved_identity() -> bool {
+    !matches!(
+        std::env::var("AETHER_REPROVISION").as_deref(),
+        Ok("0") | Ok("off") | Ok("false")
+    )
+}
+
 async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing warp identity from {config_path}");
         let identity = adopt_team_profile(identity).await;
-        config::save(config_path, &identity)?;
-        return Ok(identity);
+        if !identity.refused {
+            config::save(config_path, &identity)?;
+            return Ok(identity);
+        }
+        if !keep_saved_identity() {
+            return Ok(identity);
+        }
+        log::warn!("[*] registering a fresh wireguard account to replace the refused identity");
     }
 
     log::info!("[+] no warp identity found; provisioning dedicated wireguard account");
@@ -463,21 +476,41 @@ async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> 
 async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing masque identity from {config_path}");
-        if identity.has_masque_credentials() {
+        let refused = if identity.has_masque_credentials() {
             let identity = adopt_team_profile(identity).await;
-            config::save(config_path, &identity)?;
-            return Ok(identity);
-        }
-        log::info!("[+] masque identity needs a certificate; enrolling masque key");
-        let enrollment = account::ensure_masque_enrolled(&identity).await?;
-        let identity = account::Identity {
-            cert_pem: enrollment.cert_pem,
-            key_pem: enrollment.key_pem,
-            cert_issued_at: enrollment.issued_at,
-            ..identity
+            if !identity.refused {
+                config::save(config_path, &identity)?;
+                return Ok(identity);
+            }
+            identity
+        } else {
+            log::info!("[+] masque identity needs a certificate; enrolling masque key");
+            match account::ensure_masque_enrolled(&identity).await {
+                Ok(enrollment) => {
+                    let identity = account::Identity {
+                        cert_pem: enrollment.cert_pem,
+                        key_pem: enrollment.key_pem,
+                        cert_issued_at: enrollment.issued_at,
+                        ..identity
+                    };
+                    config::save(config_path, &identity)?;
+                    return Ok(identity);
+                }
+                Err(AetherError::IdentityRefused(reason)) => {
+                    log::warn!("[-] the saved masque identity was refused: {reason}");
+                    account::Identity {
+                        refused: true,
+                        ..identity
+                    }
+                }
+                Err(error) => return Err(error),
+            }
         };
-        config::save(config_path, &identity)?;
-        return Ok(identity);
+
+        if !keep_saved_identity() {
+            return Ok(refused);
+        }
+        log::warn!("[*] registering a fresh masque account to replace the refused identity");
     }
 
     log::info!("[+] no masque identity found; provisioning dedicated masque account");
