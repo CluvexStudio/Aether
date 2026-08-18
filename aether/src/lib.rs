@@ -134,6 +134,7 @@ async fn run_gool(
     listen: SocketAddr,
 ) -> Result<()> {
     let mut last_peer: Option<SocketAddr> = None;
+    let mut last_inner: Option<SocketAddr> = None;
     let mut consecutive_fails: u32 = 0;
     const MAX_CONSECUTIVE_FAILS: u32 = 2;
 
@@ -153,26 +154,50 @@ async fn run_gool(
             None
         };
 
-        let peer = match peer {
-            Some(p) => p,
+        let pair = match peer {
+            Some(p) => Some((p, last_inner)),
             None => {
-                let p = match select_peer(&primary, Protocol::WireGuard).await {
-                    Ok(p) => p,
+                let mode_str = select_scan_mode_str().await;
+                let ip = select_ip_version().await;
+                match select_wg_peers(&primary, &mode_str, ip, 2).await {
+                    Ok(found) => {
+                        consecutive_fails = 0;
+                        let outer = found[0];
+                        let inner = found.get(1).copied();
+                        Some((outer, inner))
+                    }
                     Err(e) => {
                         log::warn!("[-] no usable outer WARP endpoint found: {e}; rescanning shortly");
                         tokio::time::sleep(wg_reconnect_delay()).await;
                         continue;
                     }
-                };
-                consecutive_fails = 0;
-                p
+                }
             }
         };
 
-        log::info!("[+] using cloudflare edge {peer} (outer)");
-        last_peer = Some(peer);
+        let (peer, inner_peer) = match pair {
+            Some(pair) => pair,
+            None => continue,
+        };
 
-        match run_warp_in_warp(primary.clone(), secondary.clone(), peer, listen).await {
+        let inner_peer = match inner_peer {
+            Some(inner) => inner,
+            None => {
+                log::warn!(
+                    "[-] the scan only turned up {peer}, so warp-in-warp would use one edge twice; rescanning"
+                );
+                last_peer = None;
+                last_inner = None;
+                tokio::time::sleep(wg_reconnect_delay()).await;
+                continue;
+            }
+        };
+
+        log::info!("[+] using cloudflare edge {peer} (outer) and {inner_peer} (inner)");
+        last_peer = Some(peer);
+        last_inner = Some(inner_peer);
+
+        match run_warp_in_warp(primary.clone(), secondary.clone(), peer, inner_peer, listen).await {
             Ok(()) => log::warn!("[-] gool tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] gool tunnel ended: {e}; reconnecting"),
         }
@@ -513,28 +538,54 @@ async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result
             Ok(SocketAddr::new(best.ip, best.port))
         }
         Protocol::WireGuard | Protocol::WarpInWarp => {
-            log::info!("[*] hunting for a working WireGuard endpoint (handshake + data-plane verification)");
-            let mode = wg_prober::WgScanMode::parse(&mode_str);
-            
-            let private_key = identity.private_key_bytes()?;
-            let peer_public = identity.peer_public_key_bytes()?;
-            
-            let probe = wg_prober::WgProbe {
-                private_key: std::sync::Arc::new(private_key),
-                peer_public_key: std::sync::Arc::new(peer_public),
-                client_id: identity.client_id.clone(),
-                local_ipv4: identity.ipv4.parse().map_err(|_| AetherError::Other("invalid ipv4".into()))?,
-                aethernoize: aethernoize_config(),
-                ports: wireguard::WG_PORTS.to_vec(),
-                ip,
-                excluded: HashSet::new(),
-            };
-
-            let best = wg_prober::hunt_best_wg_endpoint(&probe, mode).await?;
-            log::info!("[+] selected WireGuard endpoint {}:{} (rtt {:?})", best.ip, best.port, best.rtt);
-            Ok(SocketAddr::new(best.ip, best.port))
+            let peers = select_wg_peers(identity, &mode_str, ip, 1).await?;
+            Ok(peers[0])
         }
     }
+}
+
+async fn select_wg_peers(
+    identity: &account::Identity,
+    mode_str: &str,
+    ip: prober::IpScan,
+    want: usize,
+) -> Result<Vec<SocketAddr>> {
+    log::info!(
+        "[*] hunting for {want} working WireGuard endpoint(s) (handshake + data-plane verification)"
+    );
+    let mode = wg_prober::WgScanMode::parse(mode_str);
+
+    let private_key = identity.private_key_bytes()?;
+    let peer_public = identity.peer_public_key_bytes()?;
+
+    let probe = wg_prober::WgProbe {
+        private_key: std::sync::Arc::new(private_key),
+        peer_public_key: std::sync::Arc::new(peer_public),
+        client_id: identity.client_id.clone(),
+        local_ipv4: identity
+            .ipv4
+            .parse()
+            .map_err(|_| AetherError::Other("invalid ipv4".into()))?,
+        aethernoize: aethernoize_config(),
+        ports: wireguard::WG_PORTS.to_vec(),
+        ip,
+        excluded: HashSet::new(),
+    };
+
+    let found = wg_prober::hunt_wg_endpoints(&probe, mode, want).await?;
+    for pr in &found {
+        log::info!(
+            "[+] selected WireGuard endpoint {}:{} (rtt {:?})",
+            pr.ip,
+            pr.port,
+            pr.rtt
+        );
+    }
+
+    Ok(found
+        .into_iter()
+        .map(|pr| SocketAddr::new(pr.ip, pr.port))
+        .collect())
 }
 
 async fn resolve_ech() -> Option<Vec<u8>> {
@@ -1456,13 +1507,21 @@ async fn run_warp_in_warp(
     primary: account::Identity,
     secondary: account::Identity,
     peer: SocketAddr,
+    inner_peer: SocketAddr,
     listen: SocketAddr,
 ) -> Result<()> {
+    if inner_peer.ip() == peer.ip() {
+        return Err(AetherError::Other(format!(
+            "warp-in-warp needs two separate edges but both hops landed on {}",
+            peer.ip()
+        )));
+    }
+
     log::info!("[*] establishing outer WARP tunnel to {peer}...");
     let (outer_stack, mut outer_exit) = establish_wg(&primary, peer, TUNNEL_MTU, true, 5, "outer").await?;
 
-    let (forwarder, _forwarder_guard) = spawn_udp_forwarder(&outer_stack, peer).await?;
-    log::info!("[+] inner endpoint tunneled through outer warp via {forwarder}");
+    let (forwarder, _forwarder_guard) = spawn_udp_forwarder(&outer_stack, inner_peer).await?;
+    log::info!("[+] inner endpoint {inner_peer} tunneled through outer warp via {forwarder}");
 
     log::info!("[*] establishing inner WARP tunnel (warp-in-warp)...");
     let (inner_stack, mut inner_exit) =
