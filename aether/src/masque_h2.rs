@@ -173,13 +173,20 @@ fn build_connect_request(cfg: &H2TunnelConfig) -> Result<http::Request<()>> {
         .map_err(|e| AetherError::Masque(format!("build request: {e}")))
 }
 
+pub async fn dial(peer: std::net::SocketAddr) -> Result<TcpStream> {
+    match crate::upstream::configured() {
+        Some(proxy) => proxy.connect(peer).await,
+        None => TcpStream::connect(peer).await.map_err(AetherError::Io),
+    }
+}
+
 pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Duration> {
     let start = Instant::now();
     let data_check = data_check_enabled();
 
     let attempt = async {
         let tls_config = build_tls(cfg)?;
-        let tcp = TcpStream::connect(cfg.peer).await.map_err(AetherError::Io)?;
+        let tcp = dial(cfg.peer).await?;
         let _ = tcp.set_nodelay(true);
         let fragment = FragmentingStream::new(tcp, FragmentConfig::from_env());
         let tls = tokio_boring::connect(tls_config, &cfg.sni, fragment)
@@ -290,7 +297,7 @@ pub async fn run(
     let tls_config = build_tls(&cfg)?;
 
     log_or_debug(quiet, format!("[h2] connecting tcp to {}", cfg.peer));
-    let tcp = TcpStream::connect(cfg.peer).await.map_err(AetherError::Io)?;
+    let tcp = dial(cfg.peer).await?;
     let _ = tcp.set_nodelay(true);
 
     let frag_cfg = FragmentConfig::from_env();
