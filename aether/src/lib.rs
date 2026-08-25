@@ -1564,22 +1564,38 @@ async fn run_warp_in_warp(
     let http_task = spawn_http_proxy(&inner_stack);
     let mut socks_task = tokio::spawn(async move { socks::serve(listen, inner_stack).await });
 
-    let outcome = tokio::select! {
-        result = &mut outer_exit => join_outcome("outer wireguard tunnel", result),
-        result = &mut inner_exit => join_outcome("inner wireguard tunnel", result),
-        result = &mut socks_task => join_outcome("socks5 server", result),
+    #[derive(PartialEq)]
+    enum Winner {
+        Outer,
+        Inner,
+        Socks,
+    }
+
+    let (outcome, winner) = tokio::select! {
+        result = &mut outer_exit => (join_outcome("outer wireguard tunnel", result), Winner::Outer),
+        result = &mut inner_exit => (join_outcome("inner wireguard tunnel", result), Winner::Inner),
+        result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
     };
 
     if let Some(task) = &http_task {
         task.abort();
     }
-    outer_exit.abort();
-    inner_exit.abort();
-    socks_task.abort();
 
-    let _ = outer_exit.await;
-    let _ = inner_exit.await;
-    let _ = socks_task.await;
+    // Whichever handle already resolved inside the select! above must not be
+    // polled again: tokio panics with "JoinHandle polled after completion"
+    // if you .await a JoinHandle that has already yielded Ready.
+    if winner != Winner::Outer {
+        outer_exit.abort();
+        let _ = outer_exit.await;
+    }
+    if winner != Winner::Inner {
+        inner_exit.abort();
+        let _ = inner_exit.await;
+    }
+    if winner != Winner::Socks {
+        socks_task.abort();
+        let _ = socks_task.await;
+    }
 
     drop(outer_stack);
 
