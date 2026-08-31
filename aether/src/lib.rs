@@ -133,6 +133,11 @@ async fn run_gool(
     secondary: account::Identity,
     listen: SocketAddr,
 ) -> Result<()> {
+    // Asked once, before the loop: a reconnect has to be able to rescan on its
+    // own, and there is nobody at the terminal to answer a prompt hours later.
+    let mode_str = select_scan_mode_str().await;
+    let ip = select_ip_version().await;
+
     let mut last_peer: Option<SocketAddr> = None;
     let mut last_inner: Option<SocketAddr> = None;
     let mut consecutive_fails: u32 = 0;
@@ -157,8 +162,6 @@ async fn run_gool(
         let pair = match peer {
             Some(p) => Some((p, last_inner)),
             None => {
-                let mode_str = select_scan_mode_str().await;
-                let ip = select_ip_version().await;
                 match select_wg_peers(&primary, &mode_str, ip, 2).await {
                     Ok(found) => {
                         consecutive_fails = 0;
