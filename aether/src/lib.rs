@@ -27,6 +27,7 @@ pub mod tunnelping;
 pub mod wireguard;
 pub mod wg_prober;
 pub mod zerotrust;
+pub mod customwg;
 
 
 use std::collections::{HashMap, HashSet};
@@ -162,6 +163,16 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 primary.device_id, primary.ipv4, secondary.device_id, secondary.ipv4
             );
             run_gool(primary, secondary, listen).await
+        }
+        Protocol::CustomWg => {
+            let custom_path = custom_wg_config_path(&base_config);
+            let custom = customwg::CustomWgConfig::from_file(&custom_path)?;
+            log::info!(
+                "[+] custom wg config loaded from {custom_path}: {} addresses, endpoint={:?}",
+                custom.interface.addresses.len(),
+                custom.peer.endpoint
+            );
+            run_custom_wireguard(custom, listen).await
         }
     }
 }
@@ -675,6 +686,10 @@ fn masque_config_path(base: &str) -> String {
     }
 }
 
+fn custom_wg_config_path(base: &str) -> String {
+    std::env::var("AETHER_CUSTOM_WG_CONFIG").unwrap_or_else(|_| derive_sibling_path(base, "custom"))
+}
+
 fn derive_sibling_path(base: &str, suffix: &str) -> String {
     let dir_end = base.rfind(|c| c == '/' || c == '\\').map(|i| i + 1).unwrap_or(0);
     match base[dir_end..].rfind('.') {
@@ -773,7 +788,7 @@ async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity
 async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result<SocketAddr> {
     let force_peer = match protocol {
         Protocol::Masque => std::env::var("AETHER_PEER").ok(),
-        Protocol::WireGuard | Protocol::WarpInWarp => std::env::var("AETHER_WG_PEER")
+        Protocol::WireGuard | Protocol::WarpInWarp | Protocol::CustomWg => std::env::var("AETHER_WG_PEER")
             .ok()
             .or_else(|| std::env::var("AETHER_PEER").ok()),
     };
@@ -816,6 +831,10 @@ async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result
             let peers = select_wg_peers(identity, &mode_str, ip, 1, &HashSet::new()).await?;
             Ok(peers[0])
         }
+        // CustomWg is handled in run_with without going through select_peer.
+        // If this arm is ever reached, it means the dispatch logic changed
+        // and custom wg endpoint resolution needs to be revisited.
+        _ => unreachable!("CustomWg should not reach select_peer"),
     }
 }
 
@@ -1252,6 +1271,135 @@ async fn run_masque_tunnel(
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(AetherError::Other(format!("tunnel exited: {e}"))),
         Err(e) => Err(AetherError::Other(format!("tunnel task join error: {e}"))),
+    }
+}
+
+async fn run_custom_wireguard(
+    custom: customwg::CustomWgConfig,
+    listen: SocketAddr,
+) -> Result<()> {
+    let candidates = wg_profile_candidates();
+
+    let peer_from_config = custom.peer.endpoint;
+    let forced_peer = std::env::var("AETHER_WG_PEER")
+        .ok()
+        .or_else(|| std::env::var("AETHER_PEER").ok())
+        .and_then(|p| p.parse().ok());
+
+    let peer = forced_peer
+        .or(peer_from_config)
+        .ok_or_else(|| {
+            log::warn!("[-] custom wg config has no Peer.Endpoint; scanning is not supported for custom wg");
+            AetherError::Other("custom wg config: Peer.Endpoint is required".into())
+        })?;
+
+    if let (Some(forced), Some(from_cfg)) = (forced_peer, peer_from_config) {
+        if forced != from_cfg {
+            log::info!("[+] overriding custom wg endpoint {} with AETHER_WG_PEER/AETHER_PEER {}", from_cfg, forced);
+        }
+    }
+
+    let private_key = custom.interface.private_key;
+    let peer_public = custom.peer.public_key;
+    let ipv4 = custom.local_ipv4()?;
+    let ipv6 = custom.local_ipv6().ok();
+
+    let mut last_good: Option<(SocketAddr, aethernoize::AetherNoizeConfig, String)> = None;
+
+    loop {
+        let selection: Option<(SocketAddr, aethernoize::AetherNoizeConfig, String)> =
+            if let Some(q) = last_good.as_ref() {
+                log::info!("[*] retrying last known-good custom wg endpoint {}", q.0);
+                match wireguard::verify_endpoint(
+                    q.0,
+                    private_key,
+                    peer_public,
+                    custom.client_id,
+                    ipv4,
+                    &q.1,
+                    std::time::Duration::from_secs(6),
+                    None,
+                )
+                .await
+                {
+                    Ok(_) => Some(q.clone()),
+                    Err(e) => {
+                        log::warn!("[-] last known-good custom wg endpoint {} no longer responds ({e}); will rescan profiles", q.0);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+        let (peer_to_use, profile, profile_name) = if let Some(q) = selection {
+            q
+        } else {
+            let mut chosen = None;
+            for (name, profile) in &candidates {
+                log::info!("[*] testing custom wg endpoint {peer} with aethernoize profile '{name}'");
+                match wireguard::verify_endpoint(
+                    peer,
+                    private_key,
+                    peer_public,
+                    custom.client_id,
+                    ipv4,
+                    profile,
+                    std::time::Duration::from_secs(10),
+                    None,
+                )
+                .await
+                {
+                    Ok(rtt) => {
+                        log::info!("[+] profile '{name}' passed handshake + data-plane (rtt {:?})", rtt);
+                        chosen = Some((peer, profile.clone(), name.clone()));
+                        break;
+                    }
+                    Err(e) => {
+                        log::warn!("[-] profile '{name}' failed on custom wg endpoint: {e}");
+                    }
+                }
+            }
+            match chosen {
+                Some(v) => v,
+                None => {
+                    log::warn!("[-] no profile worked for custom wg endpoint {peer}; retrying shortly");
+                    tokio::time::sleep(wg_reconnect_delay()).await;
+                    continue;
+                }
+            }
+        };
+
+        log::info!("[+] using custom wg endpoint {}", peer_to_use);
+        last_good = Some((peer_to_use, profile.clone(), profile_name.clone()));
+
+        let identity = account::Identity {
+            device_id: String::new(),
+            access_token: String::new(),
+            cert_pem: Vec::new(),
+            key_pem: Vec::new(),
+            cert_issued_at: 0,
+            ipv4: ipv4.to_string(),
+            ipv6: ipv6.map(|v| v.to_string()).unwrap_or_default(),
+            wg_private_key: private_key,
+            wg_peer_public_key: peer_public,
+            client_id: custom.client_id,
+            organization: String::new(),
+            gateway_proxy: String::new(),
+            assigned_endpoint: String::new(),
+            refused: false,
+        };
+
+        match run_wireguard_tunnel(identity, peer_to_use, profile, listen).await {
+            Ok(()) => {
+                log::warn!("[-] custom wg tunnel closed; reconnecting");
+            }
+            Err(e) => {
+                log::warn!("[-] custom wg tunnel ended: {e}; reconnecting");
+            }
+        }
+
+        tokio::time::sleep(wg_reconnect_delay()).await;
     }
 }
 
@@ -1983,6 +2131,7 @@ enum Protocol {
     Masque,
     WireGuard,
     WarpInWarp,
+    CustomWg,
 }
 
 impl Protocol {
@@ -1990,6 +2139,7 @@ impl Protocol {
         match s.trim().to_lowercase().as_str() {
             "wg" | "wireguard" => Protocol::WireGuard,
             "gool" | "wiw" | "warp-in-warp" | "warpinwarp" => Protocol::WarpInWarp,
+            "custom" | "custom-wg" | "customwg" => Protocol::CustomWg,
             _ => Protocol::Masque,
         }
     }
@@ -1999,6 +2149,7 @@ impl Protocol {
             Protocol::Masque => "MASQUE",
             Protocol::WireGuard => "WireGuard",
             Protocol::WarpInWarp => "WARP-in-WARP (gool)",
+            Protocol::CustomWg => "Custom WireGuard",
         }
     }
 }

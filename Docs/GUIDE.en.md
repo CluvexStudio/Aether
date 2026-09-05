@@ -46,7 +46,7 @@ Any flag you don't pass falls back to its environment variable, and any environm
 
 ## Three transports, three different logics
 
-When you run Aether, the first thing it asks is which protocol to use. You have three choices:
+When you run Aether, the first thing it asks is which protocol to use. You have four choices:
 
 ### 1) MASQUE
 
@@ -59,6 +59,12 @@ A classic tunnel, lean and very fast. It has the least overhead, so when it work
 ### 3) Tunnel-in-tunnel (gool)
 
 Here one WireGuard session is wrapped inside another WireGuard session. That means two layers of encryption stacked on top of each other. This is a little slower, but when a single layer is not enough for clean passage it can make the difference. If plain WireGuard connects but is not stable, try this mode.
+
+### 4) Custom WireGuard
+
+Bring your own `wg-quick`-style config. Aether reads `[Interface]` and `[Peer]`, validates the endpoint, and runs the same WireGuard-over-WARP tunnel as the built-in WireGuard mode. Use this when you already have a keypair and endpoint you trust, or when you want to point Aether at a specific WireGuard server without scanning.
+
+Set `AETHER_CUSTOM_WG_CONFIG=/path/to/custom.conf`, or drop a file next to your main config named `<config>-custom.conf`. `AETHER_WG_PEER` or `AETHER_PEER` still overrides the endpoint if you want to force one.
 
 Because there are two hops, gool has to find two addresses, and by default it scans for both. If somebody on your network has already found addresses that work, you can hand them over instead of waiting for a sweep to rediscover them: `--wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408`, or both at once with `--wiw-peers 162.159.192.1:2408,188.114.96.1:2408`. The port has to be written out — which port gets through is the part that differs between networks, so aether does not fill one in for you. Giving only one of the two is fine: it scans for the other and keeps the sweep off the address you already chose. The two hops have to be different addresses, since leaving through the edge you arrived on gains you nothing. You do not have to remember any of this at the keyboard — when gool is about to scan, it prints the same reminder above the scan mode question.
 
@@ -190,11 +196,16 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 
 ### General selection
 
-- `AETHER_PROTOCOL` — protocol: `masque`, `wg`, or `gool`.
+- `AETHER_PROTOCOL` — protocol: `masque`, `wg`, `gool`, `customwg`.
 - `AETHER_SOCKS` — the proxy listen address. Default `127.0.0.1:1819`.
 - `AETHER_NOIZE` — obfuscation profile (explained above).
 - `AETHER_SCAN` — scan mode: `turbo`, `balanced`, `thorough`, `stealth`, `ironclad`.
 - `AETHER_IP` — IP version for scanning: IPv4, IPv6, or both.
+
+### Specific to Custom WireGuard
+
+- `AETHER_CUSTOM_WG_CONFIG` — path to a `wg-quick`-style config file. If unset, Aether looks for `<config>-custom.conf` next to the base config.
+- `AETHER_WG_PEER` or `AETHER_PEER` (`--peer`, `--wg-peer`) — force a specific endpoint instead of reading it from the config file.
 
 ### Specific to MASQUE
 
@@ -226,6 +237,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_WIW_PEERS` (`--wiw-peers`) — both hops in one value, `outer,inner`. Set it to `auto` (or pass `--wiw-scan`) to always scan and never be asked.
 - `AETHER_CONFIG` (`--config`) — the path of the base config file. Default `aether.toml`.
 - `AETHER_WG_CONFIG` and `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — the config path specific to each protocol.
+- `AETHER_CUSTOM_WG_CONFIG` — path to a custom WireGuard config file.
 - `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — how long an endpoint that fails twice is excluded from rescans. Default `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — override the TLS key-share groups advertised in the handshake. Default mimics Chrome (`P-256:X25519:P-384`).
 

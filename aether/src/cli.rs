@@ -38,7 +38,8 @@ Protocol:
   --wg, --wireguard, --warp
                            use classic WireGuard
   --gool, --wiw            use WARP-in-WARP (wireguard tunneled in wireguard)
-  --protocol <name>        masque | wg | gool
+  --custom-wg               use a custom wg-quick config over WARP
+  --protocol <name>        masque | wg | gool | customwg
 
 WARP-in-WARP endpoints:
   Both hops are found by the scan unless you name them here. The port is
@@ -144,7 +145,8 @@ Environment variables:
   AETHER_IP                        --ip: v4, v6 or both
   AETHER_PEER                      --peer
   AETHER_WG_PEER                   --wg-peer
-  AETHER_PROTOCOL                  --protocol: masque, wg or gool
+  AETHER_PROTOCOL                  --protocol: masque, wg, gool or customwg
+  AETHER_CUSTOM_WG_CONFIG          path to a custom wg-quick config file
   AETHER_WIW_OUTER_PEER            --wiw-outer
   AETHER_WIW_INNER_PEER            --wiw-inner
   AETHER_WIW_PEERS                 --wiw-peers, or auto for --wiw-scan
@@ -178,6 +180,7 @@ Environment variables:
   AETHER_CONFIG                    --config
   AETHER_WG_CONFIG                 --wg-config
   AETHER_MASQUE_CONFIG             --masque-config
+  AETHER_CUSTOM_WG_CONFIG          --custom-wg config path
   AETHER_TLS_GROUPS                --tls-groups
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
@@ -266,6 +269,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<()> {
             "--masque" => set("AETHER_PROTOCOL", "masque"),
             "--wg" | "--wireguard" | "--warp" => set("AETHER_PROTOCOL", "wg"),
             "--gool" | "--wiw" => set("AETHER_PROTOCOL", "gool"),
+            "--custom-wg" => set("AETHER_PROTOCOL", "customwg"),
             "--protocol" => set("AETHER_PROTOCOL", next_value!()),
 
             "--scan" => set("AETHER_SCAN", next_value!()),
