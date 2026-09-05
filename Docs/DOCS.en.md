@@ -57,6 +57,7 @@ share the tunnel with your network; nothing authenticates the callers.
 | MASQUE | `--masque` (default) | QUIC/HTTP-3 on UDP 443, or HTTP/2 on TCP 443 |
 | WireGuard | `--wg` | WireGuard on UDP 2408 and documented fallbacks |
 | WARP-in-WARP | `--gool` | a WireGuard tunnel inside another one |
+| Custom WireGuard | `--custom-wg` | a user-supplied WireGuard config over WARP |
 
 MASQUE is the default because it looks like ordinary HTTPS traffic and Cloudflare
 treats it as the primary protocol. Use WireGuard when UDP QUIC is throttled but
@@ -331,7 +332,7 @@ Every flag has an equivalent variable. Flags win when both are set.
 | --- | --- |
 | `AETHER_SOCKS` | SOCKS5 listen address |
 | `AETHER_HTTP_PROXY` | HTTP CONNECT listen address |
-| `AETHER_PROTOCOL` | `masque`, `wg`, `gool` |
+| `AETHER_PROTOCOL` | `masque`, `wg`, `gool`, `customwg` |
 | `AETHER_SCAN` | scan mode |
 | `AETHER_NOIZE` | obfuscation profile |
 | `AETHER_IP` | `4`, `6`, `dual` |
@@ -352,6 +353,7 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_MASQUE_NO_DATA_CHECK`, `AETHER_WG_NO_DATA_CHECK` | skip the data check |
 | `AETHER_MASQUE_RECONNECT_SECS`, `AETHER_WG_RECONNECT_SECS` | reconnect delay |
 | `AETHER_WG_KEEPALIVE` | WireGuard keepalive |
+| `AETHER_CUSTOM_WG_CONFIG` | path to a custom WireGuard config file |
 | `AETHER_WG_NO_PROFILE_RETRY` | do not retry other profiles |
 | `AETHER_WG_ENDPOINT_COOLDOWN_SECS` | how long a failed endpoint is skipped |
 | `AETHER_DNS` | resolvers used inside the tunnel |

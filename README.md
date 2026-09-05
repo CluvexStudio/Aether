@@ -16,6 +16,7 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 - Automatic endpoint discovery, with end-to-end data-plane validation so a gateway is only trusted once it actually passes traffic, not just once it answers the handshake
 - MASQUE (HTTP/3 & HTTP/2), with optional TLS ClientHello fragmentation on HTTP/2
 - WireGuard support
+- Custom WireGuard-over-WARP mode, bringing your own `wg-quick` config
 - Nested WireGuard mode (`gool`), with both hops discovered by the scan or given by hand
 - Traffic obfuscation
 - Routing rules by domain, address, or port, matched from the TLS server name so they keep working behind a tun front end

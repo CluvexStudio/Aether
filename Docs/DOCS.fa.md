@@ -58,6 +58,7 @@ aether --http-proxy 127.0.0.1:1820
 | MASQUE | `--masque` (پیش‌فرض) | QUIC/HTTP-3 روی UDP 443 یا HTTP/2 روی TCP 443 |
 | WireGuard | `--wg` | وایرگارد روی UDP 2408 و پورت‌های جایگزین مستند |
 | WARP در WARP | `--gool` | یک تونل وایرگارد داخل تونل دیگر |
+| Custom WireGuard | `--custom-wg` | یک فایل تنظیمات وایرگارد دلخواه روی WARP |
 
 MASQUE پیش‌فرض است چون شکل ترافیک HTTPS معمولی را دارد و کلادفلر هم آن را
 پروتکل اصلی می‌داند. وقتی QUIC روی UDP محدود شده ولی UDP ساده رد می‌شود،
@@ -331,7 +332,7 @@ cargo build --release --bin aether   # فقط باینری
 | --- | --- |
 | `AETHER_SOCKS` | نشانی لیسنر SOCKS5 |
 | `AETHER_HTTP_PROXY` | نشانی لیسنر HTTP CONNECT |
-| `AETHER_PROTOCOL` | `masque`، `wg`، `gool` |
+| `AETHER_PROTOCOL` | `masque`، `wg`، `gool`، `customwg` |
 | `AETHER_SCAN` | حالت اسکن |
 | `AETHER_NOIZE` | پروفایل مبهم‌سازی |
 | `AETHER_IP` | `4`، `6`، `dual` |
@@ -352,6 +353,7 @@ cargo build --release --bin aether   # فقط باینری
 | `AETHER_MASQUE_NO_DATA_CHECK`، `AETHER_WG_NO_DATA_CHECK` | رد کردن بررسی داده |
 | `AETHER_MASQUE_RECONNECT_SECS`، `AETHER_WG_RECONNECT_SECS` | تأخیر اتصال دوباره |
 | `AETHER_WG_KEEPALIVE` | keepalive وایرگارد |
+| `AETHER_CUSTOM_WG_CONFIG` | مسیر فایل تنظیمات وایرگارد دلخواه |
 | `AETHER_WG_NO_PROFILE_RETRY` | پروفایل‌های دیگر امتحان نشوند |
 | `AETHER_WG_ENDPOINT_COOLDOWN_SECS` | مدت کنار گذاشتن نقطه‌ی ناموفق |
 | `AETHER_DNS` | سرورهای DNS داخل تونل |
