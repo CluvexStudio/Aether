@@ -191,6 +191,8 @@ Environment variables:
                                    out of rescans (default 300)
   AETHER_WG_STALE_SECS             silence on a wireguard tunnel before it counts
                                    as dead (default 10)
+  AETHER_PROBE_JITTER_MS           max random delay per probe, smooths scan
+                                   bursts on hostile networks (default 0)
   AETHER_MASQUE_H2_KEEPALIVE_SECS  HTTP/2 keepalive interval (default 15)
   AETHER_MASQUE_H2_KEEPALIVE_TIMEOUT_SECS
                                    how long a keepalive may go unanswered (default 20)
