@@ -1055,15 +1055,21 @@ async fn run_masque(
 
     if forced.is_none() && quick_peer.is_none() {
         if let Some(cached) = lastconn::load(&lastconn_path) {
-            if let Ok(peer) = cached.peer.parse::<SocketAddr>() {
-                if want_quick_reconnect(&cached).await {
+            // Fast path over the recent-winners ring, newest first: a
+            // reconnect that hits usually skips the whole scan in seconds.
+            let ring = lastconn::recent_peers(&cached);
+            if !ring.is_empty() && want_quick_reconnect(&cached).await {
+                for peer in ring {
                     log::info!("[*] verifying cached gateway {peer} before reuse");
                     if quick_verify_masque_peer(&identity, peer).await {
                         log::info!("[+] cached gateway {peer} still works; skipping scan");
                         quick_peer = Some(peer);
-                    } else {
-                        log::warn!("[-] cached gateway {peer} no longer works; scanning fresh");
+                        break;
                     }
+                    log::warn!("[-] cached gateway {peer} no longer works; trying next recent one");
+                }
+                if quick_peer.is_none() {
+                    log::warn!("[-] no recent gateway answers; scanning fresh");
                 }
             }
         }
@@ -1418,8 +1424,9 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
 
     if forced.is_none() && quick.is_none() {
         if let Some(cached) = lastconn::load(&lastconn_path) {
-            if let Ok(peer) = cached.peer.parse::<SocketAddr>() {
-                if want_quick_reconnect(&cached).await {
+            let ring = lastconn::recent_peers(&cached);
+            if !ring.is_empty() && want_quick_reconnect(&cached).await {
+                for peer in ring {
                     let profile = aethernoize::from_profile(&cached.profile);
                     log::info!("[*] verifying cached WireGuard endpoint {peer} before reuse");
                     match wireguard::verify_endpoint(
@@ -1437,11 +1444,15 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
                         Ok(rtt) => {
                             log::info!("[+] cached endpoint {peer} still works (rtt {:?}); skipping scan", rtt);
                             quick = Some((peer, profile, cached.profile.clone()));
+                            break;
                         }
                         Err(e) => {
-                            log::warn!("[-] cached endpoint {peer} no longer works ({e}); scanning fresh");
+                            log::warn!("[-] cached endpoint {peer} no longer works ({e}); trying next recent one");
                         }
                     }
+                }
+                if quick.is_none() {
+                    log::warn!("[-] no recent endpoint answers; scanning fresh");
                 }
             }
         }

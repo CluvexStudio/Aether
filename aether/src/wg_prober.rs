@@ -289,6 +289,7 @@ async fn verify_one_wg(
     timeout: Duration,
     ironclad: bool,
 ) -> Option<WgProbeResult> {
+    crate::prober::paced_probe_start().await;
     let peer = SocketAddr::new(ip, port);
 
     let (rtt, session) = match wireguard::verify_endpoint_keep_session(

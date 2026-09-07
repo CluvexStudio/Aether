@@ -1,62 +1,135 @@
 # Aether
 
+[![GitHub release](https://img.shields.io/github/v/release/CluvexStudio/Aether)](https://github.com/CluvexStudio/Aether/releases)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macos%20%7C%20android-lightgrey)](https://github.com/CluvexStudio/Aether/releases)
+[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange)](https://www.rust-lang.org)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue)](LICENSE)
+
 ![Aether](Docs/Aether.png)
 
-### اینترنت آزاد برای همه:))
-**[راهنمای فارسی](README.fa.md)** · **[English Guide](Docs/DOCS.en.md)** · **[راهنمای کامل فارسی](Docs/DOCS.fa.md)**
+### اینترنت آزاد برای همه :))
+
+**[راهنمای فارسی](README.fa.md)** · **[English guide](Docs/GUIDE.en.md)** · **[راهنمای کامل فارسی](Docs/GUIDE.fa.md)** · **[Reference (EN)](Docs/DOCS.en.md)** · **[مرجع کامل (FA)](Docs/DOCS.fa.md)**
 
 Telegram: https://t.me/CluvexStudio
 
-Aether is a censorship circumvention client designed for heavily restricted networks. It automatically discovers reachable routes, establishes an encrypted tunnel, and exposes a local SOCKS5 proxy for your applications.
+Aether is a censorship-circumvention client built for heavily restricted networks. It automatically discovers reachable routes, proves each one with real end-to-end traffic before trusting it, then serves the tunnel as a local SOCKS5 proxy for your applications.
 
-Unlike traditional VPN clients, Aether is built for environments where Deep Packet Inspection (DPI), protocol fingerprinting, UDP throttling, and endpoint blocking are common.
+Unlike traditional VPN clients, Aether assumes Deep Packet Inspection, protocol fingerprinting, UDP throttling, and endpoint blocking — and keeps working through them.
+
+## Contents
+
+- [Features](#features)
+- [Quickstart](#quickstart)
+- [Scan modes](#scan-modes)
+- [Protocols](#protocols)
+- [Configuration](#configuration)
+- [Install](#install)
+- [Build from source](#build-from-source)
+- [Docker](#docker)
+- [Testing](#testing)
+- [Documentation](#documentation)
+- [Security notes](#security-notes)
+- [Contributing](#contributing)
+- [Donate](#donate)
+- [License](#license)
+- [Credits](#credits)
 
 ## Features
 
-- Automatic endpoint discovery, with end-to-end data-plane validation so a gateway is only trusted once it actually passes traffic, not just once it answers the handshake
-- MASQUE (HTTP/3 & HTTP/2), with optional TLS ClientHello fragmentation on HTTP/2
-- WireGuard support
-- Nested WireGuard mode (`gool`), with both hops discovered by the scan or given by hand
-- Traffic obfuscation
-- Routing rules by domain, address, or port, matched from the TLS server name so they keep working behind a tun front end
-- Upstream proxy support, so Aether can dial out through another VPN or proxy already running on the machine
-- Automatic reconnection, and quick-reconnect to your last known-good gateway to skip rescanning
-- Local SOCKS5 proxy
-- Command-line flags, environment variables, or interactive prompts — your choice
-- Linux, Windows, macOS and Android (Termux)
+- **Validated scanning** — a gateway is trusted only after it carries real traffic, never just for answering a handshake; recent winners are remembered so reconnects usually skip the scan entirely
+- **MASQUE** over HTTP/3 (QUIC) and HTTP/2 (TCP), with optional TLS ClientHello fragmentation on the HTTP/2 transport
+- **WireGuard**, plus nested WireGuard (`gool`, warp-in-warp) with both hops discovered or hand-picked
+- **Traffic obfuscation** profiles (`off` → `aggressive`) tuned per transport
+- **Routing rules** by domain, address, or port, matched from the TLS server name so they keep working behind a tun front end
+- **Upstream proxy support** — dial out through another VPN or proxy already running on the machine
+- **Automatic reconnection** with quick-reconnect to the last known-good gateway
+- **Local SOCKS5 proxy**, no authentication, bound to loopback by default
+- Flags, environment variables, or interactive prompts — every prompt has both
+- Linux, Windows, macOS, Android (Termux)
 
-## Download
+## Quickstart
 
-Prebuilt binaries are available on the Releases page for:
-
-- Linux
-- Windows
-- macOS
-- Android (Termux)
-
-### Termux (Android) — one-line install
+Answer the prompts:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CluvexStudio/aether/main/aether.sh -o aether.sh && chmod +x aether.sh && ./aether.sh install
+./aether
 ```
 
-This detects your device architecture, downloads the matching release, verifies its checksum, and installs `aether` into `$PREFIX/bin`. Run it afterwards with:
+Or skip them:
 
 ```bash
-aether
+./aether --masque -4 --scan turbo --noize firewall
 ```
 
-To update later, run `./aether.sh update`. To remove it, run `./aether.sh uninstall`.
+On Windows, double-click `run-aether.bat` from the release zip instead — it keeps the window open so you can read any errors.
 
-## Build
+Verify the tunnel (expect `warp=on`):
 
-### Requirements
+```bash
+curl -x socks5h://127.0.0.1:1819 https://www.cloudflare.com/cdn-cgi/trace
+```
 
-- Rust 1.91 or newer
-- C/C++ compiler
-- CMake
+Run `aether help` for the full reference — every flag, every variable, what each one does.
 
-The `quiche` repository must be placed alongside `aether`:
+## Scan modes
+
+| Mode | Behavior | Reach for it when… |
+|---|---|---|
+| `turbo` | First responder wins | You want the fastest connect |
+| `balanced` *(default)* | Collects a few, keeps the fastest | Everyday use |
+| `thorough` | Sweeps whole subnets | Nothing else finds a route |
+| `stealth` | Minimal in-flight probes | The network notices scanning |
+| `ironclad` | A real HTTP request per candidate | You need maximum certainty |
+
+Related knobs: `--peer` / `--wiw-outer` / `--wiw-inner` pin endpoints and skip scanning; `--no-quick-reconnect` forces a fresh sweep; `AETHER_PROBE_JITTER_MS` smooths probe bursts on hostile networks.
+
+## Protocols
+
+### MASQUE (recommended)
+
+Traffic encapsulated over HTTP/3 (QUIC) or HTTP/2 (TLS) — it looks like ordinary HTTPS.
+
+### WireGuard
+
+Fast, lightweight transport for networks with less aggressive inspection.
+
+### Nested WireGuard (`gool`)
+
+A WireGuard tunnel inside another WireGuard tunnel — an extra encryption layer. Both hops are found by the scan by default; if you already know addresses that work, name them:
+
+```bash
+./aether --gool --wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408
+```
+
+The port is required — which port gets through is exactly what differs between networks, so none is assumed. Name one hop and the scan finds the other.
+
+## Configuration
+
+Three equivalent ways, pick one per setting: interactive prompt, `--flag`, or `AETHER_*` environment variable. Examples:
+
+```bash
+export AETHER_PROTOCOL=masque AETHER_SCAN=balanced AETHER_NOIZE=firewall
+./aether
+```
+
+The proxy listens on `--bind` (`127.0.0.1:1819` by default). Identities live next to the config files (`aether.toml`, plus `-wg` / `-masque` variants) — back them up; re-registering too often gets rate-limited.
+
+## Install
+
+Prebuilt binaries on the [Releases](https://github.com/CluvexStudio/Aether/releases) page for Linux, Windows, macOS, and Android (Termux).
+
+### Termux — one line
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CluvexStudio/Aether/main/aether.sh -o aether.sh && chmod +x aether.sh && ./aether.sh install
+```
+
+Afterwards just run `aether`. Update with `./aether.sh update`, remove with `./aether.sh uninstall`.
+
+## Build from source
+
+Requirements: Rust 1.91+, a C/C++ compiler, CMake — plus the `quiche` checkout placed alongside `aether`:
 
 ```text
 <repo>/
@@ -64,33 +137,22 @@ The `quiche` repository must be placed alongside `aether`:
   quiche/
 ```
 
-Build:
-
 ```bash
 cargo build --release
-```
-
-Binary:
-
-```text
-target/release/aether
+# binary: aether/target/release/aether
 ```
 
 ## Docker
 
-You can run Aether in an isolated environment using Docker. The official image is available on GitHub Container Registry (GHCR).
+> **The SOCKS5 proxy has no authentication.** Every command below publishes the port to `127.0.0.1` only. Never use `-p 1819:1819` (all interfaces = open relay). To serve other machines, put an authenticated front end in front and firewall the port.
 
-> **The SOCKS5 proxy has no authentication.** Anyone who can reach the port can use your tunnel. Every command below publishes the port to `127.0.0.1` only, so it stays reachable from your own machine and nothing else. Do not replace it with `-p 1819:1819`, because that form listens on every interface of the host and turns the proxy into an open relay. If you genuinely need to serve other machines, put an authenticated front end in front of it and firewall the port.
-
-The `-v aether-data:/data` volume keeps the generated WARP identity between runs. Without it every start registers a brand new device, and Cloudflare begins rate limiting your address.
-
-Pull and run the pre-built image (interactive mode is required for initial setup):
+The `-v aether-data:/data` volume keeps the generated WARP identity between runs — without it every start registers a new device and Cloudflare rate-limits your address.
 
 ```bash
 docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data ghcr.io/cluvexstudio/aether:latest
 ```
 
-You can also bypass prompts by providing environment variables:
+Headless with environment variables:
 
 ```bash
 docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data \
@@ -99,78 +161,45 @@ docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data \
   ghcr.io/cluvexstudio/aether:latest
 ```
 
-If you prefer to build the image manually from source:
+Or build it yourself:
 
 ```bash
 docker build -t aether .
 docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data aether
 ```
 
-## Usage
-
-Run with no arguments and answer the prompts:
+## Testing
 
 ```bash
-./target/release/aether
+cargo test
 ```
 
-Or skip the prompts with flags:
+Unit tests run offline. A few live network probes exist for characterizing new networks but stay `#[ignore]`d by default — run one explicitly only when you mean to touch the wire:
 
 ```bash
-./target/release/aether --masque -4 --scan turbo --noize firewall
+cargo test -- --ignored report_which_masque_ranges_answer_on_this_network
 ```
-
-On Windows, double-click `run-aether.bat` (included in the release zip) instead — it opens a terminal, runs `aether.exe`, and keeps the window open afterwards so you can read any errors.
-
-Every prompt has a flag and an environment variable equivalent. Run `aether help` (or `--help`) for the full list — every flag, every variable, and what each one does — or see the guides linked below.
-
-After startup, a SOCKS5 proxy will be available at:
-
-```
-127.0.0.1:1819
-```
-
-Example:
-
-```bash
-curl -x socks5h://127.0.0.1:1819 https://www.cloudflare.com/cdn-cgi/trace
-```
-
-## Supported Protocols
-
-### MASQUE (Recommended)
-
-Encapsulates traffic over HTTP/3 (QUIC) or HTTP/2 (TLS), making it resemble ordinary HTTPS traffic.
-
-### WireGuard
-
-Fast and lightweight transport for networks with less aggressive inspection.
-
-### Nested WireGuard (`gool`)
-
-A WireGuard tunnel running inside another WireGuard tunnel, providing an additional encryption layer.
-
-Its two hops are found by the scan by default. If you already know addresses that work on your network, name them instead with `--wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408`, or both at once with `--wiw-peers 162.159.192.1:2408,188.114.96.1:2408`. The port is required — which port gets through is what differs between networks, so none is assumed. Give only one and the scan finds the other.
 
 ## Documentation
 
-Detailed documentation is available in:
+- [Docs/GUIDE.en.md](Docs/GUIDE.en.md) — complete English guide
+- [Docs/GUIDE.fa.md](Docs/GUIDE.fa.md) — راهنمای کامل فارسی
+- [Docs/DOCS.en.md](Docs/DOCS.en.md) — command/environment reference (EN)
+- [Docs/DOCS.fa.md](Docs/DOCS.fa.md) — مرجع کامل دستورات و متغیرها (FA)
 
-- [Docs/GUIDE.en.md](Docs/GUIDE.en.md) — English guide
-- [Docs/GUIDE.fa.md](Docs/GUIDE.fa.md) — راهنمای فارسی
+## Security notes
 
-## Credits
-
-Developed by **CluvexStudio**. :))
-
-MASQUE support is built on top of Cloudflare's **Quiche** library.
-
+- The SOCKS proxy has **no authentication** — keep it on loopback.
+- Identities (`aether*.toml`) are device credentials — treat them like passwords and don't share them.
+- `--upstream` sends your traffic through another local proxy first; make sure you trust it.
 
 ## Contributing
 
 > **Experienced network developers and protocol engineers are welcome to contribute.**
 
 > **Please keep the codebase clean, maintainable, and well-engineered. Low-quality or vibe-coded contributions will not be accepted.**
+
+Run `cargo test` before every pull request. Live-network tests stay ignored unless the change is specifically about them.
 
 ## Donate
 
@@ -182,4 +211,10 @@ If Aether has been useful to you, consider supporting its development:
 
 ## License
 
-See the LICENSE file for licensing information.
+AGPL-3.0-only — see [LICENSE](LICENSE).
+
+## Credits
+
+Developed by **CluvexStudio**. :))
+
+MASQUE support is built on top of Cloudflare's **Quiche** library.
