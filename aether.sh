@@ -6,6 +6,7 @@ readonly BIN_NAME="aether"
 readonly PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 readonly INSTALL_PATH="${PREFIX}/bin/${BIN_NAME}"
 readonly VERSION_FILE="${PREFIX}/etc/${BIN_NAME}.version"
+readonly TRANSPORTS_PATH="${PREFIX}/bin/pt"
 readonly API_BASE="https://api.github.com/repos/${REPO}"
 
 readonly RED='\033[0;31m'
@@ -186,6 +187,23 @@ do_install() {
     exit 1
   fi
 
+  local bundled="${TMP_DIR}/pt"
+  if [[ ! -d "${bundled}" ]]; then
+    bundled="$(find "${TMP_DIR}" -maxdepth 2 -type d -name pt | head -n1)"
+  fi
+
+  if [[ -n "${bundled}" && -d "${bundled}" ]]; then
+    rm -rf "${TRANSPORTS_PATH}"
+    if ! cp -R "${bundled}" "${TRANSPORTS_PATH}"; then
+      error "Could not install the bundled transports to ${TRANSPORTS_PATH}"
+      exit 1
+    fi
+    chmod +x "${TRANSPORTS_PATH}"/* 2>/dev/null || true
+    success "Tor transports and psiphon installed to ${TRANSPORTS_PATH}"
+  else
+    warn "This archive carries no 'pt' folder, so tor bridges and psiphon will not work."
+  fi
+
   if ! echo "${tag_name}" > "${VERSION_FILE}"; then
     error "Installed the binary but could not record the version in ${VERSION_FILE}"
     exit 1
@@ -208,6 +226,7 @@ do_update() {
 do_uninstall() {
   if [[ -f "${INSTALL_PATH}" ]]; then
     rm -f "${INSTALL_PATH}" "${VERSION_FILE}"
+    rm -rf "${TRANSPORTS_PATH}"
     success "Aether has been uninstalled."
   else
     warn "Aether is not installed."
