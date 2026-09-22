@@ -78,9 +78,69 @@ pub enum Bridges {
     Auto { forced: bool },
 }
 
+pub fn bridges_from_file() -> Vec<String> {
+    let path = match std::env::var("AETHER_TOR_BRIDGE_FILE") {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => return Vec::new(),
+    };
+
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) => {
+            log::warn!("[-] cannot read the bridge file {path}: {e}");
+            return Vec::new();
+        }
+    };
+
+    let lines = read_bridge_lines(&text);
+    if lines.is_empty() {
+        log::warn!("[-] the bridge file {path} held no bridge line");
+    } else {
+        log::info!("[+] {} bridge(s) read from {path}", lines.len());
+    }
+    lines
+}
+
+pub fn read_bridge_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            line.strip_prefix("Bridge ")
+                .or_else(|| line.strip_prefix("bridge "))
+                .unwrap_or(line)
+                .trim()
+                .to_string()
+        })
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
 pub fn bridges() -> Bridges {
+    let from_file = bridges_from_file();
     let raw = std::env::var("AETHER_TOR_BRIDGES").unwrap_or_default();
     let trimmed = raw.trim();
+
+    if !from_file.is_empty() {
+        let mut lines = from_file;
+        if !matches!(
+            trimmed.to_lowercase().as_str(),
+            "" | "off"
+                | "no"
+                | "0"
+                | "false"
+                | "none"
+                | "auto"
+                | "on"
+                | "1"
+                | "yes"
+                | "true"
+                | "force"
+        ) {
+            lines.extend(read_bridge_lines(&trimmed.replace(';', "\n")));
+        }
+        return Bridges::Manual(lines);
+    }
 
     match trimmed.to_lowercase().as_str() {
         "" => Bridges::Auto { forced: false },
@@ -263,9 +323,9 @@ mod with_tor {
         }
     }
 
-    async fn auto_plan(state: &Path) -> Plan {
-        let (lines, source) = crate::bridges::fetch(state).await;
-        let lines = crate::bridges::keep_reachable(lines).await;
+    async fn auto_plan(state: &Path, through: Option<SocketAddr>) -> Plan {
+        let (lines, source) = crate::bridges::fetch(state, through).await;
+        let lines = crate::bridges::keep_reachable(lines, through).await;
         let plan = crate::bridges::plan(lines, source, manual_transports());
         announce(&plan);
         plan
@@ -585,10 +645,13 @@ mod with_tor {
         }
 
         if through.is_some() {
-            log::warn!("[-] a pluggable transport dials for itself, outside the tunnel");
+            log::warn!(
+                "[-] a pluggable transport dials for itself, outside the tunnel; plain bridges go \
+                 through it, so they are the ones that work on a network which blocks tor outright"
+            );
         }
 
-        let plan = auto_plan(state).await;
+        let plan = auto_plan(state, through).await;
         if plan.is_empty() {
             return Err(AetherError::Other(format!(
                 "tor is blocked on this network and no pluggable transport is installed, so no \
@@ -911,5 +974,31 @@ mod tests {
             ]
         );
         clear();
+    }
+}
+
+#[cfg(test)]
+mod bridge_file_tests {
+    use super::*;
+
+    #[test]
+    fn a_torrc_shaped_file_reads_line_by_line() {
+        let text = "\
+# my bridges
+Bridge obfs4 1.2.3.4:443 ABCD cert=xx iat-mode=0
+
+bridge obfs4 5.6.7.8:80 EF01 cert=yy iat-mode=0
+9.9.9.9:443 0123456789012345678901234567890123456789
+";
+        let lines = read_bridge_lines(text);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("obfs4 1.2.3.4:443"));
+        assert!(lines[1].starts_with("obfs4 5.6.7.8:80"));
+        assert!(lines[2].starts_with("9.9.9.9:443"));
+    }
+
+    #[test]
+    fn comments_and_blank_lines_carry_nothing() {
+        assert!(read_bridge_lines("\n  \n# only a comment\n").is_empty());
     }
 }

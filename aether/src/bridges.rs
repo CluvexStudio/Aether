@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 
 const MOAT: &str = "https://bridges.torproject.org/moat/circumvention";
+const ONIONOO: &str = "https://onionoo.torproject.org/details";
 const TRACE: &str = "https://www.cloudflare.com/cdn-cgi/trace";
 const CACHE_FILE: &str = "bridges.json";
 const CACHE_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
@@ -66,6 +67,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const REACH_TIMEOUT: Duration = Duration::from_secs(6);
 const KEEP_PER_TRANSPORT: usize = 6;
 const UNTESTABLE: &[&str] = &["snowflake", "meek", "meek_lite", "conjure"];
+const TOR_DESIGNATED_PORTS: &[u16] = &[9001, 9030, 9040, 9050, 9051, 9150];
+const WEB_PORTS: &[u16] = &[80, 443];
+const RELAYS_DEFAULT: usize = 40;
 
 const SYSTEM_DIRS: &[&str] = &[
     "/usr/lib/tor/pluggable-transports",
@@ -114,6 +118,20 @@ struct Cached {
     fetched: u64,
     country: String,
     lines: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct OnionooReply {
+    #[serde(default)]
+    relays: Vec<OnionooRelay>,
+}
+
+#[derive(Deserialize)]
+struct OnionooRelay {
+    #[serde(default)]
+    fingerprint: Option<String>,
+    #[serde(default)]
+    or_addresses: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -363,13 +381,23 @@ pub fn install_hint() -> &'static str {
     }
 }
 
-fn http_client() -> Result<reqwest::Client> {
+fn http_client(through: Option<std::net::SocketAddr>) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent(crate::consts::UA_REGISTER)
         .timeout(REQUEST_TIMEOUT);
 
-    if let Some(upstream) = crate::upstream::configured() {
-        builder = builder.proxy(upstream.as_reqwest_proxy()?);
+    match through {
+        Some(proxy) => {
+            log::info!("[*] fetching bridges through the tunnel on {proxy}");
+            builder = builder.proxy(reqwest::Proxy::all(format!("socks5h://{proxy}")).map_err(
+                |e| crate::error::AetherError::Other(format!("bridge fetch through {proxy}: {e}")),
+            )?);
+        }
+        None => {
+            if let Some(upstream) = crate::upstream::configured() {
+                builder = builder.proxy(upstream.as_reqwest_proxy()?);
+            }
+        }
     }
 
     builder
@@ -527,7 +555,137 @@ fn dedup(lines: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-pub async fn fetch(state: &Path) -> (Vec<String>, &'static str) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relays {
+    Off,
+    Also(usize),
+    Only(usize),
+}
+
+pub fn relay_policy() -> Relays {
+    let raw = std::env::var("AETHER_TOR_RELAYS").unwrap_or_default();
+    let spec = raw.trim().to_ascii_lowercase();
+
+    match spec.as_str() {
+        "off" | "no" | "0" | "false" | "none" => Relays::Off,
+        "" | "auto" | "on" | "yes" | "true" => Relays::Also(RELAYS_DEFAULT),
+        "only" | "relays" => Relays::Only(RELAYS_DEFAULT),
+        _ => match spec.strip_prefix("only:").unwrap_or(&spec).parse::<usize>() {
+            Ok(count) if count > 0 => {
+                let count = count.min(400);
+                if spec.starts_with("only") {
+                    Relays::Only(count)
+                } else {
+                    Relays::Also(count)
+                }
+            }
+            _ => Relays::Also(RELAYS_DEFAULT),
+        },
+    }
+}
+
+fn relay_ports_are_open() -> bool {
+    std::env::var("AETHER_TOR_RELAY_PORTS")
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "any" | "all"))
+        .unwrap_or(false)
+}
+
+pub fn relay_line(fingerprint: &str, address: &str, web_only: bool) -> Option<String> {
+    let parsed: std::net::SocketAddr = address.parse().ok()?;
+    let port = parsed.port();
+
+    if TOR_DESIGNATED_PORTS.contains(&port) {
+        return None;
+    }
+    if web_only && !WEB_PORTS.contains(&port) {
+        return None;
+    }
+
+    let id = fingerprint.trim().to_ascii_uppercase();
+    if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    Some(format!("{address} {id}"))
+}
+
+async fn from_relays(client: &reqwest::Client, want: usize) -> Option<Vec<String>> {
+    let web_only = !relay_ports_are_open();
+
+    log::info!(
+        "[*] asking onionoo for running relays to use as plain bridges{}",
+        if web_only { " on ports 80 and 443" } else { "" }
+    );
+
+    let answer = match client
+        .get(ONIONOO)
+        .query(&[
+            ("type", "relay"),
+            ("running", "true"),
+            ("fields", "fingerprint,or_addresses"),
+        ])
+        .send()
+        .await
+    {
+        Ok(answer) => answer,
+        Err(e) => {
+            log::warn!("[-] onionoo did not answer: {e}");
+            return None;
+        }
+    };
+
+    let reply = match answer.json::<OnionooReply>().await {
+        Ok(reply) => reply,
+        Err(e) => {
+            log::warn!("[-] onionoo sent something unreadable: {e}");
+            return None;
+        }
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    for relay in &reply.relays {
+        let fingerprint = match &relay.fingerprint {
+            Some(id) => id,
+            None => continue,
+        };
+        for address in relay.or_addresses.iter().flatten() {
+            if let Some(line) = relay_line(fingerprint, address, web_only) {
+                lines.push(line);
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        log::warn!("[-] onionoo listed no relay that clears the port filter");
+        return None;
+    }
+
+    let total = lines.len();
+    shuffle(&mut lines);
+    lines.truncate(want);
+
+    log::info!(
+        "[+] onionoo gave {total} usable relay address(es); trying {} of them",
+        lines.len()
+    );
+
+    Some(lines)
+}
+
+pub async fn fetch(
+    state: &Path,
+    through: Option<std::net::SocketAddr>,
+) -> (Vec<String>, &'static str) {
+    log::info!(
+        "[*] looking for bridges: bridgedb {}, onionoo relays {:?}",
+        if matches!(relay_policy(), Relays::Only(_)) {
+            "skipped"
+        } else {
+            "asked"
+        },
+        relay_policy()
+    );
+
     let cached = read_cache(state);
     if let Some(fresh) = cached
         .as_ref()
@@ -540,31 +698,64 @@ pub async fn fetch(state: &Path) -> (Vec<String>, &'static str) {
         return (fresh.lines.clone(), "cache");
     }
 
-    let client = match http_client() {
+    let client = match http_client(through) {
         Ok(client) => client,
         Err(e) => {
-            log::warn!("[-] cannot reach bridgedb: {e}");
+            log::warn!("[-] cannot build a client to fetch bridges: {e}");
             return fallback(cached);
         }
     };
 
-    log::info!("[*] asking bridgedb for bridges");
-    let country = detect_country(&client).await;
-    if let Some(code) = country.as_deref() {
-        log::info!("[*] this network looks like it is in {code}");
+    let relays = relay_policy();
+    let mut country = None;
+    let mut lines = Vec::new();
+    let mut source = "bridgedb";
+
+    if let Relays::Only(_) = relays {
+        source = "onionoo relays";
+    } else {
+        log::info!("[*] asking bridgedb for bridges");
+        country = detect_country(&client).await;
+        if let Some(code) = country.as_deref() {
+            log::info!("[*] this network looks like it is in {code}");
+        }
+
+        if let Some(found) = from_settings(&client, country.as_deref()).await {
+            lines.extend(found);
+        }
+        if let Some(found) = from_builtin(&client).await {
+            lines.extend(found);
+        }
+
+        if lines.is_empty() {
+            log::warn!("[-] bridgedb gave nothing back");
+        }
     }
 
-    let mut lines = Vec::new();
-    if let Some(found) = from_settings(&client, country.as_deref()).await {
-        lines.extend(found);
-    }
-    if let Some(found) = from_builtin(&client).await {
-        lines.extend(found);
+    match relays {
+        Relays::Off => {}
+        Relays::Also(want) | Relays::Only(want) => {
+            if let Some(found) = from_relays(&client, want).await {
+                if !lines.is_empty() {
+                    source = "bridgedb and onionoo relays";
+                } else {
+                    source = "onionoo relays";
+                }
+                lines.extend(found);
+            }
+        }
     }
 
     let lines = dedup(lines);
     if lines.is_empty() {
-        log::warn!("[-] bridgedb gave nothing back");
+        if through.is_none() {
+            log::warn!(
+                "[-] every bridge source is unreachable from here, which is what a network that \
+                 blocks tor looks like. two ways past it: run --tor instead of --tor-only, which \
+                 brings the tunnel up first and fetches bridges through it, or pass bridges you \
+                 already have with --tor-bridge-file"
+            );
+        }
         return fallback(cached);
     }
 
@@ -577,8 +768,8 @@ pub async fn fetch(state: &Path) -> (Vec<String>, &'static str) {
         },
     );
 
-    log::info!("[+] bridgedb gave {} bridge(s)", lines.len());
-    (lines, "bridgedb")
+    log::info!("[+] {source} gave {} bridge(s)", lines.len());
+    (lines, source)
 }
 
 fn fallback(cached: Option<Cached>) -> (Vec<String>, &'static str) {
@@ -619,7 +810,17 @@ async fn answers(address: std::net::SocketAddr) -> bool {
     )
 }
 
-pub async fn keep_reachable(lines: Vec<String>) -> Vec<String> {
+pub async fn keep_reachable(
+    lines: Vec<String>,
+    through: Option<std::net::SocketAddr>,
+) -> Vec<String> {
+    if through.is_some() {
+        log::info!(
+            "[*] tor will dial its bridges through the tunnel, so they are not probed from here"
+        );
+        return lines;
+    }
+
     let mut checks = Vec::new();
 
     for line in &lines {
@@ -924,5 +1125,70 @@ mod tests {
                 "zzz c".to_string()
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+
+    #[test]
+    fn the_obvious_tor_ports_are_left_out() {
+        for port in TOR_DESIGNATED_PORTS {
+            let address = format!("1.2.3.4:{port}");
+            assert!(
+                relay_line("A".repeat(40).as_str(), &address, false).is_none(),
+                "port {port} is the first thing a censor blocks"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relay_that_looks_like_a_web_server_is_kept() {
+        let id = "0".repeat(40);
+        assert_eq!(
+            relay_line(&id, "1.2.3.4:443", true),
+            Some(format!("1.2.3.4:443 {id}"))
+        );
+        assert_eq!(
+            relay_line(&id, "1.2.3.4:80", true),
+            Some(format!("1.2.3.4:80 {id}"))
+        );
+    }
+
+    #[test]
+    fn an_odd_port_is_only_kept_when_the_filter_is_widened() {
+        let id = "0".repeat(40);
+        assert!(relay_line(&id, "1.2.3.4:8443", true).is_none());
+        assert!(relay_line(&id, "1.2.3.4:8443", false).is_some());
+    }
+
+    #[test]
+    fn an_ipv6_relay_parses_the_same_way() {
+        let id = "a".repeat(40);
+        let line = relay_line(&id, "[2001:db8::1]:443", true).expect("a line");
+        assert!(line.starts_with("[2001:db8::1]:443 "));
+        assert!(line.ends_with(&id.to_ascii_uppercase()));
+    }
+
+    #[test]
+    fn a_relay_line_reads_back_as_a_plain_bridge() {
+        let id = "b".repeat(40);
+        let line = relay_line(&id, "1.2.3.4:443", true).expect("a line");
+        assert_eq!(transport_of(&line), None);
+        assert_eq!(address_of(&line), "1.2.3.4:443".parse().ok());
+    }
+
+    #[test]
+    fn a_broken_fingerprint_is_refused() {
+        assert!(relay_line("short", "1.2.3.4:443", true).is_none());
+        assert!(relay_line(&"z".repeat(40), "1.2.3.4:443", true).is_none());
+    }
+
+    #[test]
+    fn a_malformed_address_is_refused() {
+        let id = "0".repeat(40);
+        assert!(relay_line(&id, "not-an-address", true).is_none());
+        assert!(relay_line(&id, "1.2.3.4", true).is_none());
     }
 }
