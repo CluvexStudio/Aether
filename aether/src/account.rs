@@ -411,6 +411,12 @@ async fn send_with_retry<F>(label: &str, build: F) -> Result<AccountData>
 where
     F: Fn() -> Result<reqwest::RequestBuilder>,
 {
+    if crate::egress::mark() != 0 {
+        return Err(AetherError::Api(format!(
+            "{label}: the direct route cannot carry the socket mark, so it would loop back into the tunnel"
+        )));
+    }
+
     let mut last_error = AetherError::Api(format!("{label}: no attempt was made"));
 
     for attempt in 0..API_ATTEMPTS {

@@ -56,6 +56,10 @@ fn parse_mark(raw: &str) -> Option<u32> {
     }
 }
 
+pub fn mark() -> u32 {
+    MARK.load(Ordering::Relaxed)
+}
+
 pub fn apply(socket: SockRef<'_>) -> io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
