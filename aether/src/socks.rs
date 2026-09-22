@@ -780,7 +780,7 @@ pub(crate) async fn serve_connector<F, Fut, S>(
 ) -> Result<()>
 where
     F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = std::io::Result<S>> + Send,
+    Fut: Future<Output = std::io::Result<S>> + Send + 'static,
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let listen = listener.local_addr()?;
@@ -800,8 +800,8 @@ where
 
 async fn serve_one_through<F, Fut, S>(mut sock: TcpStream, connect: F) -> Result<()>
 where
-    F: Fn(String, u16) -> Fut,
-    Fut: Future<Output = std::io::Result<S>>,
+    F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = std::io::Result<S>> + Send + 'static,
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (cmd, target, port) = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut sock))
@@ -810,10 +810,14 @@ where
             AetherError::Other("the client did not finish the socks5 handshake in time".into())
         })??;
 
+    if cmd == CMD_UDP_ASSOCIATE {
+        return handle_udp_over_connector(sock, connect, target).await;
+    }
+
     if cmd != CMD_CONNECT {
         let _ = reply(&mut sock, REP_NOT_SUPPORTED).await;
         return Err(AetherError::Other(
-            "only connect is carried on this listener".into(),
+            "only connect and udp associate are carried on this listener".into(),
         ));
     }
 
@@ -833,6 +837,143 @@ where
             Err(AetherError::Other(format!("{host}:{port}: {error}")))
         }
     }
+}
+
+const DNS_PORT: u16 = 53;
+const DNS_OVER_TCP_TIMEOUT: Duration = Duration::from_secs(20);
+const DNS_MAX_IN_FLIGHT: usize = 32;
+
+async fn dns_over_stream<S>(mut stream: S, query: Vec<u8>) -> std::io::Result<Vec<u8>>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    if query.len() > u16::MAX as usize {
+        return Err(std::io::Error::other("dns query is too long to frame"));
+    }
+
+    let mut framed = Vec::with_capacity(query.len() + 2);
+    framed.extend_from_slice(&(query.len() as u16).to_be_bytes());
+    framed.extend_from_slice(&query);
+    stream.write_all(&framed).await?;
+    stream.flush().await?;
+
+    let mut len = [0u8; 2];
+    stream.read_exact(&mut len).await?;
+    let mut answer = vec![0u8; u16::from_be_bytes(len) as usize];
+    stream.read_exact(&mut answer).await?;
+    Ok(answer)
+}
+
+async fn handle_udp_over_connector<F, Fut, S>(
+    mut sock: TcpStream,
+    connect: F,
+    requested: Target,
+) -> Result<()>
+where
+    F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = std::io::Result<S>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let control_peer = sock.peer_addr()?;
+    let expected_ip = expected_udp_source(control_peer, &requested);
+    let bind_ip = sock.local_addr()?.ip();
+
+    let relay = UdpSocket::bind(SocketAddr::new(bind_ip, 0)).await?;
+    let relay_addr = relay.local_addr()?;
+    reply_bound(&mut sock, relay_addr).await?;
+
+    let (answers_tx, mut answers_rx) = mpsc::channel::<(SocketAddr, Vec<u8>)>(64);
+    let in_flight = Arc::new(Semaphore::new(DNS_MAX_IN_FLIGHT));
+
+    let mut client: Option<SocketAddr> = None;
+    let mut refused: u64 = 0;
+    let mut dropped_udp: u64 = 0;
+    let mut cbuf = vec![0u8; 65535];
+    let mut ctrl = [0u8; 256];
+
+    loop {
+        tokio::select! {
+            r = relay.recv_from(&mut cbuf) => {
+                let (n, from) = match r { Ok(v) => v, Err(_) => break };
+                if !udp_source_allowed(expected_ip, client, from) {
+                    refused += 1;
+                    if refused == 1 || refused.is_multiple_of(64) {
+                        log::warn!(
+                            "[-] udp relay {relay_addr} dropped a datagram from {from}; \
+                             this association only serves {expected_ip} (refused={refused})"
+                        );
+                    }
+                    continue;
+                }
+                if client.is_none() {
+                    log::debug!("udp relay {relay_addr} latched to client {from}");
+                    client = Some(from);
+                }
+
+                let Some((dst, (dst_port, payload))) = parse_udp_request(&cbuf[..n]) else {
+                    continue;
+                };
+
+                if dst_port != DNS_PORT {
+                    dropped_udp += 1;
+                    if dropped_udp == 1 || dropped_udp.is_multiple_of(64) {
+                        log::debug!(
+                            "[-] udp to {dst}:{dst_port} cannot be carried: this listener \
+                             reaches the internet over tcp only (dropped={dropped_udp})"
+                        );
+                    }
+                    continue;
+                }
+
+                let resolver = match dst {
+                    Target::Ip(ip) => SocketAddr::new(ip, dst_port),
+                    Target::Domain(name) => {
+                        log::debug!("[-] dns resolver given as the name {name}; give an address instead");
+                        continue;
+                    }
+                };
+
+                let permit = match in_flight.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        log::debug!("[-] too many dns lookups are already in flight; dropping one");
+                        continue;
+                    }
+                };
+
+                let connect = connect.clone();
+                let answers_tx = answers_tx.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let exchange = async {
+                        let stream = connect(resolver.ip().to_string(), resolver.port()).await?;
+                        dns_over_stream(stream, payload).await
+                    };
+                    match tokio::time::timeout(DNS_OVER_TCP_TIMEOUT, exchange).await {
+                        Ok(Ok(answer)) => {
+                            let _ = answers_tx.send((resolver, answer)).await;
+                        }
+                        Ok(Err(e)) => log::debug!("dns over tcp to {resolver} failed: {e}"),
+                        Err(_) => log::debug!("dns over tcp to {resolver} timed out"),
+                    }
+                });
+            }
+
+            maybe = answers_rx.recv() => {
+                let Some((src, answer)) = maybe else { break };
+                if let Some(c) = client {
+                    let pkt = build_udp_reply(src, &answer);
+                    let _ = relay.send_to(&pkt, c).await;
+                }
+            }
+
+            r = sock.read(&mut ctrl) => {
+                match r { Ok(0) | Err(_) => break, Ok(_) => {} }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) async fn relay_generic<A, B>(client: A, remote: B, linger: Duration)
@@ -1210,7 +1351,7 @@ async fn handle_udp_associate(
                 let (n, from) = match r { Ok(v) => v, Err(_) => break };
                 if !udp_source_allowed(expected_ip, client, from) {
                     refused += 1;
-                    if refused == 1 || refused % 64 == 0 {
+                    if refused == 1 || refused.is_multiple_of(64) {
                         log::warn!(
                             "[-] udp relay {relay_addr} dropped a datagram from {from}; \
                              this association only serves {expected_ip} (refused={refused})"
