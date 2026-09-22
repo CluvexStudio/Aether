@@ -23,7 +23,7 @@ pub enum WgScanMode {
     Turbo,
     Balanced,
     Thorough,
-    Stealth,
+    Verified,
     Ironclad,
 }
 
@@ -32,7 +32,7 @@ impl WgScanMode {
         match s.trim().to_lowercase().as_str() {
             "turbo" | "fast" => WgScanMode::Turbo,
             "thorough" | "deep" | "pro" => WgScanMode::Thorough,
-            "stealth" | "quiet" => WgScanMode::Stealth,
+            "verified" | "proven" | "stealth" | "quiet" => WgScanMode::Verified,
             "ironclad" | "real" | "verify" | "guaranteed" => WgScanMode::Ironclad,
             _ => WgScanMode::Balanced,
         }
@@ -43,7 +43,7 @@ impl WgScanMode {
             WgScanMode::Turbo => "turbo",
             WgScanMode::Balanced => "balanced",
             WgScanMode::Thorough => "thorough",
-            WgScanMode::Stealth => "stealth",
+            WgScanMode::Verified => "verified",
             WgScanMode::Ironclad => "ironclad",
         }
     }
@@ -83,16 +83,16 @@ impl WgScanMode {
                 sample_per_cidr: 0,
                 pool_port_waves: 4,
             },
-            WgScanMode::Stealth => WgStrategy {
-                concurrency: 3,
-                per_probe_timeout: Duration::from_millis(10000),
-                overall_deadline: Duration::from_secs(150),
-                quiet_after_first: Duration::from_secs(20),
-                target_successes: 3,
+            WgScanMode::Verified => WgStrategy {
+                concurrency: 10,
+                per_probe_timeout: Duration::from_millis(5000),
+                overall_deadline: Duration::from_secs(60),
+                quiet_after_first: Duration::from_secs(8),
+                target_successes: 6,
                 early_exit_first: false,
                 full_subnet: false,
-                sample_per_cidr: 50,
-                pool_port_waves: 2,
+                sample_per_cidr: 48,
+                pool_port_waves: 4,
             },
             WgScanMode::Ironclad => WgStrategy {
                 concurrency: 4,

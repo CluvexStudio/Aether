@@ -75,11 +75,14 @@ MASQUE-in-MASQUE endpoints:
                            left in the environment
 
 Scan mode:
-  --scan <mode>            turbo | balanced | thorough | stealth | ironclad
+  --scan <mode>            turbo | balanced | thorough | verified | ironclad
   --turbo                  stop at the first candidate that answers
   --balanced               default: collect a few, keep the fastest
   --thorough               sweep whole ranges, for when everything looks blocked
-  --stealth                few probes in flight, for networks that notice scanning
+  --verified               dial only the edges measured to answer connect-ip,
+                           never a guessed neighbour. On --gool and --mim it also
+                           keeps the two hops in separate ranges, which is what
+                           moves the exit address; the plain modes are untouched
   --ironclad               open a real tunnel and make a real HTTP request per
                            candidate, so a gateway is only trusted once it has
                            genuinely carried traffic
@@ -384,7 +387,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--turbo" => set("AETHER_SCAN", "turbo"),
             "--balanced" => set("AETHER_SCAN", "balanced"),
             "--thorough" => set("AETHER_SCAN", "thorough"),
-            "--stealth" => set("AETHER_SCAN", "stealth"),
+            "--verified" | "--stealth" => set("AETHER_SCAN", "verified"),
             "--ironclad" => set("AETHER_SCAN", "ironclad"),
 
             "--noize" => set("AETHER_NOIZE", next_value!()),

@@ -42,6 +42,15 @@ pub const MASQUE_SEEDS: &[&str] = &[
     "162.159.193.1",
 ];
 
+pub const MASQUE_VERIFIED_GATEWAYS: &[&str] = &[
+    "162.159.199.1",
+    "162.159.199.2",
+    "162.159.198.2",
+    "162.159.198.1",
+];
+
+pub const MASQUE_ALT_PORTS: &[u16] = &[1701, 8095, 500, 4500];
+
 pub const MASQUE_PORTS: &[u16] = &[443, 500, 1701, 4500, 4443, 8443, 8095];
 
 pub const MASQUE_CIDRS_V6: &[&str] = &[
@@ -139,7 +148,7 @@ pub enum ScanMode {
     Turbo,
     Balanced,
     Thorough,
-    Stealth,
+    Verified,
     Ironclad,
 }
 
@@ -148,7 +157,7 @@ impl ScanMode {
         match s.trim().to_lowercase().as_str() {
             "turbo" | "fast" => ScanMode::Turbo,
             "thorough" | "deep" | "pro" => ScanMode::Thorough,
-            "stealth" | "quiet" => ScanMode::Stealth,
+            "verified" | "proven" | "stealth" | "quiet" => ScanMode::Verified,
             "ironclad" | "real" | "verify" | "guaranteed" => ScanMode::Ironclad,
             _ => ScanMode::Balanced,
         }
@@ -159,7 +168,7 @@ impl ScanMode {
             ScanMode::Turbo => "turbo",
             ScanMode::Balanced => "balanced",
             ScanMode::Thorough => "thorough",
-            ScanMode::Stealth => "stealth",
+            ScanMode::Verified => "verified",
             ScanMode::Ironclad => "ironclad",
         }
     }
@@ -196,15 +205,15 @@ impl ScanMode {
                 full_subnet: true,
                 sample_per_cidr: 0,
             },
-            ScanMode::Stealth => Strategy {
-                concurrency: 3,
-                per_probe_timeout: Duration::from_millis(12000),
-                overall_deadline: Duration::from_secs(180),
-                quiet_after_first: Duration::from_secs(25),
+            ScanMode::Verified => Strategy {
+                concurrency: 16,
+                per_probe_timeout: Duration::from_millis(5000),
+                overall_deadline: Duration::from_secs(60),
+                quiet_after_first: Duration::from_secs(8),
                 target_successes: 4,
                 early_exit_first: false,
                 full_subnet: false,
-                sample_per_cidr: 64,
+                sample_per_cidr: 48,
             },
             ScanMode::Ironclad => Strategy {
                 concurrency: 4,

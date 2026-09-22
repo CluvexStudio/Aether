@@ -517,6 +517,11 @@ async fn run_gool(
                     }
                 };
 
+                let mut found = found;
+                if verified_scan_selected(&scan_settings) {
+                    spread_hops(&mut found);
+                }
+
                 let mut found = found.into_iter();
                 let outer = known_outer.or_else(|| found.next());
                 let inner = known_inner.or_else(|| found.next());
@@ -1464,7 +1469,108 @@ fn mim_inner_startup() -> std::time::Duration {
     masque_startup_timeout().min(std::time::Duration::from_secs(12))
 }
 
-fn inner_masque_candidates(outer: SocketAddr, count: usize) -> Vec<SocketAddr> {
+fn edge_network(ip: IpAddr) -> Option<[u8; 3]> {
+    match ip {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            Some([octets[0], octets[1], octets[2]])
+        }
+        IpAddr::V6(_) => None,
+    }
+}
+
+fn verified_scan_selected(settings: &Option<(String, prober::IpScan)>) -> bool {
+    let named = match settings {
+        Some((mode, _)) => mode.clone(),
+        None => std::env::var("AETHER_SCAN").unwrap_or_default(),
+    };
+    prober::ScanMode::parse(&named) == prober::ScanMode::Verified
+}
+
+fn spread_hops(found: &mut [SocketAddr]) {
+    if found.len() < 2 {
+        return;
+    }
+    let first = found[0];
+    let network = edge_network(first.ip());
+    if let Some(other) = found
+        .iter()
+        .position(|peer| edge_network(peer.ip()) != network)
+    {
+        if other >= 1 {
+            found.swap(1, other);
+        }
+    }
+}
+
+fn masque_verified_ladder(outer: SocketAddr, count: usize) -> Vec<SocketAddr> {
+    if outer.is_ipv6() {
+        return Vec::new();
+    }
+
+    let mut out: Vec<SocketAddr> = Vec::new();
+    let mut seen: HashSet<SocketAddr> = HashSet::new();
+    let outer_network = edge_network(outer.ip());
+
+    let verified: Vec<IpAddr> = prober::MASQUE_VERIFIED_GATEWAYS
+        .iter()
+        .filter_map(|entry| entry.parse().ok())
+        .collect();
+
+    let push =
+        |out: &mut Vec<SocketAddr>, seen: &mut HashSet<SocketAddr>, ip: IpAddr, port: u16| {
+            let peer = SocketAddr::new(ip, port);
+            if ip != outer.ip() && seen.insert(peer) {
+                out.push(peer);
+            }
+        };
+
+    for ip in verified
+        .iter()
+        .filter(|ip| edge_network(**ip) != outer_network)
+    {
+        push(&mut out, &mut seen, *ip, MASQUE_INNER_PORT);
+    }
+    for ip in &verified {
+        push(&mut out, &mut seen, *ip, MASQUE_INNER_PORT);
+    }
+    for &port in prober::MASQUE_ALT_PORTS {
+        for ip in &verified {
+            push(&mut out, &mut seen, *ip, port);
+        }
+    }
+
+    out.truncate(count.max(1));
+    out
+}
+
+fn inner_masque_candidates(outer: SocketAddr, count: usize, verified: bool) -> Vec<SocketAddr> {
+    let mut out: Vec<SocketAddr> = Vec::new();
+    let mut seen: HashSet<SocketAddr> = HashSet::new();
+
+    if verified {
+        let room = count.saturating_sub(2).max(1);
+        for peer in masque_verified_ladder(outer, room) {
+            if seen.insert(peer) {
+                out.push(peer);
+            }
+        }
+    }
+
+    for peer in sibling_candidates(outer, count) {
+        if out.len() >= count {
+            break;
+        }
+        if seen.insert(peer) {
+            out.push(peer);
+        }
+    }
+
+    out.truncate(count.max(1));
+    out
+}
+
+fn sibling_candidates(outer: SocketAddr, count: usize) -> Vec<SocketAddr> {
     use rand::RngExt;
 
     let mut rng = rand::rng();
@@ -1741,7 +1847,11 @@ async fn run_mim(
 
         let candidates = match inner_peer {
             Some(peer) => vec![peer],
-            None => inner_masque_candidates(outer, MIM_INNER_TRIES),
+            None => inner_masque_candidates(
+                outer,
+                MIM_INNER_TRIES,
+                verified_scan_selected(&scan_settings),
+            ),
         };
 
         if candidates.is_empty() {
@@ -2498,7 +2608,7 @@ async fn prompt_line(prompt: &str) -> Option<String> {
     }
 }
 
-const SCAN_MODE_PROMPT: &str = "\nScan mode:\n  [1] turbo     (fast, first hit)\n  [2] balanced  (default)\n  [3] thorough  (deep, best ping)\n  [4] stealth   (quiet, patient)\n  [5] ironclad  (real tunnel + real HTTP check per candidate, guaranteed working)\nChoose [1-5] (default 2): ";
+const SCAN_MODE_PROMPT: &str = "\nScan mode:\n  [1] turbo     (fast, first hit)\n  [2] balanced  (default)\n  [3] thorough  (deep, best ping)\n  [4] verified  (measured edges only, never a guessed neighbour; on gool and\n                 mim it keeps the two hops in different ranges, which is what\n                 moves the exit address)\n  [5] ironclad  (real tunnel + real HTTP check per candidate, guaranteed working)\nChoose [1-5] (default 2): ";
 
 /// Shown above the scan mode question on warp-in-warp, where the addresses can
 /// be handed over instead of hunted for.
@@ -2516,7 +2626,7 @@ async fn select_scan_mode() -> prober::ScanMode {
     match answer.as_deref() {
         Some("1") => prober::ScanMode::Turbo,
         Some("3") => prober::ScanMode::Thorough,
-        Some("4") => prober::ScanMode::Stealth,
+        Some("4") => prober::ScanMode::Verified,
         Some("5") => prober::ScanMode::Ironclad,
         _ => prober::ScanMode::Balanced,
     }
@@ -2534,7 +2644,7 @@ async fn select_scan_mode_str(tip: &str) -> String {
     match answer.as_deref() {
         Some("1") => "turbo".to_string(),
         Some("3") => "thorough".to_string(),
-        Some("4") => "stealth".to_string(),
+        Some("4") => "verified".to_string(),
         Some("5") => "ironclad".to_string(),
         _ => "balanced".to_string(),
     }
@@ -2795,7 +2905,7 @@ mod tests {
     #[test]
     fn the_inner_edges_come_from_the_range_that_answered() {
         let outer: SocketAddr = "162.159.198.104:8443".parse().unwrap();
-        let candidates = inner_masque_candidates(outer, MIM_INNER_TRIES);
+        let candidates = inner_masque_candidates(outer, MIM_INNER_TRIES, false);
 
         assert_eq!(candidates.len(), MIM_INNER_TRIES);
         for candidate in &candidates {
@@ -2826,9 +2936,65 @@ mod tests {
     }
 
     #[test]
+    fn the_verified_ladder_leaves_the_outer_range_first() {
+        let outer: SocketAddr = "162.159.198.1:443".parse().unwrap();
+        let candidates = inner_masque_candidates(outer, MIM_INNER_TRIES, true);
+
+        assert!(!candidates.is_empty());
+        assert!(candidates.iter().all(|peer| peer.ip() != outer.ip()));
+
+        let first = candidates[0];
+        assert_ne!(
+            edge_network(first.ip()),
+            edge_network(outer.ip()),
+            "the first inner candidate must leave the outer range"
+        );
+
+        let verified: HashSet<IpAddr> = prober::MASQUE_VERIFIED_GATEWAYS
+            .iter()
+            .filter_map(|entry| entry.parse().ok())
+            .collect();
+        let measured = candidates
+            .iter()
+            .take_while(|peer| verified.contains(&peer.ip()))
+            .count();
+        assert!(measured > 0, "the measured edges must come first");
+        assert!(
+            candidates.len() > measured,
+            "a guessed neighbour must stay on the end: a verified address is only \
+             verified for the path it was measured on"
+        );
+    }
+
+    #[test]
+    fn a_verified_ladder_is_not_used_for_an_ipv6_outer() {
+        let outer: SocketAddr = "[2606:4700:d0::a29f:c601]:443".parse().unwrap();
+        let candidates = inner_masque_candidates(outer, 4, true);
+
+        assert!(candidates.iter().all(|candidate| candidate.is_ipv6()));
+    }
+
+    #[test]
+    fn spreading_hops_puts_a_different_range_second() {
+        let mut found: Vec<SocketAddr> = vec![
+            "162.159.192.1:2408".parse().unwrap(),
+            "162.159.192.9:2408".parse().unwrap(),
+            "188.114.96.1:2408".parse().unwrap(),
+        ];
+        spread_hops(&mut found);
+
+        assert_eq!(edge_network(found[0].ip()), Some([162, 159, 192]));
+        assert_ne!(
+            edge_network(found[1].ip()),
+            edge_network(found[0].ip()),
+            "the second hop must sit in another range"
+        );
+    }
+
+    #[test]
     fn an_ipv6_outer_edge_yields_ipv6_inner_candidates() {
         let outer: SocketAddr = "[2606:4700:d0::a29f:c601]:443".parse().unwrap();
-        let candidates = inner_masque_candidates(outer, 4);
+        let candidates = inner_masque_candidates(outer, 4, false);
 
         assert_eq!(candidates.len(), 4);
         assert!(candidates.iter().all(|candidate| candidate.is_ipv6()));
