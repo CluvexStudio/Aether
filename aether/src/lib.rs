@@ -2489,22 +2489,18 @@ async fn spawn_udp_forwarder(
     let up_peer = inner_peer.clone();
     let up_task = tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
-        loop {
-            match up_sock.recv_from(&mut buf).await {
-                Ok((n, from)) => {
-                    {
-                        let mut known = up_peer.lock().await;
-                        match *known {
-                            Some(peer) if peer != from => continue,
-                            Some(_) => {}
-                            None => *known = Some(from),
-                        }
+        while let Ok((n, from)) = up_sock.recv_from(&mut buf).await {
+            {
+                let mut known = up_peer.lock().await;
+                if *known != Some(from) {
+                    if let Some(previous) = *known {
+                        log::debug!("inner udp forwarder follows {from} now, was {previous}");
                     }
-                    if udp_tx.send_to(remote, buf[..n].to_vec()).await.is_err() {
-                        break;
-                    }
+                    *known = Some(from);
                 }
-                Err(_) => break,
+            }
+            if udp_tx.send_to(remote, buf[..n].to_vec()).await.is_err() {
+                break;
             }
         }
     });
