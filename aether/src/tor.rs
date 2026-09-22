@@ -758,8 +758,14 @@ mod with_tor {
         Ok(None)
     }
 
+    fn announce_exit(proxy: SocketAddr, what: &'static str) {
+        tokio::spawn(async move {
+            crate::exitloc::report_through_socks(proxy, what).await;
+        });
+    }
+
     async fn serve(listener: TcpListener, client: Client, kind: &'static str) -> Result<()> {
-        crate::socks::serve_connector(listener, kind, move |host, port| {
+        let connector = move |host: String, port: u16| {
             let client = client.clone();
             async move {
                 client
@@ -825,6 +831,7 @@ mod with_tor {
 
         let client = establish(&state, Some(through), FOREVER).await?;
         log::info!("[+] tor is ready; {listen} leaves through tor, carried by the tunnel");
+        announce_exit(listen, "tor through the tunnel");
 
         serve(listener, client, "tor socks5").await
     }
@@ -837,6 +844,7 @@ mod with_tor {
 
         let client = establish(&state, None, FOREVER).await?;
         log::info!("[+] tor is ready; {listen} leaves through tor");
+        announce_exit(listen, "tor");
 
         serve(listener, client, "tor socks5").await
     }
@@ -850,6 +858,7 @@ mod with_tor {
 
         let client = establish(&state, None, REVERSE_ATTEMPTS).await?;
         log::info!("[+] tor is ready; the tunnel goes out through {listen}");
+        announce_exit(listen, "tor");
 
         tokio::spawn(async move {
             if let Err(e) = serve(listener, client, "tor socks5").await {

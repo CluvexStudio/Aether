@@ -10,6 +10,7 @@ pub mod consts;
 pub mod dns;
 pub mod egress;
 pub mod error;
+pub mod exitloc;
 pub mod ffi;
 pub mod fragment;
 pub mod lastconn;
@@ -1414,6 +1415,16 @@ async fn establish_masque(
     })
 }
 
+async fn exit_policy_guard(
+    stack: &netstack::StackHandle,
+    policy: &Option<exitloc::Policy>,
+) -> AetherError {
+    match policy {
+        Some(policy) => exitloc::watch(stack, policy).await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn run_masque_tunnel(
     identity: &account::Identity,
     peer: SocketAddr,
@@ -1436,6 +1447,9 @@ async fn run_masque_tunnel(
     )
     .await?;
 
+    let policy = exitloc::Policy::from_env();
+    exitloc::settle(&hop.stack, &policy, "masque").await?;
+
     let socks_listener = socks::bind_listener("socks5", listen).await?;
     let http_listener = bind_http_proxy().await?;
 
@@ -1450,7 +1464,10 @@ async fn run_masque_tunnel(
         tasks.push(task.abort_handle());
     }
 
-    let tunnel_result = (&mut hop.exit).await;
+    let tunnel_result = tokio::select! {
+        result = &mut hop.exit => result,
+        reason = exit_policy_guard(&hop.stack, &policy) => return Err(reason),
+    };
 
     if let Some(task) = &http_task {
         task.abort();
@@ -1751,6 +1768,9 @@ async fn run_masque_in_masque(
         ));
     };
 
+    let policy = exitloc::Policy::from_env();
+    exitloc::settle(&inner.stack, &policy, "masque-in-masque").await?;
+
     let socks_listener = socks::bind_listener("socks5", listen).await?;
     let http_listener = bind_http_proxy().await?;
 
@@ -1772,12 +1792,14 @@ async fn run_masque_in_masque(
         Outer,
         Inner,
         Socks,
+        Policy,
     }
 
     let (outcome, winner) = tokio::select! {
         result = &mut outer.exit => (join_outcome("outer masque tunnel", result), Winner::Outer),
         result = &mut inner.exit => (join_outcome("inner masque tunnel", result), Winner::Inner),
         result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
+        reason = exit_policy_guard(&inner.stack, &policy) => (Err(reason), Winner::Policy),
     };
 
     if winner != Winner::Outer {
@@ -2327,6 +2349,9 @@ async fn run_wireguard_tunnel(
 
     let mut tasks = TaskGuard::new();
 
+    let policy = exitloc::Policy::from_env();
+    exitloc::settle(&stack, &policy, "wireguard").await?;
+
     let socks_listener = socks::bind_listener("socks5", listen).await?;
     let http_listener = bind_http_proxy().await?;
 
@@ -2339,7 +2364,10 @@ async fn run_wireguard_tunnel(
         tasks.push(task.abort_handle());
     }
 
-    let tunnel_result = tunnel.run(outbound_rx).await;
+    let tunnel_result = tokio::select! {
+        result = tunnel.run(outbound_rx) => result,
+        reason = exit_policy_guard(&stack, &policy) => return Err(reason),
+    };
 
     if let Some(task) = &http_task {
         task.abort();
@@ -2553,6 +2581,10 @@ async fn run_warp_in_warp(
         establish_wg(&secondary, forwarder, INNER_MTU, false, 20, "inner").await?;
     tasks.push(inner_exit.abort_handle());
 
+    let policy = exitloc::Policy::from_env();
+    exitloc::settle(&inner_stack, &policy, "warp-in-warp").await?;
+    let policy_stack = inner_stack.clone();
+
     let socks_listener = socks::bind_listener("socks5", listen).await?;
     let http_listener = bind_http_proxy().await?;
 
@@ -2569,12 +2601,14 @@ async fn run_warp_in_warp(
         Outer,
         Inner,
         Socks,
+        Policy,
     }
 
     let (outcome, winner) = tokio::select! {
         result = &mut outer_exit => (join_outcome("outer wireguard tunnel", result), Winner::Outer),
         result = &mut inner_exit => (join_outcome("inner wireguard tunnel", result), Winner::Inner),
         result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
+        reason = exit_policy_guard(&policy_stack, &policy) => (Err(reason), Winner::Policy),
     };
 
     if let Some(task) = &http_task {
