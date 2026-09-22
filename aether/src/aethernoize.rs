@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rand::{Rng, RngExt};
@@ -100,15 +101,55 @@ impl AetherNoizeConfig {
         }
     }
 
+    pub fn firewall() -> Self {
+        Self {
+            i1: Some("<b 0d0a0d0a><t><rc 24-44>".to_string()),
+            i2: Some("<b 504f5354><c><rd 12-24><rc 24-36>".to_string()),
+            i3: Some("<b 474554><r 30-50>".to_string()),
+            i4: None,
+            i5: None,
+            jc: 7,
+            jc_before_hs: 3,
+            jc_after_i1: 2,
+            jc_after_hs: 2,
+            jmin: 64,
+            jmax: 300,
+            junk_interval: Duration::from_millis(2),
+            handshake_delay: Duration::from_millis(10),
+            allow_zero_size: false,
+        }
+    }
+
+    pub fn gfw() -> Self {
+        Self {
+            i1: Some("<b 16030100><c><rc 48-72>".to_string()),
+            i2: Some("<b 0d0a0d0a><t><rd 20-40><rc 36-60>".to_string()),
+            i3: Some("<b 474554202f20485454502f312e31><rc 40-64>".to_string()),
+            i4: Some("<b 504f5354><c><r 64-110>".to_string()),
+            i5: Some("<rd 24-48><rc 32-56>".to_string()),
+            jc: 12,
+            jc_before_hs: 5,
+            jc_after_i1: 3,
+            jc_after_hs: 4,
+            jmin: 96,
+            jmax: 420,
+            junk_interval: Duration::from_millis(1),
+            handshake_delay: Duration::from_millis(16),
+            allow_zero_size: true,
+        }
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.jc > 0 || self.i1.is_some()
     }
 }
 
 pub fn from_profile(name: &str) -> AetherNoizeConfig {
-    match name {
+    match name.trim().to_ascii_lowercase().as_str() {
         "off" | "none" => AetherNoizeConfig::off(),
         "light" => AetherNoizeConfig::light(),
+        "firewall" => AetherNoizeConfig::firewall(),
+        "gfw" => AetherNoizeConfig::gfw(),
         "aggressive" | "heavy" => AetherNoizeConfig::aggressive(),
         _ => AetherNoizeConfig::balanced(),
     }
@@ -125,6 +166,8 @@ fn parse_range(data: &str) -> usize {
     }
     data.trim().parse().unwrap_or(0).min(2048)
 }
+
+static CPS_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 pub fn parse_cps(spec: &str) -> Vec<u8> {
     let mut out = Vec::new();
@@ -157,11 +200,7 @@ pub fn parse_cps(spec: &str) -> Vec<u8> {
                 out.extend_from_slice(&ts.to_be_bytes());
             }
             "c" => {
-                let counter = (SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
-                    % 0xFFFFFFFF) as u32;
+                let counter = CPS_COUNTER.fetch_add(1, Ordering::Relaxed);
                 out.extend_from_slice(&counter.to_be_bytes());
             }
             "r" => {
@@ -357,5 +396,52 @@ pub async fn send_keepalive_junk(sock: &UdpSocket, cfg: &AetherNoizeConfig) {
         if !gap.is_zero() {
             tokio::time::sleep(gap).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_advertised_profile_resolves_to_its_own_shape() {
+        assert!(!from_profile("off").is_enabled());
+        assert_eq!(from_profile("light").jc, AetherNoizeConfig::light().jc);
+        assert_eq!(
+            from_profile("firewall").jc,
+            AetherNoizeConfig::firewall().jc
+        );
+        assert_eq!(from_profile("gfw").jc, AetherNoizeConfig::gfw().jc);
+        assert_eq!(
+            from_profile("aggressive").jc,
+            AetherNoizeConfig::aggressive().jc
+        );
+    }
+
+    #[test]
+    fn firewall_and_gfw_are_not_silently_balanced() {
+        let balanced = AetherNoizeConfig::balanced();
+        assert_ne!(from_profile("firewall").jc, balanced.jc);
+        assert_ne!(from_profile("gfw").jc, balanced.jc);
+    }
+
+    #[test]
+    fn a_profile_name_is_matched_regardless_of_case_or_padding() {
+        assert_eq!(from_profile("  GFW  ").jc, AetherNoizeConfig::gfw().jc);
+    }
+
+    #[test]
+    fn the_counter_tag_advances_instead_of_repeating_the_clock() {
+        let first = parse_cps("<c>");
+        let second = parse_cps("<c>");
+        assert_eq!(first.len(), 4);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn the_counter_tag_is_not_the_timestamp_tag() {
+        let counter = parse_cps("<c>");
+        let stamp = parse_cps("<t>");
+        assert_ne!(counter, stamp);
     }
 }
