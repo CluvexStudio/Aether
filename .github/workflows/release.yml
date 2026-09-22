@@ -73,6 +73,10 @@ jobs:
         shell: bash
         run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
 
+      - name: Build psiphon
+        shell: bash
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+
       - name: Build release binary
         run: cargo build --release --features tor --target ${{ matrix.target }}
 
@@ -152,6 +156,9 @@ jobs:
       - name: Build pluggable transports
         run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
 
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+
       - name: Build release binary
         run: cargo build --release --features tor --target ${{ matrix.target }}
 
@@ -211,6 +218,9 @@ jobs:
 
       - name: Build pluggable transports
         run: bash ../pt-build.sh linux arm "$PWD/pt" 7
+
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh linux arm "$PWD/pt" 7
 
       - name: Build release binary
         run: cargo build --release --features tor --target armv7-unknown-linux-gnueabihf
@@ -296,6 +306,9 @@ jobs:
       - name: Build pluggable transports
         run: bash ../pt-build.sh linux arm "$PWD/pt" 7
 
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh linux arm "$PWD/pt" 7
+
       - name: Build release binary
         run: cargo build --release --features tor --target armv7-unknown-linux-musleabihf
 
@@ -379,6 +392,9 @@ jobs:
       - name: Build pluggable transports
         run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
 
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+
       - name: Build release binary
         run: cargo build --release --features tor --target ${{ matrix.target }}
 
@@ -459,6 +475,9 @@ jobs:
 
       - name: Build pluggable transports
         run: bash ../pt-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}"
+
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}"
 
       - name: Build release binary
         env:

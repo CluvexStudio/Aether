@@ -19,12 +19,14 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 WORKDIR /usr/src/app
 
 COPY pt-build.sh ./pt-build.sh
+COPY psiphon-build.sh ./psiphon-build.sh
 COPY aether ./aether
 COPY quiche ./quiche
 
 WORKDIR /usr/src/app/aether
 
 RUN bash ../pt-build.sh linux "$(dpkg --print-architecture)" /usr/src/app/aether/pt
+RUN bash ../psiphon-build.sh linux "$(dpkg --print-architecture)" /usr/src/app/aether/pt
 
 RUN cargo build --release --locked --features tor
 

@@ -19,6 +19,7 @@ pub mod masque_h2;
 pub mod netstack;
 pub mod noize;
 pub mod prober;
+pub mod psiphon;
 pub mod quic;
 pub mod routing;
 pub mod sniff;
@@ -118,6 +119,18 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         return tor::run_only(listen, tor::state_dir(&base_config)).await;
     }
 
+    if psiphon::mode() == psiphon::Mode::Only {
+        return psiphon::run_only(listen, psiphon::state_dir(&base_config)).await;
+    }
+
+    if tor::mode() == tor::Mode::Reverse && psiphon::mode() == psiphon::Mode::Reverse {
+        return Err(AetherError::Other(
+            "--tor-reverse and --psiphon-reverse both want to carry the tunnel; pick one, or put \
+             the other inside it with --tor or --psiphon"
+                .into(),
+        ));
+    }
+
     // A malformed address is worth reporting before an account is provisioned.
     let pinned_wiw = wiw_endpoints_from_env()?;
     let pinned_mim = mim_endpoints_from_env()?;
@@ -137,6 +150,10 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
     if tor::mode() == tor::Mode::Only {
         return tor::run_only(listen, tor::state_dir(&base_config)).await;
+    }
+
+    if psiphon::mode() == psiphon::Mode::Only {
+        return psiphon::run_only(listen, psiphon::state_dir(&base_config)).await;
     }
 
     if protocol != Protocol::WarpInWarp && !pinned_wiw.is_empty() {
@@ -179,6 +196,34 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             log::info!("[+] the tunnel is dialled through tor on the http/2 carrier");
         }
         tor::Mode::Only | tor::Mode::Off => {}
+    }
+
+    match psiphon::mode() {
+        psiphon::Mode::Chain => {
+            let through = listen;
+            let state = psiphon::state_dir(&base_config);
+            tokio::spawn(async move {
+                if let Err(e) = psiphon::run_chain(through, state).await {
+                    log::error!("[-] psiphon: {e}");
+                }
+            });
+        }
+        psiphon::Mode::Reverse => {
+            if matches!(protocol, Protocol::WireGuard | Protocol::WarpInWarp) {
+                return Err(AetherError::Other(format!(
+                    "psiphon carries tcp only and warp's wireguard endpoints answer on udp alone, \
+                     so {} can never be reached through psiphon; use --masque, which this mode \
+                     runs over http/2, or put psiphon inside the tunnel instead with --psiphon",
+                    protocol.label()
+                )));
+            }
+
+            let socks = psiphon::start_reverse(psiphon::state_dir(&base_config)).await?;
+            std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+            std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+            log::info!("[+] the tunnel is dialled through psiphon on the http/2 carrier");
+        }
+        psiphon::Mode::Only | psiphon::Mode::Off => {}
     }
 
     match protocol {
@@ -2716,17 +2761,40 @@ async fn select_protocol(base: &str) -> Protocol {
     }
 
     loop {
-        let (tor_entries, last) = if cfg!(feature = "tor") {
-            (
-                "  [5] Tor alone, with no warp under it\n  \
-                 [6] Tor and warp chained, either way round\n"
-                    .to_string(),
-                7,
-            )
-        } else {
-            (String::new(), 5)
+        let mut extra = String::new();
+        let mut next = 5u8;
+        let take = |line: &str, extra: &mut String, next: &mut u8| -> String {
+            let key = next.to_string();
+            extra.push_str(&format!("  [{key}] {line}\n"));
+            *next += 1;
+            key
         };
 
+        let (tor_alone, tor_chain) = if cfg!(feature = "tor") {
+            (
+                take("Tor alone, with no warp under it", &mut extra, &mut next),
+                take(
+                    "Tor and warp chained, either way round",
+                    &mut extra,
+                    &mut next,
+                ),
+            )
+        } else {
+            (String::new(), String::new())
+        };
+
+        let psiphon_alone = take(
+            "Psiphon alone, with no warp under it",
+            &mut extra,
+            &mut next,
+        );
+        let psiphon_chain = take(
+            "Psiphon and warp chained, either way round",
+            &mut extra,
+            &mut next,
+        );
+
+        let last = next;
         let zero_trust_key = last.to_string();
         let zero_trust = match team_scope() {
             Some(team) => {
@@ -2741,26 +2809,55 @@ async fn select_protocol(base: &str) -> Protocol {
             "\nProtocol:\n  [1] MASQUE (modern, QUIC/H3, default)\n  \
              [2] WireGuard (classic, faster)\n  [3] WARP-in-WARP / gool\n  \
              [4] MASQUE-in-MASQUE (two masque hops, for a different exit address)\n\
-             {tor_entries}{zero_trust}Choose [1-{last}] (default 1): "
+             {extra}{zero_trust}Choose [1-{last}] (default 1): "
         ))
         .await;
 
-        match answer.as_deref() {
-            Some("2") => return Protocol::WireGuard,
-            Some("3") => return Protocol::WarpInWarp,
-            Some("4") => return Protocol::MasqueInMasque,
-            Some(choice) if choice == zero_trust_key => {
+        let choice = answer.as_deref().unwrap_or_default();
+
+        match choice {
+            "2" => return Protocol::WireGuard,
+            "3" => return Protocol::WarpInWarp,
+            "4" => return Protocol::MasqueInMasque,
+            _ if choice == zero_trust_key => {
                 enrol_zero_trust(base).await;
                 continue;
             }
-            Some("5") if cfg!(feature = "tor") => {
+            _ if !tor_alone.is_empty() && choice == tor_alone => {
                 std::env::set_var("AETHER_TOR", "only");
                 return Protocol::Masque;
             }
-            Some("6") if cfg!(feature = "tor") => return select_tor_chain().await,
+            _ if !tor_chain.is_empty() && choice == tor_chain => return select_tor_chain().await,
+            _ if choice == psiphon_alone => {
+                std::env::set_var("AETHER_PSIPHON", "only");
+                return Protocol::Masque;
+            }
+            _ if choice == psiphon_chain => return select_psiphon_chain().await,
             _ => return Protocol::Masque,
         }
     }
+}
+
+async fn select_psiphon_chain() -> Protocol {
+    let answer = prompt_line(
+        "\nWhich way round?\n  \
+         [1] psiphon inside warp: you, warp, psiphon, the internet. The exit is a psiphon \
+         exit, and a network that blocks psiphon never sees it (default)\n  \
+         [2] warp inside psiphon: you, psiphon, warp, the internet. The exit is a warp exit \
+         reached from a psiphon exit, and your network never sees warp\n\
+         Choose [1-2] (default 1): ",
+    )
+    .await;
+
+    if matches!(answer.as_deref(), Some("2")) {
+        std::env::set_var("AETHER_PSIPHON", "reverse");
+        log::info!("[*] the tunnel will be dialled through psiphon, on the http/2 carrier");
+        return Protocol::Masque;
+    }
+
+    std::env::set_var("AETHER_PSIPHON", "chain");
+    log::info!("[*] psiphon will be carried inside the tunnel");
+    select_chain_carrier("psiphon").await
 }
 
 async fn select_tor_chain() -> Protocol {
@@ -2782,18 +2879,18 @@ async fn select_tor_chain() -> Protocol {
 
     std::env::set_var("AETHER_TOR", "chain");
     log::info!("[*] tor will be carried inside the tunnel");
-    select_chain_carrier().await
+    select_chain_carrier("tor").await
 }
 
-async fn select_chain_carrier() -> Protocol {
-    let answer = prompt_line(
-        "\nWhat carries tor?\n  \
+async fn select_chain_carrier(what: &str) -> Protocol {
+    let answer = prompt_line(&format!(
+        "\nWhat carries {what}?\n  \
          [1] MASQUE, over quic/h3 or http/2, asked next (default)\n  \
          [2] WireGuard, warp over udp\n  \
          [3] WARP-in-WARP / gool\n  \
          [4] MASQUE-in-MASQUE\n\
-         Choose [1-4] (default 1): ",
-    )
+         Choose [1-4] (default 1): "
+    ))
     .await;
 
     match answer.as_deref() {
