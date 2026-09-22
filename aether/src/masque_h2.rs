@@ -104,6 +104,7 @@ fn validation_timeout() -> Duration {
 }
 
 const DATA_PROBE_REQUIRED_SUCCESSES: u32 = 2;
+const DATA_PROBE_RESEND: Duration = Duration::from_millis(700);
 
 fn h2_keepalive_interval() -> Duration {
     let secs = std::env::var("AETHER_MASQUE_H2_KEEPALIVE_SECS")
@@ -276,33 +277,48 @@ pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Durati
         send_capsule(&mut send_stream, Bytes::from(framed)).await?;
 
         let mut probe_successes: u32 = 0;
+        let mut resend = tokio::time::interval(DATA_PROBE_RESEND);
+        resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        resend.tick().await;
 
         loop {
-            match futures::future::poll_fn(|cx| recv_body.poll_data(cx)).await {
-                Some(Ok(chunk)) => {
-                    let _ = recv_body.flow_control().release_capacity(chunk.len());
-                    capsules.push(&chunk);
-                    loop {
-                        match capsules.next() {
-                            Ok(Some(Capsule::Datagram(_))) => {
-                                probe_successes += 1;
-                                if probe_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
-                                    return Ok(());
+            tokio::select! {
+                biased;
+
+                data = futures::future::poll_fn(|cx| recv_body.poll_data(cx)) => {
+                    match data {
+                        Some(Ok(chunk)) => {
+                            let _ = recv_body.flow_control().release_capacity(chunk.len());
+                            capsules.push(&chunk);
+                            loop {
+                                match capsules.next() {
+                                    Ok(Some(Capsule::Datagram(_))) => {
+                                        probe_successes += 1;
+                                        if probe_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
+                                            return Ok(());
+                                        }
+                                        let framed = masque::encode_datagram_capsule(&probe);
+                                        send_capsule(&mut send_stream, Bytes::from(framed)).await?;
+                                        resend.reset();
+                                    }
+                                    Ok(Some(_)) => continue,
+                                    Ok(None) => break,
+                                    Err(_) => break,
                                 }
-                                let framed = masque::encode_datagram_capsule(&probe);
-                                send_capsule(&mut send_stream, Bytes::from(framed)).await?;
                             }
-                            Ok(Some(_)) => continue,
-                            Ok(None) => break,
-                            Err(_) => break,
+                        }
+                        Some(Err(e)) => {
+                            return Err(AetherError::Masque(format!("h2 body: {e}")));
+                        }
+                        None => {
+                            return Err(AetherError::Masque("h2 stream closed before data".into()));
                         }
                     }
                 }
-                Some(Err(e)) => {
-                    return Err(AetherError::Masque(format!("h2 body: {e}")));
-                }
-                None => {
-                    return Err(AetherError::Masque("h2 stream closed before data".into()));
+
+                _ = resend.tick() => {
+                    let framed = masque::encode_datagram_capsule(&probe);
+                    send_capsule(&mut send_stream, Bytes::from(framed)).await?;
                 }
             }
         }
@@ -459,7 +475,7 @@ pub async fn run(
         }
     }
 
-    let mut probe_interval = tokio::time::interval(Duration::from_millis(700));
+    let mut probe_interval = tokio::time::interval(DATA_PROBE_RESEND);
     probe_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let keepalive_period = h2_keepalive_interval();
