@@ -132,17 +132,31 @@ pub fn binary() -> Option<PathBuf> {
 }
 
 pub fn install_hint() -> String {
+    let goos = match std::env::consts::OS {
+        "android" => "linux",
+        other => other,
+    };
+    let goarch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "x86" => "386",
+        "arm" => "arm",
+        other => other,
+    };
+
+    let looked = search_dirs()
+        .iter()
+        .take(4)
+        .map(|dir| dir.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
     format!(
-        "psiphon needs the psiphon-tunnel-core console client next to aether, in a 'pt' folder \
-         beside it, or on PATH. release archives ship it; from source run \
-         'bash psiphon-build.sh {} {} pt'. point AETHER_PSIPHON_BIN at it to use one you already \
-         have",
-        std::env::consts::OS,
-        match std::env::consts::ARCH {
-            "x86_64" => "amd64",
-            "aarch64" => "arm64",
-            other => other,
-        }
+        "psiphon needs the psiphon-tunnel-core console client, and it was not in {looked} or on \
+         PATH. every release archive ships it in the pt folder beside the binary, so keep that \
+         folder next to aether instead of moving the binary out on its own. from source run \
+         'bash psiphon-build.sh {goos} {goarch} pt'. point AETHER_PSIPHON_BIN at one you already \
+         have"
     )
 }
 
