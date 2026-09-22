@@ -43,6 +43,14 @@ pub fn listen_address() -> SocketAddr {
         .unwrap_or_else(|| "127.0.0.1:1820".parse().expect("a literal address"))
 }
 
+pub fn http_listen_address() -> Option<SocketAddr> {
+    std::env::var("AETHER_TOR_HTTP")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "off")
+        .and_then(|value| value.parse().ok())
+}
+
 pub fn state_dir(base_config: &str) -> PathBuf {
     if let Some(dir) = std::env::var("AETHER_TOR_DIR")
         .ok()
@@ -700,8 +708,34 @@ mod with_tor {
                     })
                     .map_err(std::io::Error::other)
             }
-        })
-        .await
+        };
+
+        let http_task = match http_listen_address() {
+            Some(address) => {
+                let http_listener = crate::socks::bind_listener("tor http proxy", address).await?;
+                let connector = connector.clone();
+                Some(tokio::spawn(async move {
+                    if let Err(e) = crate::socks::serve_http_connector(
+                        http_listener,
+                        "tor http proxy",
+                        connector,
+                    )
+                    .await
+                    {
+                        log::error!("[-] the tor http proxy stopped: {e}");
+                    }
+                }))
+            }
+            None => None,
+        };
+
+        let outcome = crate::socks::serve_connector(listener, kind, connector).await;
+
+        if let Some(task) = http_task {
+            task.abort();
+        }
+
+        outcome
     }
 
     async fn wait_for_proxy(through: SocketAddr) {

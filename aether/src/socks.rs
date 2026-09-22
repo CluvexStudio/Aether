@@ -1981,6 +1981,112 @@ pub async fn serve_http(listener: TcpListener, stack: StackHandle) -> Result<()>
     .await
 }
 
+pub(crate) async fn serve_http_connector<F, Fut, S>(
+    listener: TcpListener,
+    kind: &'static str,
+    connect: F,
+) -> Result<()>
+where
+    F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = std::io::Result<S>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let listen = listener.local_addr()?;
+    log::info!("[+] {kind} listening on {listen}");
+    warn_if_world_reachable(kind, listen);
+
+    accept_clients(listener, kind, client_limit(), move |sock, peer| {
+        let connect = connect.clone();
+        async move {
+            if let Err(e) = handle_http_through(sock, connect).await {
+                log::debug!("{kind} client {peer} ended: {e}");
+            }
+        }
+    })
+    .await
+}
+
+async fn handle_http_through<F, Fut, S>(mut sock: TcpStream, connect: F) -> Result<()>
+where
+    F: Fn(String, u16) -> Fut,
+    Fut: Future<Output = std::io::Result<S>>,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let (head, early) = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_head(&mut sock))
+        .await
+        .map_err(|_| {
+            AetherError::Other("the client did not send a request head in time".into())
+        })??;
+    let text = String::from_utf8_lossy(&head).to_string();
+    let first_line = text.lines().next().unwrap_or_default();
+
+    let request = match parse_request_line(first_line) {
+        Some(value) => value,
+        None => {
+            let _ = sock
+                .write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+                .await;
+            return Err(AetherError::Other(format!(
+                "unsupported http proxy request: {first_line}"
+            )));
+        }
+    };
+
+    let target = match request.authority.parse::<IpAddr>() {
+        Ok(ip) => Target::Ip(ip),
+        Err(_) => Target::Domain(request.authority.clone()),
+    };
+
+    match routes().decide(host_of(&target), request.port) {
+        Action::Block => {
+            log::debug!("[route] block http {}:{}", request.authority, request.port);
+            let _ = sock
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                .await;
+            return Ok(());
+        }
+        Action::Direct => {
+            log::debug!("[route] direct http {}:{}", request.authority, request.port);
+            return relay_http_direct(sock, &request, &head, &early).await;
+        }
+        Action::Proxy => {}
+    }
+
+    let remote = match connect(request.authority.clone(), request.port).await {
+        Ok(remote) => remote,
+        Err(error) => {
+            let _ = sock
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                .await;
+            return Err(AetherError::Other(format!(
+                "{}:{}: {error}",
+                request.authority, request.port
+            )));
+        }
+    };
+
+    let mut remote = remote;
+
+    match &request.rewritten {
+        Some(line) => {
+            let rest = text.split_once("\r\n").map(|(_, tail)| tail).unwrap_or("");
+            remote.write_all(format!("{line}{rest}").as_bytes()).await?;
+        }
+        None => {
+            sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await?;
+        }
+    }
+
+    if !early.is_empty() {
+        remote.write_all(&early).await?;
+    }
+    remote.flush().await?;
+
+    relay_generic(sock, remote, half_close_linger()).await;
+    Ok(())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct HttpRequestLine {
     pub method: String,
