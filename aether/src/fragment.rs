@@ -14,6 +14,7 @@ pub struct FragmentConfig {
     pub size_max: usize,
     pub delay_min_ms: u64,
     pub delay_max_ms: u64,
+    pub sni_split: bool,
 }
 
 impl FragmentConfig {
@@ -24,6 +25,7 @@ impl FragmentConfig {
             size_max: 1,
             delay_min_ms: 0,
             delay_max_ms: 0,
+            sni_split: false,
         }
     }
 
@@ -44,12 +46,17 @@ impl FragmentConfig {
         let size_min = size_min.max(1) as usize;
         let size_max = (size_max.max(size_min as u64)) as usize;
 
+        let sni_split = std::env::var("AETHER_MASQUE_H2_FRAGMENT_SNI")
+            .map(|v| is_truthy(&v))
+            .unwrap_or(true);
+
         Self {
             enabled,
             size_min,
             size_max,
             delay_min_ms,
             delay_max_ms: delay_max_ms.max(delay_min_ms),
+            sni_split,
         }
     }
 
@@ -105,10 +112,52 @@ fn parse_range(spec: &str, default: (u64, u64)) -> (u64, u64) {
     }
 }
 
+pub fn sni_host_range(buf: &[u8]) -> Option<(usize, usize)> {
+    let take = |at: usize, n: usize| -> Option<usize> {
+        let end = at.checked_add(n)?;
+        let slice = buf.get(at..end)?;
+        Some(slice.iter().fold(0usize, |acc, b| (acc << 8) | *b as usize))
+    };
+
+    if *buf.first()? != 0x16 || *buf.get(5)? != 0x01 {
+        return None;
+    }
+
+    let mut at = 43usize;
+    at += 1 + take(at, 1)?;
+    at += 2 + take(at, 2)?;
+    at += 1 + take(at, 1)?;
+
+    let extensions_end = at + 2 + take(at, 2)?;
+    at += 2;
+
+    while at + 4 <= extensions_end {
+        let kind = take(at, 2)?;
+        let len = take(at + 2, 2)?;
+        let body = at + 4;
+        if kind == 0x0000 {
+            let entry = body + 2;
+            if take(entry, 1)? != 0 {
+                return None;
+            }
+            let host_len = take(entry + 1, 2)?;
+            let host = entry + 3;
+            if host_len == 0 || host + host_len > buf.len() {
+                return None;
+            }
+            return Some((host, host + host_len));
+        }
+        at = body + len;
+    }
+
+    None
+}
+
 pub struct FragmentingStream<S> {
     inner: S,
     cfg: FragmentConfig,
     fragmenting: bool,
+    first_write: bool,
     pending_delay: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
@@ -118,6 +167,7 @@ impl<S> FragmentingStream<S> {
             inner,
             fragmenting: cfg.enabled,
             cfg,
+            first_write: true,
             pending_delay: None,
         }
     }
@@ -160,10 +210,19 @@ where
             }
         }
 
-        let chunk_len = this.cfg.pick_chunk_len(buf.len());
+        let targeted = if this.first_write && this.cfg.sni_split {
+            sni_host_range(buf).map(|(start, end)| start + (end - start) / 2)
+        } else {
+            None
+        };
+        let chunk_len = match targeted {
+            Some(split) if split > 0 && split < buf.len() => split,
+            _ => this.cfg.pick_chunk_len(buf.len()),
+        };
         match Pin::new(&mut this.inner).poll_write(cx, &buf[..chunk_len]) {
             Poll::Ready(Ok(n)) => {
                 if n > 0 {
+                    this.first_write = false;
                     let delay = this.cfg.pick_delay();
                     if !delay.is_zero() {
                         this.pending_delay = Some(Box::pin(tokio::time::sleep(delay)));
@@ -181,5 +240,70 @@ where
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client_hello(host: &str) -> Vec<u8> {
+        let mut sni = vec![0x00];
+        sni.extend_from_slice(&(host.len() as u16).to_be_bytes());
+        sni.extend_from_slice(host.as_bytes());
+
+        let mut list = (sni.len() as u16).to_be_bytes().to_vec();
+        list.extend_from_slice(&sni);
+
+        let mut ext = vec![0x00, 0x00];
+        ext.extend_from_slice(&(list.len() as u16).to_be_bytes());
+        ext.extend_from_slice(&list);
+
+        let mut body = vec![0x03, 0x03];
+        body.extend_from_slice(&[0u8; 32]);
+        body.push(0x00);
+        body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]);
+        body.extend_from_slice(&[0x01, 0x00]);
+        body.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+        body.extend_from_slice(&ext);
+
+        let mut handshake = vec![0x01];
+        handshake.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        handshake.extend_from_slice(&body);
+
+        let mut record = vec![0x16, 0x03, 0x01];
+        record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+        record.extend_from_slice(&handshake);
+        record
+    }
+
+    #[test]
+    fn the_server_name_is_located_inside_a_client_hello() {
+        let host = "api.cloudflareclient.com";
+        let hello = client_hello(host);
+        let (start, end) = sni_host_range(&hello).expect("the name is in there");
+        assert_eq!(&hello[start..end], host.as_bytes());
+    }
+
+    #[test]
+    fn a_split_lands_in_the_middle_of_the_server_name() {
+        let host = "api.cloudflareclient.com";
+        let hello = client_hello(host);
+        let (start, end) = sni_host_range(&hello).expect("the name is in there");
+        let split = start + (end - start) / 2;
+        assert!(split > start && split < end);
+    }
+
+    #[test]
+    fn anything_that_is_not_a_client_hello_is_left_alone() {
+        assert!(sni_host_range(b"").is_none());
+        assert!(sni_host_range(&[0x17, 0x03, 0x03, 0x00, 0x05, 0x01]).is_none());
+        let truncated = &client_hello("example.com")[..20];
+        assert!(sni_host_range(truncated).is_none());
+    }
+
+    #[test]
+    fn targeted_splitting_is_on_by_default_once_fragmenting_is_asked_for() {
+        assert!(!FragmentConfig::disabled().sni_split);
     }
 }
