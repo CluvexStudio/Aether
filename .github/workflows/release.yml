@@ -538,30 +538,40 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.0.0
+            Aether v2.1.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            Tor is built in
+            Psiphon is built in
 
-            - Three ways to use it. `--tor` carries Tor inside the tunnel, `--tor-reverse` dials the tunnel through Tor so WARP is reached from a Tor exit, and `--tor-only` is plain Tor on the usual proxy port.
-            - Bridges are fetched from bridgedb on their own, picked for the country you appear to be in. No CAPTCHA, nothing to paste in.
-            - The pluggable transports ship in the `pt/` folder beside the binary, so obfs4, snowflake, webtunnel and meek work on a fresh machine. Transports already installed are found too, Tor Browser's included.
-            - A bridge only counts as working once a stream has actually opened through it. One that reports 100% but carries nothing is dropped, and the next is tried.
-            - `--tor` takes any transport, so `--wg --tor` has the WireGuard tunnel carry Tor with nothing in between.
+            - Three ways to use it, the same three Tor has. `--psiphon` carries Psiphon inside the tunnel, `--psiphon-reverse` dials the tunnel through Psiphon so WARP is reached from a Psiphon exit, and `--psiphon-only` is plain Psiphon on the usual proxy port. Both appear in the menu when you run aether with no flags.
+            - Nothing to configure. The credentials and server list are built in, so it connects on a fresh machine. `--psiphon-config` lays your own settings over them if you have them.
+            - `--psiphon-region DE` asks for an exit in a country you name, and the log lists what is on offer.
+            - `--psiphon-mode cdn` limits it to fronted meek through a CDN, for networks that block the rest; `direct` turns fronting off.
+            - `--psiphon-http` serves it as an HTTP CONNECT proxy as well, for clients that cannot speak SOCKS5.
+            - The console client ships in the `pt/` folder beside the binary, next to the Tor transports.
 
-            New ways out
+            Tor reaches its bridges again
 
-            - MASQUE-in-MASQUE, `--mim`: two MASQUE hops, for an exit address in a different range than a single hop gives you.
-            - The QUIC opener sends a version-negotiation probe first, which gets QUIC through networks that drop v1 on every port but leave v2 alone.
+            - On a network that blocks Tor, bridgedb and onionoo are usually blocked too, so there was no way to fetch a bridge. With `--tor` the tunnel comes up first and the bridges are now fetched through it, which is what makes Tor work on a network that blocks it outright.
+            - `--tor-relays` takes running relays from onionoo and uses them as plain bridges. Bridgedb hands out a handful that are enumerated and blocked early; onionoo lists every running relay, thousands of them, filtered to the ports a restrictive firewall tends to leave open and measured before use.
+            - `--tor-bridge-file` reads bridge lines from a file, in the shape torrc uses.
+            - `--tor-http` serves Tor as an HTTP CONNECT proxy as well.
+            - The Tor SOCKS listener answers UDP ASSOCIATE for DNS, carried over TCP through the circuit, so a TUN front end can resolve names through it.
+
+            Keeping the exit where you want it
+
+            - `--exit-loc '!IR,AZ,RU'` refuses a tunnel whose exit country is not wanted. It is checked through the finished tunnel before SOCKS5 opens, and again every minute, so a tunnel that moves is dropped and replaced. `--exit-loc DE,SE` names the only countries to accept. Off unless you pass the flag.
+            - `--stats` logs how much has gone up and down and how long the tunnel has been up.
 
             Fixes
 
-            - A busy proxy ran out of file descriptors and stopped answering. The limit is raised at startup, the client count is capped, and the leaks behind it are closed. (#101, #106)
-            - Sockets can carry a firewall mark, so a Linux router can route Aether's own traffic without it looping back through the tunnel. (#106)
-            - Idle and half-closed connections were kept forever. They time out now, and a dead one is reset instead of lingering.
-            - The relay never flushed what it wrote, which stalled any transport that buffers.
-            - The build commands in the docs left out the directory they have to be run from. (#83)
+            - The HTTP/2 scan was slow to find anything. Its data-plane probe was sent once and never repeated, so a single lost packet cost the whole per-probe budget instead of 700ms. The first gateway now turns up in about a second.
+            - `--noize firewall` and `--noize gfw` were advertised but never implemented and fell through to balanced. Since firewall is the default for MASQUE, the default profile did not exist. Both are real now, and the `<c>` counter tag emits a counter instead of repeating the timestamp.
+            - `--mark` never reached the registration calls, which hung for twenty seconds on a router that routes unmarked traffic into a TUN. Registration now takes the route that carries the mark.
+            - A fourth API fingerprint, TLS 1.3 with a fragmented ClientHello, for networks that block TLS 1.2 outright. Fragmenting now splits inside the server name rather than at a random offset.
+            - Gool's inner tunnel latched onto the first source port it saw and silently dropped everything from any other, which killed the tunnel when the inner engine rebound.
+            - Reconnects remember the last eight working gateways instead of one, and a gateway proved on HTTP/3 is no longer reused on HTTP/2, where its port may not answer at all.
 
             Changes
 
