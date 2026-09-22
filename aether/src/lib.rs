@@ -1106,6 +1106,14 @@ async fn hunt_masque_peer(
     Ok(SocketAddr::new(best.ip, best.port))
 }
 
+fn masque_carrier() -> &'static str {
+    if masque_h2::enabled() {
+        lastconn::CARRIER_MASQUE_H2
+    } else {
+        lastconn::CARRIER_MASQUE_H3
+    }
+}
+
 fn lastconn_path(config_path: &str) -> String {
     derive_sibling_path(config_path, "lastconn")
 }
@@ -1190,15 +1198,19 @@ async fn run_masque(
 
     if forced.is_none() && quick_peer.is_none() {
         if let Some(cached) = lastconn::load(&lastconn_path) {
-            if let Ok(peer) = cached.peer.parse::<SocketAddr>() {
-                if want_quick_reconnect(&cached).await {
+            let ring = lastconn::usable_peers(&cached, masque_carrier());
+            if !ring.is_empty() && want_quick_reconnect(&cached).await {
+                for peer in ring {
                     log::info!("[*] verifying cached gateway {peer} before reuse");
                     if quick_verify_masque_peer(&identity, peer).await {
                         log::info!("[+] cached gateway {peer} still works; skipping scan");
                         quick_peer = Some(peer);
-                    } else {
-                        log::warn!("[-] cached gateway {peer} no longer works; scanning fresh");
+                        break;
                     }
+                    log::warn!("[-] cached gateway {peer} no longer answers; trying the next one");
+                }
+                if quick_peer.is_none() {
+                    log::warn!("[-] no remembered gateway answers; scanning fresh");
                 }
             }
         }
@@ -1261,7 +1273,12 @@ async fn run_masque(
 
         if forced.is_none() {
             let profile = std::env::var("AETHER_NOIZE").unwrap_or_else(|_| "firewall".to_string());
-            lastconn::save(&lastconn_path, &peer.to_string(), &profile);
+            lastconn::save(
+                &lastconn_path,
+                &peer.to_string(),
+                &profile,
+                masque_carrier(),
+            );
         }
 
         last_good_peer = Some(peer);
@@ -2054,9 +2071,10 @@ async fn run_wireguard(
 
     if forced.is_none() && quick.is_none() {
         if let Some(cached) = lastconn::load(&lastconn_path) {
-            if let Ok(peer) = cached.peer.parse::<SocketAddr>() {
-                if want_quick_reconnect(&cached).await {
-                    let profile = aethernoize::from_profile(&cached.profile);
+            let ring = lastconn::usable_peers(&cached, lastconn::CARRIER_WIREGUARD);
+            if !ring.is_empty() && want_quick_reconnect(&cached).await {
+                let profile = aethernoize::from_profile(&cached.profile);
+                for peer in ring {
                     log::info!("[*] verifying cached WireGuard endpoint {peer} before reuse");
                     match wireguard::verify_endpoint(
                         peer,
@@ -2075,14 +2093,18 @@ async fn run_wireguard(
                                 "[+] cached endpoint {peer} still works (rtt {:?}); skipping scan",
                                 rtt
                             );
-                            quick = Some((peer, profile, cached.profile.clone()));
+                            quick = Some((peer, profile.clone(), cached.profile.clone()));
+                            break;
                         }
                         Err(e) => {
                             log::warn!(
-                                "[-] cached endpoint {peer} no longer works ({e}); scanning fresh"
+                                "[-] cached endpoint {peer} no longer answers ({e}); trying the next one"
                             );
                         }
                     }
+                }
+                if quick.is_none() {
+                    log::warn!("[-] no remembered endpoint answers; scanning fresh");
                 }
             }
         }
@@ -2215,7 +2237,12 @@ async fn run_wireguard(
         log::info!("[+] using cloudflare edge {peer}");
 
         if forced.is_none() {
-            lastconn::save(&lastconn_path, &peer.to_string(), &profile_name);
+            lastconn::save(
+                &lastconn_path,
+                &peer.to_string(),
+                &profile_name,
+                lastconn::CARRIER_WIREGUARD,
+            );
         }
 
         let is_same_peer_as_before = last_good.as_ref().map(|(p, _, _)| *p) == Some(peer);
