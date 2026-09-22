@@ -22,6 +22,7 @@ pub mod quic;
 pub mod routing;
 pub mod sniff;
 pub mod socks;
+pub mod stats;
 pub mod sysprofile;
 pub mod tls;
 pub mod tor;
@@ -97,6 +98,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     sysprofile::log_summary();
     sysprofile::raise_fd_limit();
     egress::init()?;
+    stats::init();
+    stats::spawn_reporter();
 
     install_netstack_panic_guard();
 

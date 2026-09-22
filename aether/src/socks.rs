@@ -986,12 +986,12 @@ where
     let activity = Activity::new();
 
     let upload = async {
-        let _ = pump(&mut client_rd, &mut remote_wr, &activity).await;
+        let _ = pump(&mut client_rd, &mut remote_wr, &activity, Way::Up).await;
         let _ = remote_wr.shutdown().await;
     };
 
     let download = async {
-        if pump(&mut remote_rd, &mut client_wr, &activity)
+        if pump(&mut remote_rd, &mut client_wr, &activity, Way::Down)
             .await
             .is_ok()
         {
@@ -1081,6 +1081,7 @@ pub(crate) async fn relay_tunneled(
                     if sender.send(buf[..n].to_vec()).await.is_err() {
                         return;
                     }
+                    crate::stats::add_up(n);
                     activity.touch();
                 }
             }
@@ -1093,6 +1094,7 @@ pub(crate) async fn relay_tunneled(
             if wr.write_all(&chunk).await.is_err() {
                 return;
             }
+            crate::stats::add_down(chunk.len());
             activity.touch();
         }
         let _ = wr.shutdown().await;
@@ -1107,12 +1109,12 @@ async fn relay_direct(client: TcpStream, remote: TcpStream, linger: Duration) {
     let activity = Activity::new();
 
     let upload = async {
-        let _ = pump(&mut client_rd, &mut remote_wr, &activity).await;
+        let _ = pump(&mut client_rd, &mut remote_wr, &activity, Way::Up).await;
         let _ = remote_wr.shutdown().await;
     };
 
     let download = async {
-        if pump(&mut remote_rd, &mut client_wr, &activity)
+        if pump(&mut remote_rd, &mut client_wr, &activity, Way::Down)
             .await
             .is_ok()
         {
@@ -1123,7 +1125,13 @@ async fn relay_direct(client: TcpStream, remote: TcpStream, linger: Duration) {
     relay_halves(upload, download, &activity, linger).await;
 }
 
-async fn pump<R, W>(from: &mut R, to: &mut W, activity: &Activity) -> std::io::Result<()>
+#[derive(Clone, Copy)]
+enum Way {
+    Up,
+    Down,
+}
+
+async fn pump<R, W>(from: &mut R, to: &mut W, activity: &Activity, way: Way) -> std::io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -1136,6 +1144,10 @@ where
         }
         to.write_all(&buf[..n]).await?;
         to.flush().await?;
+        match way {
+            Way::Up => crate::stats::add_up(n),
+            Way::Down => crate::stats::add_down(n),
+        }
         activity.touch();
     }
 }
