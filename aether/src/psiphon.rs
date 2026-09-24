@@ -308,24 +308,35 @@ fn cdn_candidates(raw: &str) -> Vec<String> {
 fn put_cdn_fronting(map: &mut serde_json::Map<String, serde_json::Value>) {
     let addresses = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_IPS").unwrap_or_default());
     let names = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_SNI").unwrap_or_default());
+    let sets = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_SETS").unwrap_or_default());
 
-    if addresses.is_empty() {
+    if !addresses.is_empty() {
+        let mut spec = serde_json::Map::new();
+        spec.insert("IPCandidates".into(), serde_json::json!(addresses));
+        if !names.is_empty() {
+            spec.insert("SNIServerNames".into(), serde_json::json!(names));
+        }
+        map.insert(
+            "FrontedMeekCDNScanSpec".into(),
+            serde_json::Value::Object(spec),
+        );
+    }
+
+    // The edge lists built into psiphon are scanned when there are no addresses of one's own,
+    // and whenever some of them are named, then after those addresses; psiphon tries one's own
+    // first. Named, only the named lists are scanned.
+    if addresses.is_empty() || !sets.is_empty() {
         map.insert(
             "FrontedMeekCDNScanUseBuiltInSpec".into(),
             serde_json::Value::from(true),
         );
-        return;
     }
-
-    let mut spec = serde_json::Map::new();
-    spec.insert("IPCandidates".into(), serde_json::json!(addresses));
-    if !names.is_empty() {
-        spec.insert("SNIServerNames".into(), serde_json::json!(names));
+    if !sets.is_empty() {
+        map.insert(
+            "FrontedMeekCDNScanBuiltInSets".into(),
+            serde_json::json!(sets),
+        );
     }
-    map.insert(
-        "FrontedMeekCDNScanSpec".into(),
-        serde_json::Value::Object(spec),
-    );
 }
 
 fn read_base_config() -> Result<Option<serde_json::Value>> {
@@ -899,6 +910,7 @@ mod tests {
             "AETHER_PSIPHON_MODE",
             "AETHER_PSIPHON_CDN_IPS",
             "AETHER_PSIPHON_CDN_SNI",
+            "AETHER_PSIPHON_CDN_SETS",
             "AETHER_PSIPHON_SERVER_ENTRIES",
         ] {
             std::env::remove_var(name);
@@ -1128,6 +1140,54 @@ mod tests {
             assert!(!name.contains("QUIC"));
         }
         std::env::remove_var("AETHER_PSIPHON_MODE");
+
+        clear();
+    }
+
+    #[test]
+    fn the_cdn_sets_choose_among_the_edge_lists_built_into_psiphon() {
+        let _held = hold();
+
+        clear();
+        // Nothing named: the built-in lists, all of them, as before.
+        let mut map = serde_json::Map::new();
+        put_cdn_fronting(&mut map);
+        assert_eq!(map["FrontedMeekCDNScanUseBuiltInSpec"], true);
+        assert!(!map.contains_key("FrontedMeekCDNScanBuiltInSets"));
+        assert!(!map.contains_key("FrontedMeekCDNScanSpec"));
+
+        // Sets named: those lists alone.
+        std::env::set_var("AETHER_PSIPHON_CDN_SETS", "cloudflare, fastly");
+        let mut map = serde_json::Map::new();
+        put_cdn_fronting(&mut map);
+        assert_eq!(map["FrontedMeekCDNScanUseBuiltInSpec"], true);
+        assert_eq!(
+            map["FrontedMeekCDNScanBuiltInSets"],
+            serde_json::json!(["cloudflare", "fastly"])
+        );
+        assert!(!map.contains_key("FrontedMeekCDNScanSpec"));
+
+        // Addresses of one's own beside the named sets: both are scanned, one's own first.
+        std::env::set_var("AETHER_PSIPHON_CDN_IPS", "203.0.113.7");
+        let mut map = serde_json::Map::new();
+        put_cdn_fronting(&mut map);
+        assert_eq!(
+            map["FrontedMeekCDNScanSpec"]["IPCandidates"],
+            serde_json::json!(["203.0.113.7"])
+        );
+        assert_eq!(map["FrontedMeekCDNScanUseBuiltInSpec"], true);
+        assert_eq!(
+            map["FrontedMeekCDNScanBuiltInSets"],
+            serde_json::json!(["cloudflare", "fastly"])
+        );
+
+        // Addresses alone: no built-in list at all, as before.
+        std::env::remove_var("AETHER_PSIPHON_CDN_SETS");
+        let mut map = serde_json::Map::new();
+        put_cdn_fronting(&mut map);
+        assert!(map.contains_key("FrontedMeekCDNScanSpec"));
+        assert!(!map.contains_key("FrontedMeekCDNScanUseBuiltInSpec"));
+        assert!(!map.contains_key("FrontedMeekCDNScanBuiltInSets"));
 
         clear();
     }

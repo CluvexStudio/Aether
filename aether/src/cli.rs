@@ -173,6 +173,13 @@ Tor:
                            space separated. left empty, the list built into
                            psiphon is used
   --psiphon-cdn-sni <list> server names to present to those edges
+  --psiphon-cdn-sets <list>
+                           which of the edge lists built into psiphon the
+                           fronting scan tries: cloudflare, fastly, cloudfront,
+                           psiphon-akamai, psiphon-bunny, vercel, github,
+                           curated-fronting, legacy-android-overrides. left
+                           empty, all of them; named beside --psiphon-cdn-ips,
+                           they are tried after those addresses
   --psiphon-bind <addr>    where the psiphon proxy listens with --psiphon and
                            --psiphon-reverse (default 127.0.0.1:1821)
   --psiphon-http <addr>    also serve psiphon as an http/connect proxy here
@@ -277,6 +284,7 @@ Environment variables:
   AETHER_PSIPHON_MODE              --psiphon-mode
   AETHER_PSIPHON_CDN_IPS           --psiphon-cdn-ips
   AETHER_PSIPHON_CDN_SNI           --psiphon-cdn-sni
+  AETHER_PSIPHON_CDN_SETS          --psiphon-cdn-sets
   AETHER_PSIPHON_BIND              --psiphon-bind
   AETHER_PSIPHON_HTTP              --psiphon-http
   AETHER_PSIPHON_REGION            --psiphon-region
@@ -441,6 +449,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--psiphon-mode" => set("AETHER_PSIPHON_MODE", next_value!()),
             "--psiphon-cdn-ips" => set("AETHER_PSIPHON_CDN_IPS", next_value!()),
             "--psiphon-cdn-sni" => set("AETHER_PSIPHON_CDN_SNI", next_value!()),
+            "--psiphon-cdn-sets" => set("AETHER_PSIPHON_CDN_SETS", next_value!()),
             "--psiphon-dir" => set("AETHER_PSIPHON_DIR", next_value!()),
             "--psiphon-bin" => set("AETHER_PSIPHON_BIN", next_value!()),
             "--psiphon-server-entries" => set("AETHER_PSIPHON_SERVER_ENTRIES", next_value!()),
