@@ -182,6 +182,11 @@ Tor:
                            <config>-psiphon beside the identity file)
   --psiphon-bin <path>     the psiphon-tunnel-core binary to run, when it is not
                            next to aether, in ./pt, or on PATH
+  --psiphon-server-entries <path>
+                           a file of server entries psiphon starts with, in the
+                           form the remote list unpacks to, so that the first
+                           connection does not depend on downloading that list;
+                           a fetched list is merged on top of it
 
   On a network that blocks tor, aether fetches its own bridges from bridgedb and
   finds the pluggable transports already on this machine, tor browser's included.
@@ -277,6 +282,7 @@ Environment variables:
   AETHER_PSIPHON_REGION            --psiphon-region
   AETHER_PSIPHON_DIR               --psiphon-dir
   AETHER_PSIPHON_BIN               --psiphon-bin
+  AETHER_PSIPHON_SERVER_ENTRIES    --psiphon-server-entries
   AETHER_PSIPHON_READY_SECS        how long to wait for psiphon to tunnel (180)
   AETHER_TOR_DIR                   --tor-dir
   AETHER_TOR_DIRECT_SECS           how long to try tor plainly before bridges (75)
@@ -437,6 +443,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--psiphon-cdn-sni" => set("AETHER_PSIPHON_CDN_SNI", next_value!()),
             "--psiphon-dir" => set("AETHER_PSIPHON_DIR", next_value!()),
             "--psiphon-bin" => set("AETHER_PSIPHON_BIN", next_value!()),
+            "--psiphon-server-entries" => set("AETHER_PSIPHON_SERVER_ENTRIES", next_value!()),
             "--mark" => set("AETHER_MARK", next_value!()),
             "--exit-loc" => set("AETHER_EXIT_LOC", next_value!()),
             "--exit-loc-secs" => set("AETHER_EXIT_LOC_SECS", next_value!()),
