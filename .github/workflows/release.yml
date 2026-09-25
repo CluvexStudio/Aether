@@ -32,17 +32,28 @@ jobs:
             target: aarch64-apple-darwin
             goos: darwin
             goarch: arm64
+            features: [pt]
             archive: aether-macos-arm64.tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
             goos: darwin
             goarch: amd64
+            features: [pt]
             archive: aether-macos-x86_64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             goos: windows
             goarch: amd64
+            features: [pt]
             archive: aether-windows-x86_64.zip
+          - os: windows-latest
+            target: x86_64-win7-windows-msvc
+            toolchain: nightly
+            goos: windows
+            goarch: amd64
+            # no compatible features, so nothing here.
+            features: []
+            archive: aether-windows-legacy-x86_64.zip
     defaults:
       run:
         working-directory: aether
@@ -53,11 +64,21 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
+        if: matrix.toolchain == ''
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: rust-src
+
+      - name: Install Rust toolchain (custom)
+        if: matrix.toolchain != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rust-src
 
       - name: Install Go
+        if: contains(matrix.features, 'pt')
         uses: actions/setup-go@v5
         with:
           go-version: "1.22"
@@ -70,29 +91,83 @@ jobs:
         uses: ilammy/setup-nasm@v1
 
       - name: Build pluggable transports
+        if: contains(matrix.features, 'pt')
         shell: bash
         run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
 
       - name: Build psiphon
+        if: contains(matrix.features, 'pt')
         shell: bash
         run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
 
       - name: Build release binary
-        run: cargo build --release --features tor --target ${{ matrix.target }}
-
-      - name: Package archive (Unix)
-        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          HAS_PT_FEATURE: ${{ contains(matrix.features, 'pt') }}
         run: |
-          cp -R pt target/${{ matrix.target }}/release/pt
-          cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }}  aether pt
+          cargo_args=()
+          cargo_features=()
 
-      - name: Package archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
+          if [[ "$HAS_PT_FEATURE" == "true" ]]; then
+            cargo_features+=(tor)
+          fi
+
+          if [[ -n "${{ matrix.toolchain }}" ]]; then
+            cargo_args+=("+${{ matrix.toolchain }}" -Z build-std=std,panic_abort)
+          fi
+
+          cargo_args+=(build --release --target "${{ matrix.target }}")
+          if [[ -n "$cargo_features" ]]; then
+            cargo_args+=(--features "${cargo_features[@]}")
+          fi
+
+          cargo "${cargo_args[@]}"
+
+      - name: Package archive
+        shell: bash
+        env:
+          HAS_PT_FEATURE: ${{ contains(matrix.features, 'pt') }}
         run: |
-          Copy-Item -Recurse -Force pt target/${{ matrix.target }}/release/pt
-          Compress-Archive -Path target/${{ matrix.target }}/release/aether.exe,target/${{ matrix.target }}/release/pt,run-aether.bat -DestinationPath ${{ matrix.archive }}
+          archive_items=()
+          release_dir="target/${{ matrix.target }}/release"
+          archive_name=${{ matrix.archive }}
+
+          # bundle the pluggable transports required by the tor+psiphon feature
+          if [[ "$HAS_PT_FEATURE" == "true" ]]; then
+            archive_items+=(pt)
+          fi
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            archive_items+=("$release_dir/aether.exe" "run-aether.bat")
+          else
+            archive_items+=("$release_dir/aether")
+          fi
+
+          case "$archive_name" in
+            *.zip)
+              if [[ "$RUNNER_OS" != "Windows" ]]; then
+                echo "Creating zip archive is only supported on Windows platform" >&2
+                exit 1
+              fi
+              formatted_paths=$(printf "'%s'," "${archive_items[@]}" | sed 's/,$//')
+              powershell.exe -Command "Compress-Archive -Path $formatted_paths -DestinationPath '$archive_name'"
+              ;;
+
+            *.tar.gz)
+              tar_flags=()
+              for item in "${archive_items[@]}"; do
+                parent_dir=$(dirname "$item")
+                target_name=$(basename "$item")
+                tar_flags+=(-C "$parent_dir" "$target_name")
+              done
+              tar -czf "$archive_name" ${tar_flags[@]}
+              ;;
+
+            *)
+              printf 'Unsupported archive extension: %s\n' "$output" >&2
+              exit 2
+              ;;
+          esac
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
