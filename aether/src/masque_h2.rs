@@ -193,11 +193,9 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
         .configure()
         .map_err(|e| AetherError::Tls(e.to_string()))?;
 
-    // When using pin-based verification, SNI may be spoofed for DPI bypass,
-    // so hostname verification against the cert's CN/SAN is not applicable.
-    // Standard CA verification requires hostname matching.
-    let use_pin_verification = cfg.pin_endpoint && !cfg.expected_pins.is_empty();
-    config.set_verify_hostname(!use_pin_verification);
+    // TLS server-certificate verification is unconditionally disabled
+    // (see tls::install_verification), so the hostname check is skipped too.
+    config.set_verify_hostname(false);
     config.set_use_server_name_indication(true);
 
     Ok(config)
