@@ -384,7 +384,9 @@ pub fn install_hint() -> &'static str {
 fn http_client(through: Option<std::net::SocketAddr>) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent(crate::consts::UA_REGISTER)
-        .timeout(REQUEST_TIMEOUT);
+        .timeout(REQUEST_TIMEOUT)
+        // TLS server-certificate verification disabled (unconditional).
+        .danger_accept_invalid_certs(true);
 
     match through {
         Some(proxy) => {

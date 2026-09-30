@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use boring::ssl::{SslConnector, SslMethod, SslVersion};
+use boring::ssl::{SslConnector, SslMethod, SslVerifyMode, SslVersion};
 use rand::RngExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -74,6 +74,9 @@ impl Fingerprint {
     fn configure(self) -> Result<boring::ssl::ConnectConfiguration> {
         let mut builder =
             SslConnector::builder(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
+
+        // TLS server-certificate verification disabled (unconditional).
+        builder.set_verify(SslVerifyMode::NONE);
 
         let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
 

@@ -225,7 +225,9 @@ pub fn generate_masque_keypair() -> Result<MasqueKeyPair> {
 fn http_client() -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent(consts::UA_REGISTER)
-        .timeout(std::time::Duration::from_secs(20));
+        .timeout(std::time::Duration::from_secs(20))
+        // TLS server-certificate verification disabled (unconditional).
+        .danger_accept_invalid_certs(true);
 
     if let Some(upstream) = crate::upstream::configured() {
         builder = builder.proxy(upstream.as_reqwest_proxy()?);
