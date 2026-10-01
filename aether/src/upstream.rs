@@ -57,14 +57,40 @@ impl std::fmt::Debug for Upstream {
     }
 }
 
-pub fn configured() -> Option<&'static Upstream> {
-    static UPSTREAM: std::sync::OnceLock<Option<Upstream>> = std::sync::OnceLock::new();
-    UPSTREAM.get_or_init(Upstream::from_env).as_ref()
+/// The proxy AETHER_UPSTREAM names, as it names it now. It is looked up on every call rather
+/// than once: --tor-reverse and --psiphon-reverse name their carrier only when it is up, and tor
+/// looks the setting up while it bootstraps, to fetch bridges, so an answer kept from then sent
+/// the registration and the tunnel past the carrier instead of through it. A setting is parsed,
+/// and announced, only when it changes.
+pub fn configured() -> Option<Upstream> {
+    static SEEN: std::sync::Mutex<Option<(String, Option<Upstream>)>> = std::sync::Mutex::new(None);
+    let raw = std::env::var("AETHER_UPSTREAM").unwrap_or_default();
+    let mut seen = SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    remembered(&mut seen, raw)
+}
+
+/// The proxy `raw` names, parsed once per setting: while the setting stays the same, the proxy
+/// `seen` holds for it is used again.
+fn remembered(seen: &mut Option<(String, Option<Upstream>)>, raw: String) -> Option<Upstream> {
+    if let Some((last, upstream)) = seen.as_ref() {
+        if *last == raw {
+            return upstream.clone();
+        }
+    }
+    let upstream = Upstream::from_value(&raw);
+    *seen = Some((raw, upstream.clone()));
+    upstream
 }
 
 impl Upstream {
     pub fn from_env() -> Option<Self> {
-        let raw = std::env::var("AETHER_UPSTREAM").ok()?;
+        Self::from_value(&std::env::var("AETHER_UPSTREAM").ok()?)
+    }
+
+    /// The proxy `raw` names, announced in the log; none when it is blank or cannot be read.
+    fn from_value(raw: &str) -> Option<Self> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return None;
@@ -454,7 +480,7 @@ pub fn real_source(local: SocketAddr, observed: SocketAddr) -> SocketAddr {
 
 pub async fn attach_detour(socket: &UdpSocket, peer: SocketAddr) -> Result<DetourGuard> {
     match configured() {
-        Some(proxy) => attach_detour_via(proxy, socket, peer).await,
+        Some(proxy) => attach_detour_via(&proxy, socket, peer).await,
         None => Ok(DetourGuard::default()),
     }
 }
@@ -764,6 +790,21 @@ async fn relay_address(bound: SocketAddr, host: &str, port: u16) -> Result<Socke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_proxy_named_after_the_first_look_is_still_used() {
+        // --tor-reverse names its carrier once tor is up, after tor looked for a proxy to fetch bridges through.
+        let mut seen = None;
+        assert!(remembered(&mut seen, String::new()).is_none());
+        let carrier =
+            remembered(&mut seen, "socks5://127.0.0.1:1820".to_string()).expect("the carrier");
+        assert_eq!(carrier.port, 1820);
+        assert_eq!(
+            remembered(&mut seen, "socks5://127.0.0.1:1820".to_string()),
+            Some(carrier)
+        );
+        assert!(remembered(&mut seen, "  ".to_string()).is_none());
+    }
 
     #[test]
     fn a_bare_host_and_port_is_taken_as_socks5() {
