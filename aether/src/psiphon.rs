@@ -452,7 +452,7 @@ fn build_config(
     state: &Path,
     socks: SocketAddr,
     http: Option<SocketAddr>,
-    upstream: Option<SocketAddr>,
+    upstream: Option<String>,
 ) -> Result<String> {
     let mut map = serde_json::Map::new();
 
@@ -583,17 +583,15 @@ fn build_config(
         map.insert("EgressRegion".into(), serde_json::Value::from(code));
     }
 
-    if let Some(through) = upstream {
-        map.insert(
-            "UpstreamProxyURL".into(),
-            serde_json::Value::from(format!("socks5://{through}")),
-        );
+    let through_proxy = upstream.is_some();
+    if let Some(url) = upstream {
+        map.insert("UpstreamProxyURL".into(), serde_json::Value::from(url));
     }
 
     log::info!(
         "[*] psiphon shape: {chosen:?}{}",
-        if upstream.is_some() {
-            ", carried by the tunnel so only tcp protocols are offered"
+        if through_proxy {
+            ", dialled through a proxy so only tcp protocols are offered"
         } else {
             ""
         }
@@ -689,7 +687,7 @@ pub async fn start(
     state: &Path,
     socks: SocketAddr,
     http: Option<SocketAddr>,
-    upstream: Option<SocketAddr>,
+    upstream: Option<String>,
 ) -> Result<Running> {
     let exe = binary().ok_or_else(|| AetherError::Other(install_hint()))?;
 
@@ -819,11 +817,22 @@ fn announce(proxy: SocketAddr, what: &'static str) {
     });
 }
 
+/// The proxy psiphon dials through when no tunnel of aether's carries it: the one --upstream names,
+/// so that what psiphon sends leaves where the rest of aether's traffic leaves.
+fn upstream_url() -> Option<String> {
+    let proxy = crate::upstream::configured()?;
+    log::info!(
+        "[*] psiphon dials out through the upstream proxy at {}",
+        proxy.endpoint()
+    );
+    Some(proxy.psiphon_url())
+}
+
 pub async fn run_only(listen: SocketAddr, state: PathBuf) -> Result<()> {
     let http = http_listen_address();
     log::info!("[*] starting psiphon with no tunnel underneath it");
 
-    let mut running = start(&state, listen, http, None).await?;
+    let mut running = start(&state, listen, http, upstream_url()).await?;
     log::info!(
         "[+] psiphon is ready; {} leaves through psiphon",
         running.socks
@@ -843,7 +852,7 @@ pub async fn run_chain(through: SocketAddr, state: PathBuf) -> Result<()> {
     wait_for_proxy(through).await;
     log::info!("[*] starting psiphon through the tunnel at {through}");
 
-    let mut running = start(&state, listen, http, Some(through)).await?;
+    let mut running = start(&state, listen, http, Some(format!("socks5://{through}"))).await?;
     log::info!(
         "[+] psiphon is ready; {} leaves through psiphon, carried by the tunnel",
         running.socks
@@ -861,7 +870,8 @@ pub async fn start_reverse(state: PathBuf) -> Result<SocketAddr> {
     let http = http_listen_address();
     log::info!("[*] starting psiphon; the tunnel will be dialled through it");
 
-    let mut running = start(&state, listen, http, None).await?;
+    // The upstream is still the proxy aether was given: the caller points it at psiphon once psiphon is up.
+    let mut running = start(&state, listen, http, upstream_url()).await?;
     let socks = running.socks;
     log::info!("[+] psiphon is ready; the tunnel goes out through {socks}");
     announce(socks, "psiphon");
@@ -1080,7 +1090,7 @@ mod tests {
             &dir,
             "127.0.0.1:1821".parse().expect("an address"),
             None,
-            Some("127.0.0.1:1819".parse().expect("an address")),
+            Some("socks5://127.0.0.1:1819".to_string()),
         )
         .expect("a config");
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");

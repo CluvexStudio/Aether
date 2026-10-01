@@ -24,7 +24,9 @@ Connection:
   --http-proxy <addr>      also expose an HTTP CONNECT proxy on this address
                            (off by default, e.g. 127.0.0.1:1820)
   --upstream <url>         dial out through a proxy already running here, e.g.
-                           socks5://127.0.0.1:1080 or http://user:pass@host:8080
+                           socks5://127.0.0.1:1080 or http://user:pass@host:8080;
+                           tor and psiphon dial through it as well when no tunnel
+                           carries them (tor takes a socks5 address only)
   --mark <n>               put this firewall mark (SO_MARK) on every socket aether
                            opens to the internet, e.g. 0xff, so a tun front end on
                            the same Linux router can let them past instead of

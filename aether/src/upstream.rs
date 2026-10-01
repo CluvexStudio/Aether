@@ -189,6 +189,38 @@ impl Upstream {
         format!("{scheme}://{host}:{}", self.port)
     }
 
+    /// The proxy as psiphon's UpstreamProxyURL takes it: socks5 or http, with any credentials
+    /// written into the address.
+    pub fn psiphon_url(&self) -> String {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        let scheme = match self.kind {
+            Kind::Socks5 => "socks5",
+            Kind::Http => "http",
+        };
+        let credentials = match (&self.user, &self.password) {
+            (Some(user), Some(password)) => {
+                format!("{}:{}@", percent_encode(user), percent_encode(password))
+            }
+            (Some(user), None) => format!("{}@", percent_encode(user)),
+            _ => String::new(),
+        };
+        format!("{scheme}://{credentials}{host}:{}", self.port)
+    }
+
+    /// The address tor can dial its relays and bridges through: a socks5 proxy at an address, with
+    /// no name to resolve and no password, which is what tor's outbound proxy takes.
+    pub fn socks_address(&self) -> Option<SocketAddr> {
+        if self.kind != Kind::Socks5 || self.user.is_some() {
+            return None;
+        }
+        let ip: IpAddr = self.host.parse().ok()?;
+        Some(SocketAddr::new(ip, self.port))
+    }
+
     pub fn as_reqwest_proxy(&self) -> Result<reqwest::Proxy> {
         let proxy = reqwest::Proxy::all(self.url())
             .map_err(|error| AetherError::Other(format!("{} is unusable: {error}", self.url())))?;
@@ -614,6 +646,18 @@ fn split_endpoint(endpoint: &str) -> Result<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -804,6 +848,32 @@ mod tests {
             Some(carrier)
         );
         assert!(remembered(&mut seen, "  ".to_string()).is_none());
+    }
+
+    #[test]
+    fn psiphon_reads_the_proxy_with_its_credentials_in_the_address() {
+        let plain = Upstream::parse("socks5://127.0.0.1:10821").unwrap();
+        assert_eq!(plain.psiphon_url(), "socks5://127.0.0.1:10821");
+        let named = Upstream::parse("http://al%40ice:p%3Ass@proxy.example:8080").unwrap();
+        assert_eq!(
+            named.psiphon_url(),
+            "http://al%40ice:p%3Ass@proxy.example:8080"
+        );
+        let six = Upstream::parse("socks5://[::1]:1080").unwrap();
+        assert_eq!(six.psiphon_url(), "socks5://[::1]:1080");
+    }
+
+    #[test]
+    fn tor_takes_a_socks5_proxy_at_an_address_without_a_password_only() {
+        let at = |raw: &str| Upstream::parse(raw).unwrap().socks_address();
+        assert_eq!(
+            at("socks5://127.0.0.1:10821"),
+            "127.0.0.1:10821".parse().ok()
+        );
+        assert_eq!(at("socks5://[::1]:1080"), "[::1]:1080".parse().ok());
+        assert!(at("http://127.0.0.1:8080").is_none());
+        assert!(at("socks5://proxy.example:1080").is_none());
+        assert!(at("socks5://alice:secret@127.0.0.1:1080").is_none());
     }
 
     #[test]

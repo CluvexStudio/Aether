@@ -356,7 +356,8 @@ mod with_tor {
             .storage()
             .state_dir(CfgPath::new(data.to_string_lossy().to_string()));
 
-        if let Some(proxy) = through {
+        // Without a tunnel to dial through, tor leaves through the upstream proxy, if there is one.
+        if let Some(proxy) = through.or_else(upstream_socks) {
             let parsed: ProxyProtocol = format!("socks5://{proxy}")
                 .parse()
                 .map_err(|e| AetherError::Other(format!("tor cannot dial through {proxy}: {e}")))?;
@@ -807,6 +808,30 @@ mod with_tor {
         outcome
     }
 
+    /// The upstream proxy tor dials through when no tunnel carries it, see
+    /// [crate::upstream::Upstream::socks_address].
+    fn upstream_socks() -> Option<SocketAddr> {
+        crate::upstream::configured()?.socks_address()
+    }
+
+    /// Says how tor reaches the network when no tunnel carries it: through the upstream proxy,
+    /// or directly when there is none or it is one tor cannot dial through.
+    fn announce_upstream() {
+        let Some(proxy) = crate::upstream::configured() else {
+            return;
+        };
+        match proxy.socks_address() {
+            Some(address) => {
+                log::info!("[*] tor dials out through the upstream proxy at {address}")
+            }
+            None => log::warn!(
+                "[-] tor cannot dial through the upstream proxy at {}, which is no socks5 address \
+                 without a password; tor connects directly",
+                proxy.endpoint()
+            ),
+        }
+    }
+
     async fn wait_for_proxy(through: SocketAddr) {
         let mut announced = false;
         loop {
@@ -841,6 +866,7 @@ mod with_tor {
         let listener = crate::socks::bind_listener("tor socks5", listen).await?;
 
         log::info!("[*] bootstrapping tor with no tunnel underneath it");
+        announce_upstream();
 
         let client = establish(&state, None, FOREVER).await?;
         log::info!("[+] tor is ready; {listen} leaves through tor");
@@ -855,6 +881,8 @@ mod with_tor {
         let listener = crate::socks::bind_listener("tor socks5", listen).await?;
 
         log::info!("[*] bootstrapping tor; the tunnel will be dialled through it");
+        // The upstream is still the proxy aether was given: the caller points it at tor once tor is up.
+        announce_upstream();
 
         let client = establish(&state, None, REVERSE_ATTEMPTS).await?;
         log::info!("[+] tor is ready; the tunnel goes out through {listen}");

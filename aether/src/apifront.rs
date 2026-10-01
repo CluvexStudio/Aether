@@ -167,6 +167,11 @@ async fn candidates(host: &str) -> Vec<SocketAddr> {
         }
     }
 
+    // A name looked up here would leave outside the upstream proxy that carries everything else.
+    if crate::upstream::configured().is_some() {
+        return list;
+    }
+
     if let Ok(resolved) = tokio::net::lookup_host((host, 443)).await {
         for address in resolved
             .filter(|entry| entry.is_ipv4())
