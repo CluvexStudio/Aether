@@ -698,6 +698,12 @@ pub async fn start(
     let config_path = state.join("aether-psiphon.json");
     std::fs::write(&config_path, config)
         .map_err(|e| AetherError::Other(format!("psiphon config could not be saved: {e}")))?;
+    // The config can carry the password of the upstream proxy.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600));
+    }
 
     log::info!("[*] starting psiphon from {}", exe.display());
     let entries = server_entries();
