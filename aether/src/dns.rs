@@ -113,9 +113,35 @@ pub fn valid_domain(name: &str) -> bool {
         })
 }
 
-/// The resolver of --ech-dns (AETHER_ECH_DNS), or the default one.
-fn configured_dns() -> std::result::Result<EchDns, String> {
-    let value = std::env::var("AETHER_ECH_DNS").unwrap_or_default();
+/// Where an ECHConfigList is looked up: the options that name the resolver and the
+/// domain, and the variables they set.
+#[derive(Debug, Clone, Copy)]
+pub struct EchLookup {
+    pub dns_flag: &'static str,
+    pub dns_variable: &'static str,
+    pub domain_flag: &'static str,
+    pub domain_variable: &'static str,
+}
+
+/// The lookup of --ech auto, whose key the MASQUE handshakes of a session offer.
+pub const SESSION_ECH: EchLookup = EchLookup {
+    dns_flag: "--ech-dns",
+    dns_variable: "AETHER_ECH_DNS",
+    domain_flag: "--ech-domain",
+    domain_variable: "AETHER_ECH_DOMAIN",
+};
+
+/// The lookup of --get-warp-key-ech auto, whose key the calls to the WARP API offer.
+pub const WARP_KEY_ECH: EchLookup = EchLookup {
+    dns_flag: "--get-warp-key-ech-dns",
+    dns_variable: "AETHER_GET_WARP_KEY_ECH_DNS",
+    domain_flag: "--get-warp-key-ech-domain",
+    domain_variable: "AETHER_GET_WARP_KEY_ECH_DOMAIN",
+};
+
+/// The resolver `lookup` names, or the default one.
+fn configured_dns(lookup: &EchLookup) -> std::result::Result<EchDns, String> {
+    let value = std::env::var(lookup.dns_variable).unwrap_or_default();
     let value = value.trim();
     EchDns::parse(if value.is_empty() {
         DEFAULT_ECH_DNS
@@ -124,9 +150,9 @@ fn configured_dns() -> std::result::Result<EchDns, String> {
     })
 }
 
-/// The domain of --ech-domain (AETHER_ECH_DOMAIN), or the default one.
-fn configured_domain() -> std::result::Result<String, String> {
-    let value = std::env::var("AETHER_ECH_DOMAIN").unwrap_or_default();
+/// The domain `lookup` names, or the default one.
+fn configured_domain(lookup: &EchLookup) -> std::result::Result<String, String> {
+    let value = std::env::var(lookup.domain_variable).unwrap_or_default();
     let value = value.trim();
     let name = if value.is_empty() {
         DEFAULT_ECH_DOMAIN
@@ -140,12 +166,14 @@ fn configured_domain() -> std::result::Result<String, String> {
     }
 }
 
-/// Fetches the ECHConfigList the handshakes offer: the ech parameter of the HTTPS
-/// record of the domain of --ech-domain, asked of the resolver of --ech-dns, through
-/// the upstream proxy when there is one.
-pub async fn fetch_ech_config() -> Result<Vec<u8>> {
-    let dns = configured_dns().map_err(|e| AetherError::Ech(format!("--ech-dns: {e}")))?;
-    let domain = configured_domain().map_err(|e| AetherError::Ech(format!("--ech-domain: {e}")))?;
+/// Fetches an ECHConfigList: the ech parameter of the HTTPS record of the domain
+/// `lookup` names, asked of the resolver it names, through the upstream proxy when there
+/// is one.
+pub async fn fetch_ech_config(lookup: &EchLookup) -> Result<Vec<u8>> {
+    let dns = configured_dns(lookup)
+        .map_err(|e| AetherError::Ech(format!("{}: {e}", lookup.dns_flag)))?;
+    let domain = configured_domain(lookup)
+        .map_err(|e| AetherError::Ech(format!("{}: {e}", lookup.domain_flag)))?;
     let lookup = async {
         match &dns {
             EchDns::Udp(server) => query_udp(*server, &domain).await,

@@ -256,13 +256,84 @@ pub fn decode_ech_config_list(b64: &str) -> Result<Vec<u8>> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
-        .map_err(|e| AetherError::Ech(format!("the --ech value is not base64: {e}")))
+        .map_err(|e| AetherError::Ech(format!("not base64: {e}")))
 }
 
-/// How the core says that it does not start a session for want of an ECH key: with --ech
-/// given, a session without a key it can offer would send the server name in the clear.
-/// An app that runs the core reads it to tell its user why the session stopped.
+/// How the core says that it goes no further for want of an ECH key: with --ech or
+/// --get-warp-key-ech given, going on without a key it can offer would send a server
+/// name in the clear. An app that runs the core reads it to tell its user why it stopped.
 pub const NO_ECH_KEY: &str = "ECH is on but there is no ECH key to offer";
+
+/// An option that asks for an ECH key: its name and variable, what the key is for, and
+/// what the core does rather than go without it.
+pub struct EchOption {
+    pub flag: &'static str,
+    pub variable: &'static str,
+    pub purpose: &'static str,
+    pub refusal: &'static str,
+}
+
+/// --ech: the key the MASQUE handshakes of the session offer.
+pub const SESSION_ECH_OPTION: EchOption = EchOption {
+    flag: "--ech",
+    variable: "AETHER_ECH",
+    purpose: "",
+    refusal: "stopping rather than send the server name in the clear",
+};
+
+/// --get-warp-key-ech: the key the calls to the WARP API offer, which register and enroll
+/// the WARP keys.
+pub const WARP_KEY_ECH_OPTION: EchOption = EchOption {
+    flag: "--get-warp-key-ech",
+    variable: "AETHER_GET_WARP_KEY_ECH",
+    purpose: " for the WARP API",
+    refusal: "not asking it rather than send its name in the clear",
+};
+
+/// The ECH key `option` asks for with the value `setting`: none without a value; with one,
+/// the key it gives in base64, or with auto, the key `fetch` looks up. With a key asked for
+/// and none BoringSSL can offer, an error that says NO_ECH_KEY and why.
+pub async fn ech_key<F>(
+    option: &EchOption,
+    setting: Option<&str>,
+    fetch: impl FnOnce() -> F,
+) -> Result<Option<Vec<u8>>>
+where
+    F: std::future::Future<Output = Result<Vec<u8>>>,
+{
+    let (key, origin) = match setting {
+        Some(v) if v.eq_ignore_ascii_case("auto") => (
+            fetch().await,
+            "fetched ECHConfigList automatically".to_string(),
+        ),
+        Some(b64) if !b64.is_empty() => (
+            decode_ech_config_list(b64).map_err(|e| match e {
+                AetherError::Ech(reason) => {
+                    AetherError::Ech(format!("the {} value is {reason}", option.flag))
+                }
+                other => other,
+            }),
+            format!("using ECHConfigList from {}", option.variable),
+        ),
+        _ => return Ok(None),
+    };
+    match key.and_then(|key| ensure_offerable(&key).map(|()| key)) {
+        Ok(key) => {
+            log::info!("[+] {origin}{} ({} bytes)", option.purpose, key.len());
+            Ok(Some(key))
+        }
+        Err(e) => {
+            let reason = match e {
+                AetherError::Ech(reason) => reason,
+                other => other.to_string(),
+            };
+            Err(AetherError::Ech(format!(
+                "{NO_ECH_KEY}{} ({reason}); {}",
+                option.purpose, option.refusal
+            )))
+        }
+    }
+}
 
 /// The ECHConfig version BoringSSL offers, which is the code point of the extension as well.
 const ECH_CONFIG_VERSION: u16 = 0xfe0d;
@@ -444,6 +515,85 @@ mod tests {
             assert_eq!(session_ech(), Some(vec![8]));
         }
         assert_eq!(session_ech(), None);
+    }
+
+    /// Cloudflare's key of cloudflare-ech.com on 2026-10-01.
+    const CLOUDFLARE_ECH: &str =
+        "AEX+DQBBrwAgACCbK1mYDYFz/BAn6S5t+Q/v+Oej3eFNxtPWgz50fNnFPAAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=";
+
+    /// Why `option` found no key, from the error it ends with, which says NO_ECH_KEY first.
+    fn no_key_reason(option: &EchOption, outcome: Result<Option<Vec<u8>>>) -> String {
+        match outcome {
+            Err(AetherError::Ech(message)) => {
+                let reason = message
+                    .strip_prefix(NO_ECH_KEY)
+                    .and_then(|rest| rest.strip_prefix(option.purpose))
+                    .expect("the core's word for going without an ECH key");
+                assert!(reason.ends_with(option.refusal), "{message}");
+                reason.to_string()
+            }
+            other => panic!("it went on: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_key_asked_for_without_one_to_offer_goes_no_further() {
+        let key = decode_ech_config_list(CLOUDFLARE_ECH).expect("base64");
+        let unused = || async { panic!("looked up without auto") };
+        let silent = || async {
+            Err(AetherError::Ech(
+                "udp://1.1.1.1:53 did not answer for cloudflare-ech.com".into(),
+            ))
+        };
+        for option in [&SESSION_ECH_OPTION, &WARP_KEY_ECH_OPTION] {
+            assert_eq!(ech_key(option, None, unused).await.ok(), Some(None));
+            assert_eq!(ech_key(option, Some(""), unused).await.ok(), Some(None));
+            assert_eq!(
+                ech_key(option, Some(CLOUDFLARE_ECH), unused).await.ok(),
+                Some(Some(key.clone()))
+            );
+            let found = key.clone();
+            assert_eq!(
+                ech_key(option, Some("AUTO"), || async { Ok(found) })
+                    .await
+                    .ok(),
+                Some(Some(key.clone()))
+            );
+
+            let unanswered = no_key_reason(option, ech_key(option, Some("auto"), silent).await);
+            assert!(unanswered.contains("did not answer"), "{unanswered}");
+
+            // BoringSSL would take this list and offer nothing from it: its only config is of
+            // another version.
+            let unusable = vec![0, 6, 0xfe, 0x0c, 0, 2, 0, 0];
+            let passed_over = no_key_reason(
+                option,
+                ech_key(option, Some("auto"), || async { Ok(unusable) }).await,
+            );
+            assert!(passed_over.contains("cannot be offered"), "{passed_over}");
+
+            let typo = no_key_reason(option, ech_key(option, Some("AEX+DQ="), unused).await);
+            let named = format!("the {} value is not base64", option.flag);
+            assert!(typo.contains(&named), "{typo}");
+        }
+
+        // Word for word, as an app that runs the core reads them.
+        let said = |outcome: Result<Option<Vec<u8>>>| outcome.err().map(|e| e.to_string());
+        assert_eq!(
+            said(ech_key(&SESSION_ECH_OPTION, Some("auto"), silent).await).as_deref(),
+            Some(
+                "ech: ECH is on but there is no ECH key to offer (udp://1.1.1.1:53 did not answer \
+                 for cloudflare-ech.com); stopping rather than send the server name in the clear"
+            )
+        );
+        assert_eq!(
+            said(ech_key(&WARP_KEY_ECH_OPTION, Some("auto"), silent).await).as_deref(),
+            Some(
+                "ech: ECH is on but there is no ECH key to offer for the WARP API (udp://1.1.1.1:53 \
+                 did not answer for cloudflare-ech.com); not asking it rather than send its name in \
+                 the clear"
+            )
+        );
     }
 
     /// An ECHConfig: `version`, config id 7, the KEM `kem` with a key of `key_len` bytes, the

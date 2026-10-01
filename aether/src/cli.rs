@@ -261,6 +261,18 @@ Config files:
                            carrier whatever the protocol: they are https, which
                            tor and psiphon carry, so --wg and --gool are refused
                            there only for the tunnel
+  --get-warp-key-ech <auto|base64>
+                           ask the WARP API, which registers and enrolls the
+                           keys, over Encrypted Client Hello alone, at
+                           Cloudflare edge addresses, with the key looked up
+                           (auto) or given in base64; without a key it can
+                           offer, the API is not asked
+  --get-warp-key-ech-dns <url>
+                           the resolver --get-warp-key-ech auto asks for the
+                           key, as --ech-dns (default udp://1.1.1.1)
+  --get-warp-key-ech-domain <name>
+                           the domain whose key --get-warp-key-ech auto takes
+                           (default cloudflare-ech.com)
 
 Advanced:
   --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
@@ -365,6 +377,9 @@ Environment variables:
   AETHER_WG_CONFIG                 --wg-config
   AETHER_MASQUE_CONFIG             --masque-config
   AETHER_REGISTER                  --register
+  AETHER_GET_WARP_KEY_ECH          --get-warp-key-ech
+  AETHER_GET_WARP_KEY_ECH_DNS      --get-warp-key-ech-dns
+  AETHER_GET_WARP_KEY_ECH_DOMAIN   --get-warp-key-ech-domain
   AETHER_TLS_GROUPS                --tls-groups
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
@@ -553,6 +568,9 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
             "--register" => set("AETHER_REGISTER", next_value!()),
+            "--get-warp-key-ech" => set("AETHER_GET_WARP_KEY_ECH", next_value!()),
+            "--get-warp-key-ech-dns" => set("AETHER_GET_WARP_KEY_ECH_DNS", next_value!()),
+            "--get-warp-key-ech-domain" => set("AETHER_GET_WARP_KEY_ECH_DOMAIN", next_value!()),
 
             "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
             "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),

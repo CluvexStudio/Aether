@@ -486,7 +486,7 @@ impl TunnelSpec {
 }
 
 pub async fn fetch_ech_config() -> Option<Vec<u8>> {
-    match dns::fetch_ech_config().await {
+    match dns::fetch_ech_config(&dns::SESSION_ECH).await {
         Ok(raw) => {
             log::info!("[+] fetched an ECHConfigList ({} bytes)", raw.len());
             Some(raw)

@@ -350,6 +350,115 @@ async fn fallback_call(
     Err(AetherError::Api(described))
 }
 
+/// The ECH key the calls to the WARP API offer for the rest of the run, by
+/// --get-warp-key-ech, once looked up; a key a server hands back takes its place.
+static API_ECH: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+
+fn remember_api_ech(ech: Vec<u8>) {
+    *API_ECH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ech);
+}
+
+/// The ECH key of the calls to the WARP API, by --get-warp-key-ech: none without the
+/// option, which leaves the direct and the camouflaged route; otherwise the key, looked up
+/// once for the run. With the option and no key BoringSSL can offer, an error that says
+/// so: the API is not asked with its name in the clear.
+async fn api_ech() -> Result<Option<Vec<u8>>> {
+    let option = &crate::tls::WARP_KEY_ECH_OPTION;
+    let setting = std::env::var(option.variable).ok();
+    if setting.as_deref().is_none_or(str::is_empty) {
+        return Ok(None);
+    }
+    let remembered = API_ECH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if remembered.is_some() {
+        return Ok(remembered);
+    }
+    let key = crate::tls::ech_key(option, setting.as_deref(), || {
+        crate::dns::fetch_ech_config(&crate::dns::WARP_KEY_ECH)
+    })
+    .await?;
+    if let Some(key) = &key {
+        remember_api_ech(key.clone());
+    }
+    Ok(key)
+}
+
+/// A call to the WARP API by --get-warp-key-ech: over ECH alone, to Cloudflare edge
+/// addresses, with the API's name inside the encrypted ClientHello; never by the direct or
+/// the camouflaged route, which send it in the clear. Retried as the direct route is.
+async fn ech_call(
+    label: &str,
+    method: &str,
+    path: &str,
+    body: Option<Vec<u8>>,
+    bearer: Option<&str>,
+    jwt: Option<&str>,
+    mut ech: Vec<u8>,
+) -> Result<AccountData> {
+    let request = apifront::ApiRequest {
+        method: method.to_string(),
+        host: api_host().to_string(),
+        path: path.to_string(),
+        headers: front_headers(bearer, jwt),
+        body,
+    };
+    let mut last_error = AetherError::Api(format!("{label}: no attempt was made"));
+
+    for attempt in 0..API_ATTEMPTS {
+        if attempt > 0 {
+            let wait = backoff_delay(attempt - 1);
+            log::warn!(
+                "[!] {label} retry {}/{} over ECH in {:.1}s: {last_error}",
+                attempt,
+                API_ATTEMPTS - 1,
+                wait.as_secs_f32()
+            );
+            tokio::time::sleep(wait).await;
+        }
+
+        let address = apifront::random_edge_address();
+        let outcome = apifront::exchange_over_ech(&request, address, &mut ech).await;
+        // A key a server handed back is the one the later calls offer.
+        remember_api_ech(ech.clone());
+        let response = match outcome {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = AetherError::Api(format!("{label} over ECH: {error}"));
+                continue;
+            }
+        };
+
+        if (200..300).contains(&response.status) {
+            log::info!("[+] {label} went over ECH ({})", response.route);
+            return serde_json::from_str::<AccountData>(&response.body).map_err(|e| {
+                AetherError::Api(format!(
+                    "{label} decode over ECH: {e} ({} byte answer)",
+                    response.body.len()
+                ))
+            });
+        }
+
+        let described = format!(
+            "{label} over {}: {}",
+            response.route,
+            describe_status(response.status, &response.body)
+        );
+        if matches!(response.status, 401 | 404 | 410) {
+            return Err(AetherError::IdentityRefused(described));
+        }
+        last_error = AetherError::Api(described);
+        if !reqwest::StatusCode::from_u16(response.status).is_ok_and(worth_retrying) {
+            return Err(last_error);
+        }
+    }
+
+    Err(last_error)
+}
+
 fn describe_status(status: u16, body: &str) -> String {
     match reqwest::StatusCode::from_u16(status) {
         Ok(code) => describe_rejection(code, body),
@@ -543,6 +652,12 @@ pub async fn register(
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
+    if let Some(ech) = api_ech().await? {
+        let account =
+            ech_call("registration", "POST", &path, Some(encoded), None, jwt, ech).await?;
+        return Ok((account, wg_private));
+    }
+
     let direct = send_with_retry("registration", || {
         let mut req = http_client()?
             .post(&url)
@@ -590,6 +705,19 @@ pub async fn enroll_key(
     let url = format!("{}{}", consts::API_URL, path);
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
+
+    if let Some(ech) = api_ech().await? {
+        return ech_call(
+            "key enrollment",
+            "PATCH",
+            &path,
+            Some(encoded),
+            Some(token),
+            None,
+            ech,
+        )
+        .await;
+    }
 
     let direct = send_with_retry("key enrollment", || {
         Ok(http_client()?
@@ -651,6 +779,20 @@ pub async fn register_with_team(
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
+    if let Some(ech) = api_ech().await? {
+        let account = ech_call(
+            "team registration",
+            "POST",
+            &path,
+            Some(encoded),
+            None,
+            Some(token),
+            ech,
+        )
+        .await?;
+        return Ok((account, wg_private));
+    }
+
     let direct = send_with_retry("team registration", || {
         Ok(http_client()?
             .post(&url)
@@ -706,6 +848,10 @@ pub async fn provision_wg(model: &str, locale: &str, jwt: Option<&str>) -> Resul
 pub async fn fetch_device(device_id: &str, token: &str) -> Result<AccountData> {
     let path = format!("/{}/reg/{}", consts::API_VERSION, device_id);
     let url = format!("{}{}", consts::API_URL, path);
+
+    if let Some(ech) = api_ech().await? {
+        return ech_call("device refresh", "GET", &path, None, Some(token), None, ech).await;
+    }
 
     let direct = send_with_retry("device refresh", || {
         Ok(http_client()?

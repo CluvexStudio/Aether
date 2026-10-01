@@ -505,6 +505,22 @@ to be told without anything being replaced.
 Only the account API refusing the device counts. Being offline or rate limited does
 not discard an identity.
 
+### Asking the WARP API over ECH
+
+Registering a device, enrolling its MASQUE key and refreshing a Zero Trust profile
+are calls to `api.cloudflareclient.com`. Aether makes them directly and, when that
+fails, again over random Cloudflare edge addresses; both send the API's name in the
+clear. `--get-warp-key-ech auto` makes every such call over Encrypted Client Hello
+alone instead, to Cloudflare edge addresses and with no DNS lookup of the API's name.
+The key is looked up as for `--ech auto`, with `--get-warp-key-ech-dns` and
+`--get-warp-key-ech-domain` in place of `--ech-dns` and `--ech-domain` and with the
+same defaults, or given in base64. Without a key it can offer, Aether does not ask
+the API at all.
+
+```sh
+aether --register all --get-warp-key-ech auto
+```
+
 ## Using Aether as a library
 
 Besides the `aether` binary, the crate builds `libaether.a` and `libaether.so`
@@ -559,6 +575,9 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_ECH` | `auto` or a base64 config |
 | `AETHER_ECH_DNS` | resolver `--ech auto` asks (`udp://`, `tcp://` or `https://`) |
 | `AETHER_ECH_DOMAIN` | domain whose ECH config `--ech auto` takes |
+| `AETHER_GET_WARP_KEY_ECH` | `auto` or a base64 config, for the calls to the WARP API |
+| `AETHER_GET_WARP_KEY_ECH_DNS` | resolver `--get-warp-key-ech auto` asks |
+| `AETHER_GET_WARP_KEY_ECH_DOMAIN` | domain whose ECH config `--get-warp-key-ech auto` takes |
 | `AETHER_MASQUE_H2_FRAGMENT`, `_SIZE`, `_DELAY` | ClientHello fragmenting |
 | `AETHER_MASQUE_STARTUP_SECS` | startup deadline |
 | `AETHER_MASQUE_VALIDATE_SECS`, `AETHER_WG_VALIDATE_SECS` | data-check timeout |

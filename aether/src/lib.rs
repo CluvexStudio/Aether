@@ -1211,50 +1211,15 @@ async fn select_wg_peers(
 /// With ECH asked for and no key BoringSSL can offer, the session does not start, so that
 /// the server name never goes out in the clear.
 async fn resolve_ech() -> Result<Option<Vec<u8>>> {
-    session_ech_key(
-        std::env::var("AETHER_ECH").ok().as_deref(),
-        dns::fetch_ech_config,
-    )
-    .await
-}
-
-/// `resolve_ech` for the value `setting` of --ech, with `fetch` the lookup of --ech auto.
-async fn session_ech_key<F>(
-    setting: Option<&str>,
-    fetch: impl FnOnce() -> F,
-) -> Result<Option<Vec<u8>>>
-where
-    F: std::future::Future<Output = Result<Vec<u8>>>,
-{
-    let (key, origin) = match setting {
-        Some(v) if v.eq_ignore_ascii_case("auto") => {
-            (fetch().await, "fetched ECHConfigList automatically")
-        }
-        Some(b64) if !b64.is_empty() => (
-            tls::decode_ech_config_list(b64),
-            "using ECHConfigList from AETHER_ECH",
-        ),
-        _ => {
-            log::info!("[+] ECH off; the server name goes out in cleartext");
-            return Ok(None);
-        }
-    };
-    match key.and_then(|key| tls::ensure_offerable(&key).map(|()| key)) {
-        Ok(key) => {
-            log::info!("[+] {origin} ({} bytes)", key.len());
-            Ok(Some(key))
-        }
-        Err(e) => {
-            let reason = match e {
-                AetherError::Ech(reason) => reason,
-                other => other.to_string(),
-            };
-            Err(AetherError::Ech(format!(
-                "{} ({reason}); stopping rather than send the server name in the clear",
-                tls::NO_ECH_KEY
-            )))
-        }
+    let setting = std::env::var(tls::SESSION_ECH_OPTION.variable).ok();
+    let key = tls::ech_key(&tls::SESSION_ECH_OPTION, setting.as_deref(), || {
+        dns::fetch_ech_config(&dns::SESSION_ECH)
+    })
+    .await?;
+    if key.is_none() {
+        log::info!("[+] ECH off; the server name goes out in cleartext");
     }
+    Ok(key)
 }
 
 fn masque_reconnect_delay() -> std::time::Duration {
@@ -3541,65 +3506,5 @@ mod tests {
         .expect("the inner hop stays where it was put");
         assert_eq!(chosen.outer, Some("162.159.192.1:2408".parse().unwrap()));
         assert_eq!(chosen.inner, Some("162.159.195.1:2408".parse().unwrap()));
-    }
-
-    /// Cloudflare's key of cloudflare-ech.com on 2026-10-01.
-    const CLOUDFLARE_ECH: &str =
-        "AEX+DQBBrwAgACCbK1mYDYFz/BAn6S5t+Q/v+Oej3eFNxtPWgz50fNnFPAAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=";
-
-    fn no_key_reason(outcome: Result<Option<Vec<u8>>>) -> String {
-        match outcome {
-            Err(AetherError::Ech(message)) => {
-                let reason = message
-                    .strip_prefix(tls::NO_ECH_KEY)
-                    .expect("the core's word for a session without an ECH key");
-                assert!(reason.ends_with("stopping rather than send the server name in the clear"));
-                reason.to_string()
-            }
-            other => panic!("the session started: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn ech_asked_for_without_a_key_to_offer_stops_the_session() {
-        let key = tls::decode_ech_config_list(CLOUDFLARE_ECH).expect("base64");
-        let unused = || async { panic!("looked up without --ech auto") };
-
-        assert_eq!(session_ech_key(None, unused).await.ok(), Some(None));
-        assert_eq!(session_ech_key(Some(""), unused).await.ok(), Some(None));
-        assert_eq!(
-            session_ech_key(Some(CLOUDFLARE_ECH), unused).await.ok(),
-            Some(Some(key.clone()))
-        );
-        let found = key.clone();
-        assert_eq!(
-            session_ech_key(Some("AUTO"), || async { Ok(found) })
-                .await
-                .ok(),
-            Some(Some(key))
-        );
-
-        let silent = no_key_reason(
-            session_ech_key(Some("auto"), || async {
-                Err(AetherError::Ech(
-                    "udp://1.1.1.1:53 did not answer for cloudflare-ech.com".into(),
-                ))
-            })
-            .await,
-        );
-        assert!(
-            silent.contains("udp://1.1.1.1:53 did not answer"),
-            "{silent}"
-        );
-
-        // BoringSSL would take this list and offer nothing from it: its only config is of
-        // another version.
-        let unusable = vec![0, 6, 0xfe, 0x0c, 0, 2, 0, 0];
-        let passed_over =
-            no_key_reason(session_ech_key(Some("auto"), || async { Ok(unusable) }).await);
-        assert!(passed_over.contains("cannot be offered"), "{passed_over}");
-
-        let typo = no_key_reason(session_ech_key(Some("AEX+DQ="), unused).await);
-        assert!(typo.contains("not base64"), "{typo}");
     }
 }

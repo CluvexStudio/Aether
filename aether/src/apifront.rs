@@ -270,11 +270,8 @@ fn dechunk(body: &[u8]) -> Vec<u8> {
     out
 }
 
-async fn exchange(
-    request: &ApiRequest,
-    address: SocketAddr,
-    fingerprint: Fingerprint,
-) -> Result<ApiResponse> {
+/// A TCP connection to `address`, through the upstream proxy when there is one.
+async fn dial(address: SocketAddr) -> Result<tokio::net::TcpStream> {
     let tcp = match crate::upstream::configured() {
         Some(proxy) => tokio::time::timeout(CONNECT_TIMEOUT, proxy.connect(address))
             .await
@@ -288,24 +285,18 @@ async fn exchange(
             .map_err(|e| AetherError::Api(format!("connect to {address}: {e}")))?,
     };
     tcp.set_nodelay(true).ok();
+    Ok(tcp)
+}
 
-    let config = fingerprint.configure()?;
-    let stream = FragmentingStream::new(tcp, fingerprint.fragments());
-
-    let mut tls = tokio::time::timeout(
-        HANDSHAKE_TIMEOUT,
-        tokio_boring::connect(config, &request.host, stream),
-    )
-    .await
-    .map_err(|_| AetherError::Api(format!("tls handshake with {address} timed out")))?
-    .map_err(|e| AetherError::Api(format!("tls handshake with {address}: {e}")))?;
-
-    if tls.ssl().selected_alpn_protocol() == Some(b"h2") {
-        return Err(AetherError::Api(format!(
-            "{address} negotiated http/2 which this path does not speak"
-        )));
-    }
-
+/// Sends `request` over `tls`, the connection to `address`, and reads the answer to its end.
+async fn converse<S>(
+    tls: &mut S,
+    request: &ApiRequest,
+    address: SocketAddr,
+) -> Result<(u16, String)>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let wire = render_request(request);
 
     let collected = tokio::time::timeout(EXCHANGE_TIMEOUT, async {
@@ -330,12 +321,126 @@ async fn exchange(
     .map_err(|_| AetherError::Api(format!("exchange with {address} timed out")))?
     .map_err(|e| AetherError::Api(format!("exchange with {address}: {e}")))?;
 
-    let (status, body) = parse_response(&collected)?;
+    parse_response(&collected)
+}
+
+async fn exchange(
+    request: &ApiRequest,
+    address: SocketAddr,
+    fingerprint: Fingerprint,
+) -> Result<ApiResponse> {
+    let tcp = dial(address).await?;
+
+    let config = fingerprint.configure()?;
+    let stream = FragmentingStream::new(tcp, fingerprint.fragments());
+
+    let mut tls = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        tokio_boring::connect(config, &request.host, stream),
+    )
+    .await
+    .map_err(|_| AetherError::Api(format!("tls handshake with {address} timed out")))?
+    .map_err(|e| AetherError::Api(format!("tls handshake with {address}: {e}")))?;
+
+    if tls.ssl().selected_alpn_protocol() == Some(b"h2") {
+        return Err(AetherError::Api(format!(
+            "{address} negotiated http/2 which this path does not speak"
+        )));
+    }
+
+    let (status, body) = converse(&mut tls, request, address).await?;
 
     Ok(ApiResponse {
         status,
         body,
         route: format!("{address} / {}", fingerprint.label()),
+    })
+}
+
+/// The TLS of the ECH route: TLS 1.3, which ECH needs, with Chrome's fingerprint, which
+/// offers ECH, and `ech` offered in place of the server name.
+fn ech_configuration(ech: &[u8]) -> Result<boring::ssl::ConnectConfiguration> {
+    let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
+    let mut builder = SslConnector::builder(SslMethod::tls()).map_err(tls)?;
+
+    // TLS server-certificate verification disabled (unconditional), as on the other routes.
+    builder.set_verify(SslVerifyMode::NONE);
+    builder
+        .set_min_proto_version(Some(SslVersion::TLS1_3))
+        .map_err(tls)?;
+    builder
+        .set_max_proto_version(Some(SslVersion::TLS1_3))
+        .map_err(tls)?;
+    builder.set_grease_enabled(true);
+    builder.set_permute_extensions(true);
+    builder.set_curves_list(CHROME_GROUPS).map_err(tls)?;
+    builder.set_alpn_protos(ALPN_HTTP1).map_err(tls)?;
+    builder.enable_signed_cert_timestamps();
+    builder.enable_ocsp_stapling();
+
+    let mut config = builder.build().configure().map_err(tls)?;
+    // BoringSSL takes a key it offers nothing from, and the name would go in the clear.
+    crate::tls::ensure_offerable(ech)?;
+    config.set_ech_config_list(ech).map_err(tls)?;
+    Ok(config)
+}
+
+/// One request over ECH to `address`, a Cloudflare edge: the handshake offers `ech`, and the
+/// name of `request`'s host goes inside the encrypted ClientHello, never in the clear. A
+/// server that turns `ech` down hands back the key it holds now, which takes its place, and
+/// the handshake is made once more with it. A handshake that went without ECH carries nothing.
+pub async fn exchange_over_ech(
+    request: &ApiRequest,
+    address: SocketAddr,
+    ech: &mut Vec<u8>,
+) -> Result<ApiResponse> {
+    let mut retried = false;
+    let mut tls = loop {
+        let config = ech_configuration(ech)?;
+        let stream = FragmentingStream::new(dial(address).await?, FragmentConfig::disabled());
+        let handshake = tokio::time::timeout(
+            HANDSHAKE_TIMEOUT,
+            tokio_boring::connect(config, &request.host, stream),
+        )
+        .await
+        .map_err(|_| AetherError::Api(format!("tls handshake with {address} timed out")))?;
+        match handshake {
+            Ok(tls) => break tls,
+            Err(e) => {
+                let message = e.to_string();
+                let retry = if !retried && message.contains("ECH_REJECTED") {
+                    e.ssl()
+                        .and_then(|ssl| ssl.get_ech_retry_configs())
+                        .filter(|configs| !configs.is_empty())
+                        .and_then(crate::tls::usable_retry)
+                } else {
+                    None
+                };
+                let Some(retry) = retry else {
+                    return Err(AetherError::Api(format!(
+                        "tls handshake with {address}: {message}"
+                    )));
+                };
+                log::debug!(
+                    "[apifront] {address} turned the ECH key down; offering the one it handed back ({} bytes)",
+                    retry.len()
+                );
+                *ech = retry;
+                retried = true;
+            }
+        }
+    };
+
+    if !tls.ssl().ech_accepted() {
+        return Err(AetherError::Ech("the handshake went without ECH".into()));
+    }
+
+    let (status, body) = converse(&mut tls, request, address).await?;
+
+    Ok(ApiResponse {
+        status,
+        body,
+        route: format!("{address} / ech"),
     })
 }
 

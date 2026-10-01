@@ -309,6 +309,21 @@ aether --masque --h2 --upstream http://proxy.example:8080
 تنها رد شدن از سمت API حساب به حساب می‌آید. آفلاین بودن یا خوردن به محدودیت نرخ
 هویت را دور نمی‌ریزد.
 
+### پرسیدن از API وارپ با ECH
+
+ثبت یک دستگاه، ثبت کلید MASQUE آن و به‌روزرسانی پروفایل Zero Trust درخواست‌هایی
+به `api.cloudflareclient.com` هستند. ایتر آن‌ها را مستقیم می‌فرستد و اگر نشد، دوباره
+از راه نشانی‌های تصادفی لبه‌ی کلادفلر؛ هر دو راه نام API را آشکار می‌فرستند.
+`--get-warp-key-ech auto` به‌جای آن همه‌ی این درخواست‌ها را فقط با Encrypted Client
+Hello می‌فرستد، به نشانی‌های لبه‌ی کلادفلر و بدون جست‌وجوی DNS برای نام API. کلید
+مثل `--ech auto` پیدا می‌شود، با `--get-warp-key-ech-dns` و `--get-warp-key-ech-domain`
+به‌جای `--ech-dns` و `--ech-domain` و با همان پیش‌فرض‌ها، یا به‌صورت base64 داده
+می‌شود. اگر کلیدی برای ارائه نباشد، ایتر اصلاً از API نمی‌پرسد.
+
+```sh
+aether --register all --get-warp-key-ech auto
+```
+
 ## استفاده از ایتر به‌عنوان کتابخانه
 
 جدا از باینری `aether`، این کریت `libaether.a` و `libaether.so` را هم با یک
@@ -358,6 +373,9 @@ cargo build --release --bin aether   # فقط باینری
 | `AETHER_ECH` | `auto` یا یک کانفیگ base64 |
 | `AETHER_ECH_DNS` | سرور DNS که `--ech auto` از آن می‌پرسد (`udp://`، `tcp://` یا `https://`) |
 | `AETHER_ECH_DOMAIN` | دامنه‌ای که `--ech auto` کانفیگ ECH آن را می‌گیرد |
+| `AETHER_GET_WARP_KEY_ECH` | `auto` یا یک کانفیگ base64، برای درخواست‌ها به API وارپ |
+| `AETHER_GET_WARP_KEY_ECH_DNS` | سرور DNS که `--get-warp-key-ech auto` از آن می‌پرسد |
+| `AETHER_GET_WARP_KEY_ECH_DOMAIN` | دامنه‌ای که `--get-warp-key-ech auto` کانفیگ ECH آن را می‌گیرد |
 | `AETHER_MASQUE_H2_FRAGMENT`، `_SIZE`، `_DELAY` | تکه‌کردن ClientHello |
 | `AETHER_MASQUE_STARTUP_SECS` | مهلت راه‌اندازی |
 | `AETHER_MASQUE_VALIDATE_SECS`، `AETHER_WG_VALIDATE_SECS` | مهلت بررسی داده |
