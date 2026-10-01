@@ -149,7 +149,12 @@ aether --noize aggressive
   SNI را از یک بسته می‌خوانند خنثی می‌کند. `--fragment-size` و
   `--fragment-delay` تنظیمش می‌کنند.
 - `--ech auto` یک کانفیگ Encrypted Client Hello می‌گیرد و اگر شبکه اجازه بدهد
-  SNI را کاملاً پنهان می‌کند.
+  SNI را، روی هر دو حامل، کاملاً پنهان می‌کند. این کانفیگ را از رکورد HTTPS
+  دامنه‌ی `cloudflare-ech.com` و با پرسیدن از `udp://1.1.1.1` می‌گیرد؛
+  `--ech-dns` سرور DNS دیگری را تعیین می‌کند (`udp://ip[:port]` یا
+  `tcp://ip[:port]` که بی‌پورت روی پورت 53 است، یا آدرس `https://` یک سرور
+  DNS-over-HTTPS که بی‌پورت روی پورت 443 است) و
+  `--ech-domain` دامنه‌ی دیگری را.
 
 ## Zero Trust
 
@@ -347,6 +352,8 @@ cargo build --release --bin aether   # فقط باینری
 | `AETHER_QUICK_RECONNECT` | استفاده از نقطه‌ی ذخیره‌شده |
 | `AETHER_MASQUE_HTTP2`، `AETHER_MASQUE_H2_PEER` | حامل HTTP/2 |
 | `AETHER_ECH` | `auto` یا یک کانفیگ base64 |
+| `AETHER_ECH_DNS` | سرور DNS که `--ech auto` از آن می‌پرسد (`udp://`، `tcp://` یا `https://`) |
+| `AETHER_ECH_DOMAIN` | دامنه‌ای که `--ech auto` کانفیگ ECH آن را می‌گیرد |
 | `AETHER_MASQUE_H2_FRAGMENT`، `_SIZE`، `_DELAY` | تکه‌کردن ClientHello |
 | `AETHER_MASQUE_STARTUP_SECS` | مهلت راه‌اندازی |
 | `AETHER_MASQUE_VALIDATE_SECS`، `AETHER_WG_VALIDATE_SECS` | مهلت بررسی داده |

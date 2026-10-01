@@ -112,6 +112,12 @@ MASQUE transport:
                            networks that block QUIC v1 but let QUIC v2 through)
   --h2-peer <ip:port>      override the peer used for the HTTP/2 transport
   --ech <auto|base64>      enable Encrypted Client Hello
+  --ech-dns <url>          the resolver --ech auto asks for the key:
+                           udp://ip[:port] or tcp://ip[:port], port 53 unless
+                           given, or a DNS-over-HTTPS https:// URL, port 443
+                           unless given (default udp://1.1.1.1)
+  --ech-domain <name>      the domain whose key --ech auto takes
+                           (default cloudflare-ech.com)
   --no-data-check          skip the end-to-end data-plane validation
   --validate-secs <n>      seconds to wait for data-plane validation (default 10)
   --startup-secs <n>       total MASQUE startup deadline (default 30)
@@ -329,6 +335,8 @@ Environment variables:
   AETHER_QUIC_V2                   0 for --no-quic-v2 (the opener is on by default)
   AETHER_MASQUE_H2_PEER            --h2-peer
   AETHER_ECH                       --ech
+  AETHER_ECH_DNS                   --ech-dns
+  AETHER_ECH_DOMAIN                --ech-domain
   AETHER_MASQUE_NO_DATA_CHECK      --no-data-check, MASQUE side
   AETHER_WG_NO_DATA_CHECK          --no-data-check, WireGuard side
   AETHER_MASQUE_VALIDATE_SECS      --validate-secs, MASQUE side
@@ -514,6 +522,8 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--no-quic-v2" => set("AETHER_QUIC_V2", "0"),
             "--h2-peer" => set("AETHER_MASQUE_H2_PEER", next_value!()),
             "--ech" => set("AETHER_ECH", next_value!()),
+            "--ech-dns" => set("AETHER_ECH_DNS", next_value!()),
+            "--ech-domain" => set("AETHER_ECH_DOMAIN", next_value!()),
             "--no-data-check" => {
                 set("AETHER_MASQUE_NO_DATA_CHECK", "1");
                 set("AETHER_WG_NO_DATA_CHECK", "1");

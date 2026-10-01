@@ -191,7 +191,11 @@ Two extras apply to MASQUE only:
   inspectors that read the SNI from a single packet. `--fragment-size` and
   `--fragment-delay` tune it.
 - `--ech auto` fetches an Encrypted Client Hello config and hides the SNI
-  altogether, when the network permits it.
+  altogether, when the network permits it, on both carriers. It asks
+  `udp://1.1.1.1` for the HTTPS record of `cloudflare-ech.com`; `--ech-dns`
+  names another resolver (`udp://ip[:port]` or `tcp://ip[:port]`, on port 53
+  unless one is given, or a DNS-over-HTTPS `https://` URL, on port 443 unless
+  it names one) and `--ech-domain` another domain.
 
 ## Zero Trust
 
@@ -549,6 +553,8 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_MASQUE_HTTP2`, `AETHER_MASQUE_H2_PEER` | HTTP/2 carrier; `--h3` sets it to `0` |
 | `AETHER_QUIC_V2` | `0` turns off the QUIC v2 opener (on by default) |
 | `AETHER_ECH` | `auto` or a base64 config |
+| `AETHER_ECH_DNS` | resolver `--ech auto` asks (`udp://`, `tcp://` or `https://`) |
+| `AETHER_ECH_DOMAIN` | domain whose ECH config `--ech auto` takes |
 | `AETHER_MASQUE_H2_FRAGMENT`, `_SIZE`, `_DELAY` | ClientHello fragmenting |
 | `AETHER_MASQUE_STARTUP_SECS` | startup deadline |
 | `AETHER_MASQUE_VALIDATE_SECS`, `AETHER_WG_VALIDATE_SECS` | data-check timeout |
