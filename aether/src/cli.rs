@@ -242,6 +242,15 @@ Config files:
   --masque-config <path>   identity config path for MASQUE
                            warp-in-warp adds a second identity of its own beside
                            the wireguard one, named <config>-secondary.toml
+  --register <which>       register identities and exit, with no scan and no
+                           tunnel: masque, wg, gool (both wireguard hops), mim
+                           (both masque hops) or all. An identity file already
+                           there is kept, never replaced; point the config paths
+                           at new files to get new keys. With --tor-reverse or
+                           --psiphon-reverse the registrations go through that
+                           carrier whatever the protocol: they are https, which
+                           tor and psiphon carry, so --wg and --gool are refused
+                           there only for the tunnel
 
 Advanced:
   --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
@@ -343,6 +352,7 @@ Environment variables:
   AETHER_CONFIG                    --config
   AETHER_WG_CONFIG                 --wg-config
   AETHER_MASQUE_CONFIG             --masque-config
+  AETHER_REGISTER                  --register
   AETHER_TLS_GROUPS                --tls-groups
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
@@ -528,6 +538,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--config" => set("AETHER_CONFIG", next_value!()),
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
+            "--register" => set("AETHER_REGISTER", next_value!()),
 
             "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
             "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),

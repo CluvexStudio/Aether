@@ -105,6 +105,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
     install_netstack_panic_guard();
 
+    let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
+
+    // A registration serves no proxy, so it needs none of the listeners checked below.
+    if let Some(wanted) = register_request()? {
+        return register_identities(wanted, &base_config).await;
+    }
+
     let listen: SocketAddr = std::env::var("AETHER_SOCKS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -112,8 +119,6 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
     drop(socks::bind_listener("socks5", listen).await?);
     drop(bind_http_proxy().await?);
-
-    let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 
     if tor::mode() == tor::Mode::Only {
         return tor::run_only(listen, tor::state_dir(&base_config)).await;
@@ -937,6 +942,134 @@ async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new masque identity to {config_path}");
     Ok(identity)
+}
+
+/// The identities `--register` asks for: those of one protocol, both hops of a two-hop one, or
+/// all four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RegisterSet {
+    wireguard: bool,
+    wireguard_inner: bool,
+    masque: bool,
+    masque_inner: bool,
+}
+
+impl RegisterSet {
+    fn parse(value: &str) -> Result<Self> {
+        let none = RegisterSet {
+            wireguard: false,
+            wireguard_inner: false,
+            masque: false,
+            masque_inner: false,
+        };
+        match value.trim().to_lowercase().as_str() {
+            "all" => Ok(RegisterSet {
+                wireguard: true,
+                wireguard_inner: true,
+                masque: true,
+                masque_inner: true,
+            }),
+            "masque" => Ok(RegisterSet {
+                masque: true,
+                ..none
+            }),
+            "wg" | "wireguard" | "warp" => Ok(RegisterSet {
+                wireguard: true,
+                ..none
+            }),
+            "gool" | "wiw" | "warp-in-warp" => Ok(RegisterSet {
+                wireguard: true,
+                wireguard_inner: true,
+                ..none
+            }),
+            "mim" | "masque-in-masque" => Ok(RegisterSet {
+                masque: true,
+                masque_inner: true,
+                ..none
+            }),
+            other => Err(AetherError::Other(format!(
+                "--register takes masque, wg, gool, mim or all, not '{other}'"
+            ))),
+        }
+    }
+}
+
+fn register_request() -> Result<Option<RegisterSet>> {
+    env_value("AETHER_REGISTER")
+        .map(|value| RegisterSet::parse(&value))
+        .transpose()
+}
+
+/// `--register`: makes sure the identities `wanted` names exist, registering the missing ones,
+/// and returns without scanning or opening a tunnel. An identity file already there is kept,
+/// never replaced. With a carrier around the tunnel the registrations go through it, whatever
+/// the protocol: they are https requests, which tor and psiphon carry, so the refusal of
+/// wireguard behind them concerns the tunnel alone. A carrier inside the tunnel, or on its own,
+/// plays no part in a registration.
+async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<()> {
+    let carrier = match (tor::mode(), psiphon::mode()) {
+        (tor::Mode::Reverse, psiphon::Mode::Reverse) => {
+            return Err(AetherError::Other(
+                "--tor-reverse and --psiphon-reverse both want to carry the registration; \
+                 pick one"
+                    .into(),
+            ));
+        }
+        (tor::Mode::Reverse, _) => Some((
+            "tor",
+            tor::start_reverse(tor::state_dir(base_config)).await?,
+        )),
+        (_, psiphon::Mode::Reverse) => Some((
+            "psiphon",
+            psiphon::start_reverse(psiphon::state_dir(base_config)).await?,
+        )),
+        _ => None,
+    };
+    if let Some((name, socks)) = carrier {
+        std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+        log::info!("[+] the identities are registered through {name}");
+    }
+
+    let wireguard = warp_config_path(base_config);
+    let masque = masque_config_path(base_config);
+    let identities = [
+        (wanted.wireguard, "wireguard", wireguard.clone(), false),
+        (
+            wanted.wireguard_inner,
+            "wireguard inner",
+            derive_sibling_path(&wireguard, "secondary"),
+            false,
+        ),
+        (wanted.masque, "masque", masque.clone(), true),
+        (
+            wanted.masque_inner,
+            "masque inner",
+            derive_sibling_path(&masque, "secondary"),
+            true,
+        ),
+    ];
+
+    let mut ready = Vec::new();
+    for (asked, label, path, over_masque) in identities {
+        if !asked {
+            continue;
+        }
+        let identity = if over_masque {
+            load_or_provision_masque(&path).await?
+        } else {
+            load_or_provision_warp(&path).await?
+        };
+        log::info!(
+            "[+] {label} identity ready: device={} ipv4={} ipv6={}",
+            identity.device_id,
+            identity.ipv4,
+            identity.ipv6
+        );
+        ready.push(label);
+    }
+
+    log::info!("[+] identities ready: {}", ready.join(", "));
+    Ok(())
 }
 
 async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result<SocketAddr> {
@@ -2980,6 +3113,30 @@ mod tests {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
         move |key: &str| values.get(key).cloned()
+    }
+
+    #[test]
+    fn register_names_the_identities_of_one_protocol_or_all_four() {
+        let all = RegisterSet::parse("all").expect("all");
+        assert!(all.wireguard && all.wireguard_inner && all.masque && all.masque_inner);
+
+        let masque = RegisterSet::parse(" MASQUE ").expect("masque");
+        assert!(masque.masque && !masque.masque_inner);
+        assert!(!masque.wireguard && !masque.wireguard_inner);
+
+        let wireguard = RegisterSet::parse("wg").expect("wg");
+        assert!(wireguard.wireguard && !wireguard.wireguard_inner);
+        assert!(!wireguard.masque && !wireguard.masque_inner);
+
+        let gool = RegisterSet::parse("gool").expect("gool");
+        assert!(gool.wireguard && gool.wireguard_inner);
+        assert!(!gool.masque && !gool.masque_inner);
+
+        let mim = RegisterSet::parse("mim").expect("mim");
+        assert!(mim.masque && mim.masque_inner);
+        assert!(!mim.wireguard && !mim.wireguard_inner);
+
+        assert!(RegisterSet::parse("everything").is_err());
     }
 
     #[test]
