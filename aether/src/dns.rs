@@ -16,13 +16,11 @@ const RR_HTTPS: u16 = 65;
 const SVCPARAM_ECH: u16 = 5;
 
 /// How long the lookup of the ECHConfigList may take, over any transport.
-const ECH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
+const ECH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(12);
 
-/// Over UDP the question goes out again after this long without an answer.
-const UDP_RESEND_AFTER: Duration = Duration::from_secs(1);
-
-/// How many times the question goes out over UDP.
-const UDP_SENDS: u32 = 3;
+/// Over UDP the question goes out again after this long without an answer, until the
+/// lookup gives up.
+const UDP_RESEND_AFTER: Duration = Duration::from_secs(2);
 
 /// The resolver the ECHConfigList is asked for: a DNS server over UDP or TCP, or a
 /// DNS-over-HTTPS endpoint (RFC 8484).
@@ -184,7 +182,9 @@ async fn query_udp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
     let (query, id) = build_query(domain, RR_HTTPS);
     let mut buf = [0u8; 4096];
 
-    for _ in 0..UDP_SENDS {
+    // Asked again and again until an answer comes or the lookup gives up, see
+    // fetch_ech_config.
+    loop {
         sock.send(&query).await?;
         let resend_at = tokio::time::Instant::now() + UDP_RESEND_AFTER;
         while let Ok(received) = timeout_at(resend_at, sock.recv(&mut buf)).await {
@@ -195,7 +195,6 @@ async fn query_udp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
             log::debug!("discarding an ech dns reply that does not match the query");
         }
     }
-    Err(AetherError::Ech("dns timeout".into()))
 }
 
 async fn query_tcp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
