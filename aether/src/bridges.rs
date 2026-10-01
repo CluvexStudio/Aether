@@ -823,8 +823,9 @@ pub async fn keep_reachable(
         return lines;
     }
 
-    // A probe from here would leave outside the upstream proxy tor dials its bridges through.
-    if crate::upstream::configured().is_some_and(|proxy| proxy.socks_address().is_some()) {
+    // A probe from here would leave outside the upstream proxy, which tor dials its bridges
+    // through, or without which it does not start.
+    if crate::upstream::configured().is_some() {
         log::info!(
             "[*] tor will dial its bridges through the upstream proxy, so they are not probed from here"
         );

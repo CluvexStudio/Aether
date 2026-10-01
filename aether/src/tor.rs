@@ -362,6 +362,12 @@ mod with_tor {
                 .parse()
                 .map_err(|e| AetherError::Other(format!("tor cannot dial through {proxy}: {e}")))?;
             builder.channel().outbound_proxy(parsed);
+        } else if let Some(proxy) = crate::upstream::configured() {
+            // Connecting directly would leave outside the proxy aether was told to dial through.
+            return Err(AetherError::Other(format!(
+                "tor cannot dial through the upstream proxy at {}: it takes a socks5 address without a password",
+                proxy.endpoint()
+            )));
         }
 
         if let Some(plan) = plan {
@@ -814,8 +820,8 @@ mod with_tor {
         crate::upstream::configured()?.socks_address()
     }
 
-    /// Says how tor reaches the network when no tunnel carries it: through the upstream proxy,
-    /// or directly when there is none or it is one tor cannot dial through.
+    /// Says how tor reaches the network when no tunnel carries it: through the upstream proxy, or
+    /// directly when there is none; with one tor cannot dial through, tor does not start.
     fn announce_upstream() {
         let Some(proxy) = crate::upstream::configured() else {
             return;
@@ -826,7 +832,7 @@ mod with_tor {
             }
             None => log::warn!(
                 "[-] tor cannot dial through the upstream proxy at {}, which is no socks5 address \
-                 without a password; tor connects directly",
+                 without a password; it does not connect directly instead",
                 proxy.endpoint()
             ),
         }
