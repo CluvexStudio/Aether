@@ -152,7 +152,7 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
                 path: p.path.clone(),
                 cert_pem: p.cert_pem.clone(),
                 key_pem: p.key_pem.clone(),
-                ech_config_list: None,
+                ech_config_list: crate::tls::session_ech(),
                 noize: p.noize.clone(),
                 local_ipv4: p.local_ipv4,
                 quiet: true,

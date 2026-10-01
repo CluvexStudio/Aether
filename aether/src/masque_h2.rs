@@ -36,28 +36,6 @@ const H2_SEND_BATCH_BYTES: usize = 32 * 1024;
 /// closing frame on the wire.
 const SENDER_CLOSE_GRACE: Duration = Duration::from_millis(250);
 
-/// The ECHConfigList every HTTP/2 handshake offers, so that the server name rides
-/// encrypted: the one the session starts with, see `use_ech`, until a server that
-/// turns it down hands back the one it holds now. With none, the server name goes
-/// out in the clear.
-static ECH_CONFIG_LIST: std::sync::RwLock<Option<Vec<u8>>> = std::sync::RwLock::new(None);
-
-/// Makes every HTTP/2 handshake from now on offer `ech`, an ECHConfigList: the
-/// tunnel's, and those of the scan and of the gateway checks, which a network that
-/// blocks the server name in the clear would otherwise turn away.
-pub fn use_ech(ech: Option<Vec<u8>>) {
-    *ECH_CONFIG_LIST
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = ech;
-}
-
-fn ech_config_list() -> Option<Vec<u8>> {
-    ECH_CONFIG_LIST
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
-
 /// Whether a handshake that failed with `message` was turned down for its
 /// ECHConfigList, which BoringSSL reports as ECH_REJECTED once the handshake that
 /// turned it down is over. Only then does it hand out the retry configs the server
@@ -254,14 +232,15 @@ pub async fn dial(peer: std::net::SocketAddr) -> Result<TcpStream> {
 }
 
 /// Opens the TLS connection the HTTP/2 carrier runs on: dials the peer and shakes
-/// hands, offering the ECHConfigList of the session when there is one. A server
-/// that turns that config down hands back the one it holds now; the handshake is
-/// made once more with it, and later handshakes offer it as well.
+/// hands, offering the ECHConfigList of the session when there is one, see
+/// `tls::use_ech`. A server that turns that config down hands back the one it holds
+/// now; the handshake is made once more with it, and later handshakes of the session
+/// offer it as well, on either carrier.
 async fn connect_tls(
     cfg: &H2TunnelConfig,
     fragment: FragmentConfig,
 ) -> Result<tokio_boring::SslStream<FragmentingStream<TcpStream>>> {
-    let mut ech = ech_config_list();
+    let mut ech = tls::session_ech();
     let mut retried = false;
     loop {
         let mut tls_config = build_tls(cfg)?;
@@ -303,7 +282,7 @@ async fn connect_tls(
                         retry.len()
                     ),
                 );
-                use_ech(Some(retry.clone()));
+                tls::adopt_ech_retry(&retry);
                 ech = Some(retry);
                 retried = true;
             }

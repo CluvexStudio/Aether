@@ -149,6 +149,54 @@ pub fn inject_ech(conn: &mut quiche::Connection, ech_config_list: &[u8]) -> Resu
     Ok(())
 }
 
+/// The ECHConfigList the MASQUE handshakes of the session offer, on either carrier: the
+/// one the session starts with, see `use_ech`, until a server that turns it down hands
+/// back the one it holds now, see `adopt_ech_retry`. With none, the server name goes out
+/// in the clear.
+static SESSION_ECH: std::sync::RwLock<Option<Vec<u8>>> = std::sync::RwLock::new(None);
+
+/// Makes the MASQUE handshakes of the session from now on, on either carrier, offer `ech`,
+/// an ECHConfigList: the tunnel's, and those of the scan and of the gateway checks.
+pub fn use_ech(ech: Option<Vec<u8>>) {
+    *SESSION_ECH
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ech;
+}
+
+/// The ECHConfigList the next MASQUE handshake of the session offers, if any.
+pub fn session_ech() -> Option<Vec<u8>> {
+    SESSION_ECH
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Keeps `retry`, the ECHConfigList a server handed back as it turned the session's down,
+/// for the handshakes to come, on either carrier. A session that offers no ECH stays
+/// without.
+pub fn adopt_ech_retry(retry: &[u8]) {
+    let mut ech = SESSION_ECH
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ech.is_some() {
+        *ech = Some(retry.to_vec());
+    }
+}
+
+/// The TLS alert a client sends as it gives up a handshake whose ECHConfigList the server
+/// did not take (ech_required), and the base quiche adds a TLS alert to as it closes the
+/// connection with it.
+const ECH_REQUIRED_ALERT: u64 = 121;
+const QUIC_CRYPTO_ERROR: u64 = 0x100;
+
+/// Whether `conn` was closed because its ECHConfigList was turned down. Only then does
+/// BoringSSL hand out the server's retry configs; asked after any other failure, it hands
+/// out a placeholder.
+pub fn ech_rejected(conn: &quiche::Connection) -> bool {
+    conn.local_error()
+        .is_some_and(|e| !e.is_app && e.error_code == QUIC_CRYPTO_ERROR + ECH_REQUIRED_ALERT)
+}
+
 pub fn extract_ech_retry_configs(conn: &mut quiche::Connection) -> Option<Vec<u8>> {
     let ssl: &mut boring::ssl::SslRef = conn.as_mut();
     let ssl_ptr = ssl.as_ptr() as *const c_void;
@@ -173,4 +221,24 @@ pub fn decode_ech_config_list(b64: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .map_err(|e| AetherError::Ech(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_a_server_hands_back_replaces_the_sessions_only_while_it_offers_ech() {
+        use_ech(None);
+        adopt_ech_retry(&[1, 2]);
+        assert_eq!(session_ech(), None);
+
+        use_ech(Some(vec![9]));
+        assert_eq!(session_ech(), Some(vec![9]));
+        adopt_ech_retry(&[1, 2]);
+        assert_eq!(session_ech(), Some(vec![1, 2]));
+
+        use_ech(None);
+        assert_eq!(session_ech(), None);
+    }
 }

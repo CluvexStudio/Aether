@@ -242,10 +242,10 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 identity.ipv4,
                 identity.ipv6
             );
-            let ech = resolve_ech().await;
-            masque_h2::use_ech(ech.clone());
+            // Every MASQUE handshake of the session offers it, on either carrier.
+            tls::use_ech(resolve_ech().await);
             let lastconn_path = lastconn_path(&config_path);
-            run_masque(identity, ech, listen, lastconn_path).await
+            run_masque(identity, listen, lastconn_path).await
         }
         Protocol::WireGuard => {
             let config_path = warp_config_path(&base_config);
@@ -287,9 +287,9 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 secondary.device_id,
                 secondary.ipv4
             );
-            let ech = resolve_ech().await;
-            masque_h2::use_ech(ech.clone());
-            run_mim(primary, secondary, ech, listen).await
+            // Every MASQUE handshake of the session offers it, on either carrier.
+            tls::use_ech(resolve_ech().await);
+            run_mim(primary, secondary, listen).await
         }
     }
 }
@@ -1273,7 +1273,7 @@ async fn hunt_masque_peer(
         path: quic::default_path().to_string(),
         cert_pem: std::sync::Arc::from(identity.cert_pem.clone()),
         key_pem: std::sync::Arc::from(identity.key_pem.clone()),
-        ech_config_list: None,
+        ech_config_list: tls::session_ech().map(std::sync::Arc::from),
         noize: noize_config(),
         ports: prober::MASQUE_PORTS.to_vec(),
         ip,
@@ -1310,7 +1310,7 @@ async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr
         path: quic::default_path().to_string(),
         cert_pem: identity.cert_pem.clone(),
         key_pem: identity.key_pem.clone(),
-        ech_config_list: None,
+        ech_config_list: tls::session_ech(),
         noize: noize_config(),
         timeout: std::time::Duration::from_secs(5),
         local_ipv4: parse_local_v4(&identity.ipv4),
@@ -1355,7 +1355,6 @@ async fn want_quick_reconnect(cached: &lastconn::LastConnection) -> bool {
 
 async fn run_masque(
     identity: account::Identity,
-    ech: Option<Vec<u8>>,
     listen: SocketAddr,
     lastconn_path: String,
 ) -> Result<()> {
@@ -1467,7 +1466,8 @@ async fn run_masque(
 
         last_good_peer = Some(peer);
 
-        match run_masque_tunnel(&identity, peer, ech.clone(), listen).await {
+        // The session's ECH key as it is now, which a server may have replaced.
+        match run_masque_tunnel(&identity, peer, tls::session_ech(), listen).await {
             Ok(()) => log::warn!("[-] MASQUE tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] MASQUE tunnel ended: {e}; reconnecting"),
         }
@@ -2001,7 +2001,6 @@ async fn run_masque_in_masque(
 async fn run_mim(
     primary: account::Identity,
     secondary: account::Identity,
-    ech: Option<Vec<u8>>,
     listen: SocketAddr,
 ) -> Result<()> {
     let pinned = mim_endpoints_from_env()?;
@@ -2089,7 +2088,7 @@ async fn run_mim(
             &secondary,
             outer,
             &candidates,
-            ech.clone(),
+            tls::session_ech(),
             listen,
         )
         .await
