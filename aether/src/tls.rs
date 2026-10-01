@@ -171,6 +171,24 @@ pub fn session_ech() -> Option<Vec<u8>> {
         .clone()
 }
 
+/// The ECH key of a session for as long as it runs: set as the session starts, see
+/// `use_ech`, and cleared as it ends, however it ends, so that nothing after it in the
+/// process offers that key.
+pub struct EchSession(());
+
+impl EchSession {
+    pub fn start(ech: Option<Vec<u8>>) -> Self {
+        use_ech(ech);
+        EchSession(())
+    }
+}
+
+impl Drop for EchSession {
+    fn drop(&mut self) {
+        use_ech(None);
+    }
+}
+
 /// Keeps `retry`, the ECHConfigList a server handed back as it turned the session's down,
 /// for the handshakes to come, on either carrier. A session that offers no ECH stays
 /// without.
@@ -239,6 +257,17 @@ mod tests {
         assert_eq!(session_ech(), Some(vec![1, 2]));
 
         use_ech(None);
+        assert_eq!(session_ech(), None);
+    }
+
+    #[test]
+    fn the_session_key_goes_with_the_session() {
+        {
+            let _session = EchSession::start(Some(vec![7]));
+            assert_eq!(session_ech(), Some(vec![7]));
+            adopt_ech_retry(&[8]);
+            assert_eq!(session_ech(), Some(vec![8]));
+        }
         assert_eq!(session_ech(), None);
     }
 }

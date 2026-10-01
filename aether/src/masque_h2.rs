@@ -87,6 +87,9 @@ pub struct H2TunnelConfig {
     pub quiet: bool,
     pub pin_endpoint: bool,
     pub expected_pins: Vec<Vec<u8>>,
+    /// The ECHConfigList the handshake offers: the session's, see `tls::session_ech`, or
+    /// none, as on the inner hop of masque-in-masque, which rides inside the outer one.
+    pub ech_config_list: Option<Vec<u8>>,
 }
 
 fn log_or_debug(quiet: bool, msg: String) {
@@ -232,15 +235,14 @@ pub async fn dial(peer: std::net::SocketAddr) -> Result<TcpStream> {
 }
 
 /// Opens the TLS connection the HTTP/2 carrier runs on: dials the peer and shakes
-/// hands, offering the ECHConfigList of the session when there is one, see
-/// `tls::use_ech`. A server that turns that config down hands back the one it holds
-/// now; the handshake is made once more with it, and later handshakes of the session
-/// offer it as well, on either carrier.
+/// hands, offering the ECHConfigList of `cfg` when it has one. A server that turns that
+/// config down hands back the one it holds now; the handshake is made once more with
+/// it, and later handshakes of the session offer it as well, on either carrier.
 async fn connect_tls(
     cfg: &H2TunnelConfig,
     fragment: FragmentConfig,
 ) -> Result<tokio_boring::SslStream<FragmentingStream<TcpStream>>> {
-    let mut ech = tls::session_ech();
+    let mut ech = cfg.ech_config_list.clone();
     let mut retried = false;
     loop {
         let mut tls_config = build_tls(cfg)?;

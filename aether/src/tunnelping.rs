@@ -137,6 +137,7 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
                     .iter()
                     .map(|p| p.to_vec())
                     .collect(),
+                ech_config_list: crate::tls::session_ech(),
             };
             AbortGuard(tokio::spawn(masque_h2::run(
                 h2cfg,

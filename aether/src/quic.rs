@@ -508,37 +508,40 @@ pub async fn run(
 
         flush(&mut conn, &sockets, datagram).await?;
 
-        if conn.is_closed() {
-            if !established_ever
-                && !ech_retried
-                && current_ech.is_some()
-                && tls::ech_rejected(&conn)
-            {
-                if let Some(retry) = tls::extract_ech_retry_configs(&mut conn) {
-                    log::warn!(
-                        "ech_required: retrying handshake with server retry_configs ({} bytes)",
-                        retry.len()
-                    );
-                    // Later handshakes of the session offer it as well, on either carrier.
-                    tls::adopt_ech_retry(&retry);
-                    ech_retried = true;
-                    current_ech = Some(retry);
+        // A handshake turned down for its ECH key is made again at once: the alert that
+        // says so is final as soon as it is sent, and the connection need not drain first.
+        if (conn.is_draining() || conn.is_closed())
+            && !established_ever
+            && !ech_retried
+            && current_ech.is_some()
+            && tls::ech_rejected(&conn)
+        {
+            if let Some(retry) = tls::extract_ech_retry_configs(&mut conn) {
+                log::warn!(
+                    "ech_required: retrying handshake with server retry_configs ({} bytes)",
+                    retry.len()
+                );
+                // Later handshakes of the session offer it as well, on either carrier.
+                tls::adopt_ech_retry(&retry);
+                ech_retried = true;
+                current_ech = Some(retry);
 
-                    let scid_bytes = random_scid();
-                    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-                    conn = quiche::connect(Some(&cfg.sni), &scid, local, peer, &mut config)?;
-                    if let Some(ref ech) = current_ech {
-                        tls::inject_ech(&mut conn, ech)?;
-                    }
-
-                    h3_conn = None;
-                    req_stream = None;
-                    capsules = CapsuleParser::new();
-                    flush(&mut conn, &sockets, datagram).await?;
-                    continue;
+                let scid_bytes = random_scid();
+                let scid = quiche::ConnectionId::from_ref(&scid_bytes);
+                conn = quiche::connect(Some(&cfg.sni), &scid, local, peer, &mut config)?;
+                if let Some(ref ech) = current_ech {
+                    tls::inject_ech(&mut conn, ech)?;
                 }
-            }
 
+                h3_conn = None;
+                req_stream = None;
+                capsules = CapsuleParser::new();
+                flush(&mut conn, &sockets, datagram).await?;
+                continue;
+            }
+        }
+
+        if conn.is_closed() {
             log_or_debug(quiet, format!("connection closed: {:?}", conn.stats()));
             if let Some(e) = conn.peer_error() {
                 log_or_debug(
@@ -965,28 +968,29 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
 
         flush_connected(&mut conn, &sock).await?;
 
-        if conn.is_closed() {
-            // As the tunnel does: once more with the ECHConfigList the server handed back
-            // as it turned the session's down, which later handshakes offer as well.
-            if !ech_retried && tls::ech_rejected(&conn) {
-                if let Some(retry) = tls::extract_ech_retry_configs(&mut conn) {
-                    log::debug!(
-                        "ech_required: verifying {} again with the server's retry_configs ({} bytes)",
-                        p.peer,
-                        retry.len()
-                    );
-                    tls::adopt_ech_retry(&retry);
-                    ech_retried = true;
-                    let scid_bytes = random_scid();
-                    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-                    conn = quiche::connect(Some(&p.sni), &scid, local, p.peer, &mut config)?;
-                    let _ = tls::inject_ech(&mut conn, &retry);
-                    h3_conn = None;
-                    req_stream = None;
-                    flush_connected(&mut conn, &sock).await?;
-                    continue;
-                }
+        // As the tunnel does: once more, at once, with the ECHConfigList the server handed
+        // back as it turned the session's down, which later handshakes offer as well.
+        if (conn.is_draining() || conn.is_closed()) && !ech_retried && tls::ech_rejected(&conn) {
+            if let Some(retry) = tls::extract_ech_retry_configs(&mut conn) {
+                log::debug!(
+                    "ech_required: verifying {} again with the server's retry_configs ({} bytes)",
+                    p.peer,
+                    retry.len()
+                );
+                tls::adopt_ech_retry(&retry);
+                ech_retried = true;
+                let scid_bytes = random_scid();
+                let scid = quiche::ConnectionId::from_ref(&scid_bytes);
+                conn = quiche::connect(Some(&p.sni), &scid, local, p.peer, &mut config)?;
+                let _ = tls::inject_ech(&mut conn, &retry);
+                h3_conn = None;
+                req_stream = None;
+                flush_connected(&mut conn, &sock).await?;
+                continue;
             }
+        }
+
+        if conn.is_closed() {
             return Err(AetherError::Other(
                 "closed before data-plane confirmation".into(),
             ));

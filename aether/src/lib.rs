@@ -242,8 +242,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 identity.ipv4,
                 identity.ipv6
             );
-            // Every MASQUE handshake of the session offers it, on either carrier.
-            tls::use_ech(resolve_ech().await);
+            // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
+            let _ech = tls::EchSession::start(resolve_ech().await);
             let lastconn_path = lastconn_path(&config_path);
             run_masque(identity, listen, lastconn_path).await
         }
@@ -287,8 +287,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 secondary.device_id,
                 secondary.ipv4
             );
-            // Every MASQUE handshake of the session offers it, on either carrier.
-            tls::use_ech(resolve_ech().await);
+            // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
+            let _ech = tls::EchSession::start(resolve_ech().await);
             run_mim(primary, secondary, listen).await
         }
     }
@@ -1328,6 +1328,7 @@ async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr
             quiet: true,
             pin_endpoint: true,
             expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
+            ech_config_list: tls::session_ech(),
         };
         return masque_h2::verify_h2(&cfg, std::time::Duration::from_secs(5))
             .await
@@ -1535,6 +1536,7 @@ async fn establish_masque(
             quiet: false,
             pin_endpoint: true,
             expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
+            ech_config_list: ech,
         };
         log::info!("[+] [{label}] MASQUE transport: HTTP/2 (TCP) to {peer} (inner mtu {mtu})");
         tokio::spawn(masque_h2::run(
