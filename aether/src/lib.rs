@@ -104,6 +104,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     stats::spawn_reporter();
 
     install_netstack_panic_guard();
+    // A cipher string BoringSSL does not take stops the core here, with its option named.
+    tls::check_cipher_options()?;
 
     let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 

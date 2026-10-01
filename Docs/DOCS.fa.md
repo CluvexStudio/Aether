@@ -143,7 +143,7 @@ aether --gool --wiw-inner 188.114.96.1:1701    # هاپ بیرونی اسکن م
 aether --noize aggressive
 ```
 
-دو مورد فقط به MASQUE مربوط است:
+سه مورد فقط به MASQUE مربوط است:
 
 - `--fragment` روی حامل HTTP/2 پیام ClientHello را تکه می‌کند و بازرس‌هایی را که
   SNI را از یک بسته می‌خوانند خنثی می‌کند. `--fragment-size` و
@@ -159,6 +159,11 @@ aether --noize aggressive
   `ech` در چنین رکوردی نوشته می‌شود. نشستی که کانفیگی برای ارائه ندارد، چه
   جست‌وجوی آن شکست خورده باشد و چه کانفیگ از نوعی نباشد که کتابخانه‌ی TLS بتواند
   به کار ببرد، شروع نمی‌شود: هسته به‌جای فرستادن آشکار SNI با خطا متوقف می‌شود.
+- `--tls-ciphers` سوئیت‌های رمز TLS 1.2 را تعیین می‌کند که ClientHello حامل HTTP/2
+  بعد از سوئیت‌های TLS 1.3 می‌آورد؛ سوئیت‌های TLS 1.3 همان‌طور که هستند می‌مانند.
+  نام‌ها با `:` از هم جدا می‌شوند، همان‌طور که BoringSSL یک رشته‌ی رمز را می‌خواند،
+  و نامی که نشناسد خطاست. HTTP/3 هیچ‌کدام را نمی‌آورد، چون QUIC فقط TLS 1.3 پیشنهاد
+  می‌دهد.
 
 ## Zero Trust
 
@@ -324,6 +329,12 @@ Hello می‌فرستد، به نشانی‌های لبه‌ی کلادفلر و
 aether --register all --get-warp-key-ech auto
 ```
 
+`--get-warp-key-tls-ciphers` سوئیت‌های رمز TLS 1.2 این درخواست‌ها را تعیین می‌کند،
+که بعد از سوئیت‌های TLS 1.3 می‌آیند، هر جا TLS 1.2 هم پیشنهاد شود: در مسیر مستقیم،
+که فقط سوئیت‌هایی را می‌گیرد که rustls دارد (ECDHE با AES-GCM یا ChaCha20)، و در راه
+دوم از نشانی‌های لبه‌ی کلادفلر. مسیر ECH فقط TLS 1.3 پیشنهاد می‌دهد و هیچ‌کدام را
+نمی‌آورد.
+
 ## استفاده از ایتر به‌عنوان کتابخانه
 
 جدا از باینری `aether`، این کریت `libaether.a` و `libaether.so` را هم با یک
@@ -376,6 +387,7 @@ cargo build --release --bin aether   # فقط باینری
 | `AETHER_GET_WARP_KEY_ECH` | `auto` یا یک کانفیگ base64، برای درخواست‌ها به API وارپ |
 | `AETHER_GET_WARP_KEY_ECH_DNS` | سرور DNS که `--get-warp-key-ech auto` از آن می‌پرسد |
 | `AETHER_GET_WARP_KEY_ECH_DOMAIN` | دامنه‌ای که `--get-warp-key-ech auto` کانفیگ ECH آن را می‌گیرد |
+| `AETHER_GET_WARP_KEY_TLS_CIPHERS` | سوئیت‌های رمز TLS 1.2 درخواست‌ها به API وارپ |
 | `AETHER_MASQUE_H2_FRAGMENT`، `_SIZE`، `_DELAY` | تکه‌کردن ClientHello |
 | `AETHER_MASQUE_STARTUP_SECS` | مهلت راه‌اندازی |
 | `AETHER_MASQUE_VALIDATE_SECS`، `AETHER_WG_VALIDATE_SECS` | مهلت بررسی داده |
@@ -396,5 +408,6 @@ cargo build --release --bin aether   # فقط باینری
 | `AETHER_REPROVISION` | جایگزینی هویتی که کلادفلر نمی‌پذیرد |
 | `AETHER_CONFIG`، `AETHER_WG_CONFIG`، `AETHER_MASQUE_CONFIG` | مسیر فایل هویت |
 | `AETHER_TLS_GROUPS` | گروه‌های کلید TLS |
+| `AETHER_TLS_CIPHERS` | سوئیت‌های رمز TLS 1.2 حامل HTTP/2 |
 | `AETHER_PERF_PROFILE` | `low`، `medium`، `high` |
 | `AETHER_LOG_LEVEL` | از `error` تا `trace` |

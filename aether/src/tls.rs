@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::os::raw::c_int;
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 use boring::pkey::PKey;
@@ -22,9 +22,98 @@ extern "C" {
         out_retry_configs: *mut *const u8,
         out_retry_configs_len: *mut usize,
     );
+
+    fn SSL_CTX_set_strict_cipher_list(ctx: *mut c_void, str: *const c_char) -> c_int;
 }
 
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
+
+/// An option that sets TLS 1.2 cipher suites: a BoringSSL cipher string, names separated
+/// by ':'. A ClientHello lists them after BoringSSL's own TLS 1.3 suites, which no cipher
+/// string changes, and only where it offers TLS 1.2 as well.
+pub struct CipherOption {
+    pub flag: &'static str,
+    pub variable: &'static str,
+}
+
+/// --tls-ciphers: the TLS 1.2 cipher suites of the MASQUE handshakes over HTTP/2. HTTP/3
+/// has none: QUIC offers TLS 1.3 alone.
+pub const TLS_CIPHERS: CipherOption = CipherOption {
+    flag: "--tls-ciphers",
+    variable: "AETHER_TLS_CIPHERS",
+};
+
+/// --get-warp-key-tls-ciphers: the TLS 1.2 cipher suites of the calls to the WARP API that
+/// offer TLS 1.2: the direct route and the camouflaged fingerprints that do.
+pub const WARP_KEY_TLS_CIPHERS: CipherOption = CipherOption {
+    flag: "--get-warp-key-tls-ciphers",
+    variable: "AETHER_GET_WARP_KEY_TLS_CIPHERS",
+};
+
+impl CipherOption {
+    /// The cipher string given to the option; None when it is not given.
+    pub fn configured(&self) -> Option<String> {
+        std::env::var(self.variable)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+}
+
+/// Sets `list`, a BoringSSL cipher string, as the TLS 1.2 cipher suites of `builder`.
+/// Strictly: a name BoringSSL does not know is an error, which SSL_CTX_set_cipher_list
+/// would leave out without a word.
+pub fn set_tls12_ciphers(builder: &mut SslContextBuilder, list: &str) -> Result<()> {
+    let refused = || {
+        AetherError::Tls(format!(
+            "{list:?} is no cipher list BoringSSL takes (cipher names separated by ':')"
+        ))
+    };
+    let text = std::ffi::CString::new(list).map_err(|_| refused())?;
+    let rc =
+        unsafe { SSL_CTX_set_strict_cipher_list(builder.as_ptr() as *mut c_void, text.as_ptr()) };
+    if rc != 1 {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+/// The TLS 1.2 cipher suites `list` names, in its order, as BoringSSL reads it: the number
+/// and the name of each.
+pub fn tls12_ciphers(list: &str) -> Result<Vec<(u16, &'static str)>> {
+    let mut builder =
+        SslContextBuilder::new(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
+    set_tls12_ciphers(&mut builder, list)?;
+    Ok(builder
+        .ciphers()
+        .map(|ciphers| {
+            ciphers
+                .iter()
+                .map(|cipher| {
+                    let name = cipher.standard_name().unwrap_or_else(|| cipher.name());
+                    (cipher.protocol_id(), name)
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Checks the cipher strings given to --tls-ciphers and --get-warp-key-tls-ciphers as the
+/// core starts: one BoringSSL does not take stops it, with the option named.
+pub fn check_cipher_options() -> Result<()> {
+    for option in [&TLS_CIPHERS, &WARP_KEY_TLS_CIPHERS] {
+        if let Some(list) = option.configured() {
+            tls12_ciphers(&list).map_err(|e| {
+                let reason = match e {
+                    AetherError::Tls(reason) => reason,
+                    other => other.to_string(),
+                };
+                AetherError::Tls(format!("{}: {reason}", option.flag))
+            })?;
+        }
+    }
+    Ok(())
+}
 
 pub struct TlsParams<'a> {
     pub cert_pem: &'a [u8],

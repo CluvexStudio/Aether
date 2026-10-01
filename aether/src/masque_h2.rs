@@ -179,6 +179,11 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
         .set_curves_list(groups)
         .map_err(|e| AetherError::Tls(e.to_string()))?;
 
+    // --tls-ciphers: the TLS 1.2 suites, listed after BoringSSL's TLS 1.3 ones.
+    if let Some(list) = tls::TLS_CIPHERS.configured() {
+        tls::set_tls12_ciphers(&mut builder, &list)?;
+    }
+
     builder
         .set_alpn_protos(H2_ALPN)
         .map_err(|e| AetherError::Tls(e.to_string()))?;

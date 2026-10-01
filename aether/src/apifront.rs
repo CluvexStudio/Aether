@@ -131,7 +131,20 @@ impl Fingerprint {
             }
         }
 
+        // --get-warp-key-tls-ciphers: the TLS 1.2 suites of a fingerprint that offers TLS 1.2,
+        // in place of its own.
+        if self.offers_tls12() {
+            if let Some(list) = crate::tls::WARP_KEY_TLS_CIPHERS.configured() {
+                crate::tls::set_tls12_ciphers(&mut builder, &list)?;
+            }
+        }
+
         builder.build().configure().map_err(tls)
+    }
+
+    /// Whether the ClientHello of the fingerprint offers TLS 1.2, and so lists TLS 1.2 suites.
+    fn offers_tls12(self) -> bool {
+        self != Fingerprint::SplitModern
     }
 }
 

@@ -185,7 +185,7 @@ reshape them so the opening exchange does not match a known pattern.
 aether --noize aggressive
 ```
 
-Two extras apply to MASQUE only:
+Three extras apply to MASQUE only:
 
 - `--fragment` splits the TLS ClientHello on the HTTP/2 carrier, which defeats
   inspectors that read the SNI from a single packet. `--fragment-size` and
@@ -200,6 +200,10 @@ Two extras apply to MASQUE only:
   session that has no config it can offer, because the lookup failed or the
   config is not one the TLS library can use, does not start: the core stops
   with an error rather than send the SNI in the clear.
+- `--tls-ciphers` sets the TLS 1.2 cipher suites the ClientHello of the HTTP/2
+  carrier lists after the TLS 1.3 ones, which stay as they are: names separated by
+  `:`, as BoringSSL reads a cipher string, a name it does not know being an error.
+  HTTP/3 lists none, since QUIC offers TLS 1.3 alone.
 
 ## Zero Trust
 
@@ -521,6 +525,11 @@ the API at all.
 aether --register all --get-warp-key-ech auto
 ```
 
+`--get-warp-key-tls-ciphers` sets the TLS 1.2 cipher suites these calls list after
+the TLS 1.3 ones, wherever they offer TLS 1.2: on the direct route, which takes only
+the suites rustls has (ECDHE with AES-GCM or ChaCha20), and on the fallback over
+Cloudflare edge addresses. The ECH route offers TLS 1.3 alone and lists none.
+
 ## Using Aether as a library
 
 Besides the `aether` binary, the crate builds `libaether.a` and `libaether.so`
@@ -578,6 +587,7 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_GET_WARP_KEY_ECH` | `auto` or a base64 config, for the calls to the WARP API |
 | `AETHER_GET_WARP_KEY_ECH_DNS` | resolver `--get-warp-key-ech auto` asks |
 | `AETHER_GET_WARP_KEY_ECH_DOMAIN` | domain whose ECH config `--get-warp-key-ech auto` takes |
+| `AETHER_GET_WARP_KEY_TLS_CIPHERS` | TLS 1.2 cipher suites of the calls to the WARP API |
 | `AETHER_MASQUE_H2_FRAGMENT`, `_SIZE`, `_DELAY` | ClientHello fragmenting |
 | `AETHER_MASQUE_STARTUP_SECS` | startup deadline |
 | `AETHER_MASQUE_VALIDATE_SECS`, `AETHER_WG_VALIDATE_SECS` | data-check timeout |
@@ -601,5 +611,6 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_REPROVISION` | replace an identity Cloudflare refuses |
 | `AETHER_CONFIG`, `AETHER_WG_CONFIG`, `AETHER_MASQUE_CONFIG` | identity paths |
 | `AETHER_TLS_GROUPS` | TLS key share groups |
+| `AETHER_TLS_CIPHERS` | TLS 1.2 cipher suites of the HTTP/2 carrier |
 | `AETHER_PERF_PROFILE` | `low`, `medium`, `high` |
 | `AETHER_LOG_LEVEL` | `error` to `trace` |

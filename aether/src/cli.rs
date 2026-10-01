@@ -273,9 +273,20 @@ Config files:
   --get-warp-key-ech-domain <name>
                            the domain whose key --get-warp-key-ech auto takes
                            (default cloudflare-ech.com)
+  --get-warp-key-tls-ciphers <list>
+                           TLS 1.2 cipher suites of the calls to the WARP API
+                           that offer TLS 1.2, listed after the TLS 1.3 ones;
+                           names separated by ':', as --tls-ciphers takes them.
+                           The direct route takes those rustls has: ECDHE with
+                           AES-GCM or ChaCha20
 
 Advanced:
   --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
+  --tls-ciphers <list>     TLS 1.2 cipher suites of the MASQUE handshakes over
+                           HTTP/2, listed after the TLS 1.3 ones, which stay as
+                           they are; names separated by ':', e.g.
+                           \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256\".
+                           HTTP/3 has none: QUIC offers TLS 1.3 alone
   --perf <low|medium|high> force a resource profile instead of auto-detecting from cpu/ram
                            (low: routers/small boards, medium: typical desktop, high: servers)
   --log-level <level>      error | warn | info | debug | trace (default info)
@@ -380,7 +391,9 @@ Environment variables:
   AETHER_GET_WARP_KEY_ECH          --get-warp-key-ech
   AETHER_GET_WARP_KEY_ECH_DNS      --get-warp-key-ech-dns
   AETHER_GET_WARP_KEY_ECH_DOMAIN   --get-warp-key-ech-domain
+  AETHER_GET_WARP_KEY_TLS_CIPHERS  --get-warp-key-tls-ciphers
   AETHER_TLS_GROUPS                --tls-groups
+  AETHER_TLS_CIPHERS               --tls-ciphers
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
 
@@ -571,6 +584,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--get-warp-key-ech" => set("AETHER_GET_WARP_KEY_ECH", next_value!()),
             "--get-warp-key-ech-dns" => set("AETHER_GET_WARP_KEY_ECH_DNS", next_value!()),
             "--get-warp-key-ech-domain" => set("AETHER_GET_WARP_KEY_ECH_DOMAIN", next_value!()),
+            "--get-warp-key-tls-ciphers" => set("AETHER_GET_WARP_KEY_TLS_CIPHERS", next_value!()),
 
             "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
             "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),
@@ -584,6 +598,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--routes" => set("AETHER_ROUTES_FILE", next_value!()),
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
+            "--tls-ciphers" => set("AETHER_TLS_CIPHERS", next_value!()),
             "--perf" => set("AETHER_PERF_PROFILE", next_value!()),
             "--log-level" => set("AETHER_LOG_LEVEL", next_value!()),
             "--verbose" => set("AETHER_LOG_LEVEL", "debug"),

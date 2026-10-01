@@ -229,11 +229,126 @@ fn http_client() -> Result<reqwest::Client> {
         // TLS server-certificate verification disabled (unconditional).
         .danger_accept_invalid_certs(true);
 
+    if let Some(list) = crate::tls::WARP_KEY_TLS_CIPHERS.configured() {
+        builder = builder.use_preconfigured_tls(direct_tls(&list)?);
+    }
+
     if let Some(upstream) = crate::upstream::configured() {
         builder = builder.proxy(upstream.as_reqwest_proxy()?);
     }
 
     builder.build().map_err(|e| AetherError::Api(e.to_string()))
+}
+
+/// The TLS of the direct route for --get-warp-key-tls-ciphers `list`, built once for the run.
+static DIRECT_TLS: std::sync::Mutex<Option<(String, rustls::ClientConfig)>> =
+    std::sync::Mutex::new(None);
+
+/// The TLS of the direct route with --get-warp-key-tls-ciphers `list`: what reqwest builds by
+/// itself (rustls with ring, TLS 1.3 and 1.2, its TLS 1.3 suites as they are, no certificate
+/// checks, ALPN h2 then http/1.1), with the TLS 1.2 suites of `list` in place of its own. Those
+/// rustls has, ECDHE with AES-GCM or ChaCha20, go in the order of the list; the others are left
+/// out. With none of them, the route offers TLS 1.3 alone.
+fn direct_tls(list: &str) -> Result<rustls::ClientConfig> {
+    let mut built = DIRECT_TLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((for_list, config)) = built.as_ref() {
+        if for_list == list {
+            return Ok(config.clone());
+        }
+    }
+
+    let mut provider = rustls::crypto::ring::default_provider();
+    let (mut suites, tls12): (Vec<_>, Vec<_>) = provider
+        .cipher_suites
+        .iter()
+        .copied()
+        .partition(|suite| suite.tls13().is_some());
+    let tls13_suites = suites.len();
+    for (id, name) in crate::tls::tls12_ciphers(list)? {
+        match tls12.iter().find(|suite| u16::from(suite.suite()) == id) {
+            Some(suite) => suites.push(*suite),
+            None => log::warn!(
+                "[!] the direct route to the WARP API leaves {name} out: rustls has ECDHE with AES-GCM or ChaCha20 only"
+            ),
+        }
+    }
+    let versions: &[&'static rustls::SupportedProtocolVersion] = if suites.len() > tls13_suites {
+        &[&rustls::version::TLS13, &rustls::version::TLS12]
+    } else {
+        log::warn!(
+            "[!] the direct route to the WARP API offers TLS 1.3 alone: rustls has none of the TLS 1.2 suites of --get-warp-key-tls-ciphers"
+        );
+        &[&rustls::version::TLS13]
+    };
+    provider.cipher_suites = suites;
+
+    let mut config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(provider))
+        .with_protocol_versions(versions)
+        .map_err(|e| AetherError::Tls(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(AnyCertificate))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    *built = Some((list.to_string(), config.clone()));
+    Ok(config)
+}
+
+/// Takes any certificate, as reqwest's own verifier for danger_accept_invalid_certs does, and
+/// offers the signature schemes it offers, so that the ClientHello of the direct route stays
+/// the one reqwest writes by itself, but for the cipher suites.
+#[derive(Debug)]
+struct AnyCertificate;
+
+impl rustls::client::danger::ServerCertVerifier for AnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        use rustls::SignatureScheme;
+        vec![
+            SignatureScheme::RSA_PKCS1_SHA1,
+            SignatureScheme::ECDSA_SHA1_Legacy,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::ECDSA_NISTP521_SHA512,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::ED25519,
+            SignatureScheme::ED448,
+        ]
+    }
 }
 
 const API_ATTEMPTS: u32 = 5;
