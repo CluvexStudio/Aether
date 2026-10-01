@@ -36,6 +36,36 @@ const H2_SEND_BATCH_BYTES: usize = 32 * 1024;
 /// closing frame on the wire.
 const SENDER_CLOSE_GRACE: Duration = Duration::from_millis(250);
 
+/// The ECHConfigList every HTTP/2 handshake offers, so that the server name rides
+/// encrypted: the one the session starts with, see `use_ech`, until a server that
+/// turns it down hands back the one it holds now. With none, the server name goes
+/// out in the clear.
+static ECH_CONFIG_LIST: std::sync::RwLock<Option<Vec<u8>>> = std::sync::RwLock::new(None);
+
+/// Makes every HTTP/2 handshake from now on offer `ech`, an ECHConfigList: the
+/// tunnel's, and those of the scan and of the gateway checks, which a network that
+/// blocks the server name in the clear would otherwise turn away.
+pub fn use_ech(ech: Option<Vec<u8>>) {
+    *ECH_CONFIG_LIST
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ech;
+}
+
+fn ech_config_list() -> Option<Vec<u8>> {
+    ECH_CONFIG_LIST
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Whether a handshake that failed with `message` was turned down for its
+/// ECHConfigList, which BoringSSL reports as ECH_REJECTED once the handshake that
+/// turned it down is over. Only then does it hand out the retry configs the server
+/// sent, if any; asked after any other failure, it hands out a placeholder.
+fn rejected_ech(message: &str) -> bool {
+    message.contains("ECH_REJECTED")
+}
+
 struct AbortOnDrop(tokio::task::AbortHandle);
 
 impl Drop for AbortOnDrop {
@@ -223,18 +253,70 @@ pub async fn dial(peer: std::net::SocketAddr) -> Result<TcpStream> {
     }
 }
 
+/// Opens the TLS connection the HTTP/2 carrier runs on: dials the peer and shakes
+/// hands, offering the ECHConfigList of the session when there is one. A server
+/// that turns that config down hands back the one it holds now; the handshake is
+/// made once more with it, and later handshakes offer it as well.
+async fn connect_tls(
+    cfg: &H2TunnelConfig,
+    fragment: FragmentConfig,
+) -> Result<tokio_boring::SslStream<FragmentingStream<TcpStream>>> {
+    let mut ech = ech_config_list();
+    let mut retried = false;
+    loop {
+        let mut tls_config = build_tls(cfg)?;
+        if let Some(list) = &ech {
+            tls_config
+                .set_ech_config_list(list)
+                .map_err(|e| AetherError::Tls(format!("h2 ech config: {e}")))?;
+        }
+        let tcp = dial(cfg.peer).await?;
+        let _ = tcp.set_nodelay(true);
+        let stream = FragmentingStream::new(tcp, fragment);
+        match tokio_boring::connect(tls_config, &cfg.sni, stream).await {
+            Ok(tls) => {
+                if ech.is_some() {
+                    log_or_debug(
+                        cfg.quiet,
+                        format!("[h2] ech accepted: {}", tls.ssl().ech_accepted()),
+                    );
+                }
+                return Ok(tls);
+            }
+            Err(e) => {
+                let message = e.to_string();
+                let retry = if !retried && ech.is_some() && rejected_ech(&message) {
+                    e.ssl()
+                        .and_then(|ssl| ssl.get_ech_retry_configs())
+                        .filter(|configs| !configs.is_empty())
+                        .map(<[u8]>::to_vec)
+                } else {
+                    None
+                };
+                let Some(retry) = retry else {
+                    return Err(AetherError::Tls(format!("h2 tls handshake: {message}")));
+                };
+                log_or_debug(
+                    cfg.quiet,
+                    format!(
+                        "[h2] ech_required: retrying the handshake with the server's retry_configs ({} bytes)",
+                        retry.len()
+                    ),
+                );
+                use_ech(Some(retry.clone()));
+                ech = Some(retry);
+                retried = true;
+            }
+        }
+    }
+}
+
 pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Duration> {
     let start = Instant::now();
     let data_check = data_check_enabled();
 
     let attempt = async {
-        let tls_config = build_tls(cfg)?;
-        let tcp = dial(cfg.peer).await?;
-        let _ = tcp.set_nodelay(true);
-        let fragment = FragmentingStream::new(tcp, FragmentConfig::from_env());
-        let tls = tokio_boring::connect(tls_config, &cfg.sni, fragment)
-            .await
-            .map_err(|e| AetherError::Tls(format!("h2 tls handshake: {e}")))?;
+        let tls = connect_tls(cfg, FragmentConfig::from_env()).await?;
         let (h2, connection) = h2_builder()
             .handshake(tls)
             .await
@@ -350,11 +432,7 @@ pub async fn run(
     let mut ready_fired = false;
     let mut validate_successes: u32 = 0;
 
-    let tls_config = build_tls(&cfg)?;
-
     log_or_debug(quiet, format!("[h2] connecting tcp to {}", cfg.peer));
-    let tcp = dial(cfg.peer).await?;
-    let _ = tcp.set_nodelay(true);
 
     let frag_cfg = FragmentConfig::from_env();
     if frag_cfg.enabled {
@@ -366,11 +444,8 @@ pub async fn run(
             ),
         );
     }
-    let fragment = FragmentingStream::new(tcp, frag_cfg);
 
-    let tls = tokio_boring::connect(tls_config, &cfg.sni, fragment)
-        .await
-        .map_err(|e| AetherError::Tls(format!("h2 tls handshake: {e}")))?;
+    let tls = connect_tls(&cfg, frag_cfg).await?;
     log_or_debug(
         quiet,
         format!(
@@ -756,5 +831,18 @@ fn bytes_to_ip(version: u8, bytes: &[u8]) -> Option<IpAddr> {
             Some(IpAddr::V6(b.into()))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_handshake_turned_down_for_its_ech_config_is_made_again() {
+        assert!(rejected_ech("TLS handshake failed [ECH_REJECTED]"));
+        assert!(!rejected_ech("TLS handshake failed [WRONG_VERSION_NUMBER]"));
+        assert!(!rejected_ech("unknown BoringSSL error"));
+        assert!(!rejected_ech("the SSL session has been shut down"));
     }
 }

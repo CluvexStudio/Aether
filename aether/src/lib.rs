@@ -243,6 +243,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 identity.ipv6
             );
             let ech = resolve_ech().await;
+            masque_h2::use_ech(ech.clone());
             let lastconn_path = lastconn_path(&config_path);
             run_masque(identity, ech, listen, lastconn_path).await
         }
@@ -287,6 +288,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 secondary.ipv4
             );
             let ech = resolve_ech().await;
+            masque_h2::use_ech(ech.clone());
             run_mim(primary, secondary, ech, listen).await
         }
     }
@@ -1230,7 +1232,7 @@ async fn resolve_ech() -> Option<Vec<u8>> {
             }
         },
         _ => {
-            log::info!("[+] ECH disabled (warp masque endpoint does not accept ECH); SNI sent in cleartext");
+            log::info!("[+] ECH off; the server name goes out in cleartext");
             None
         }
     }
