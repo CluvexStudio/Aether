@@ -247,6 +247,8 @@ async fn connect_tls(
     loop {
         let mut tls_config = build_tls(cfg)?;
         if let Some(list) = &ech {
+            // BoringSSL takes a key it offers nothing from, and the name would go in the clear.
+            tls::ensure_offerable(list)?;
             tls_config
                 .set_ech_config_list(list)
                 .map_err(|e| AetherError::Tls(format!("h2 ech config: {e}")))?;
@@ -257,10 +259,11 @@ async fn connect_tls(
         match tokio_boring::connect(tls_config, &cfg.sni, stream).await {
             Ok(tls) => {
                 if ech.is_some() {
-                    log_or_debug(
-                        cfg.quiet,
-                        format!("[h2] ech accepted: {}", tls.ssl().ech_accepted()),
-                    );
+                    // Nothing goes over a handshake that went without the key it was given.
+                    if !tls.ssl().ech_accepted() {
+                        return Err(AetherError::Ech("the handshake went without ECH".into()));
+                    }
+                    log_or_debug(cfg.quiet, "[h2] ech accepted".to_string());
                 }
                 return Ok(tls);
             }
@@ -270,7 +273,7 @@ async fn connect_tls(
                     e.ssl()
                         .and_then(|ssl| ssl.get_ech_retry_configs())
                         .filter(|configs| !configs.is_empty())
-                        .map(<[u8]>::to_vec)
+                        .and_then(tls::usable_retry)
                 } else {
                     None
                 };

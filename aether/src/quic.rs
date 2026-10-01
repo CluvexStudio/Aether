@@ -450,6 +450,10 @@ pub async fn run(
         }
 
         if conn.is_established() && h3_conn.is_none() {
+            // Nothing goes over a handshake that went without the key it was given.
+            if current_ech.is_some() && !tls::ech_accepted(&mut conn) {
+                return Err(AetherError::Ech("the handshake went without ECH".into()));
+            }
             established_ever = true;
             log_or_debug(
                 quiet,
@@ -826,8 +830,9 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
     let scid = quiche::ConnectionId::from_ref(&scid_bytes);
     let mut conn = quiche::connect(Some(&p.sni), &scid, local, p.peer, &mut config)?;
 
+    // A key that cannot be set fails the check: left aside, the name would go in the clear.
     if let Some(ref ech) = p.ech_config_list {
-        let _ = tls::inject_ech(&mut conn, ech);
+        tls::inject_ech(&mut conn, ech)?;
     }
     let mut ech_retried = false;
 
@@ -892,6 +897,10 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
         }
 
         if conn.is_established() && h3_conn.is_none() {
+            // As in the tunnel: nothing goes over a handshake that went without its key.
+            if p.ech_config_list.is_some() && !tls::ech_accepted(&mut conn) {
+                return Err(AetherError::Ech("the handshake went without ECH".into()));
+            }
             let mut h3c = h3::Connection::with_transport(&mut conn, &h3_config)?;
             let headers = masque::connect_ip_request(&p.authority, &p.path);
             let sid = h3c.send_request(&mut conn, &headers, false)?;
@@ -982,7 +991,7 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
                 let scid_bytes = random_scid();
                 let scid = quiche::ConnectionId::from_ref(&scid_bytes);
                 conn = quiche::connect(Some(&p.sni), &scid, local, p.peer, &mut config)?;
-                let _ = tls::inject_ech(&mut conn, &retry);
+                tls::inject_ech(&mut conn, &retry)?;
                 h3_conn = None;
                 req_stream = None;
                 flush_connected(&mut conn, &sock).await?;

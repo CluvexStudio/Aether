@@ -195,7 +195,11 @@ Two extras apply to MASQUE only:
   `udp://1.1.1.1` for the HTTPS record of `cloudflare-ech.com`; `--ech-dns`
   names another resolver (`udp://ip[:port]` or `tcp://ip[:port]`, on port 53
   unless one is given, or a DNS-over-HTTPS `https://` URL, on port 443 unless
-  it names one) and `--ech-domain` another domain.
+  it names one) and `--ech-domain` another domain. `--ech <base64>` takes the
+  config itself instead, as the `ech` value of such a record shows it. A
+  session that has no config it can offer, because the lookup failed or the
+  config is not one the TLS library can use, does not start: the core stops
+  with an error rather than send the SNI in the clear.
 
 ## Zero Trust
 

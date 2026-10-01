@@ -111,7 +111,9 @@ MASQUE transport:
                            (it is on by default; it opens a path for HTTP/3 on
                            networks that block QUIC v1 but let QUIC v2 through)
   --h2-peer <ip:port>      override the peer used for the HTTP/2 transport
-  --ech <auto|base64>      enable Encrypted Client Hello
+  --ech <auto|base64>      enable Encrypted Client Hello, with the key looked
+                           up (auto) or given in base64; without a key it can
+                           offer, the session does not start
   --ech-dns <url>          the resolver --ech auto asks for the key:
                            udp://ip[:port] or tcp://ip[:port], port 53 unless
                            given, or a DNS-over-HTTPS https:// URL, port 443

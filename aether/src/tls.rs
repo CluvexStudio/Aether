@@ -129,9 +129,7 @@ pub fn build_config(params: &TlsParams) -> Result<quiche::Config> {
 }
 
 pub fn inject_ech(conn: &mut quiche::Connection, ech_config_list: &[u8]) -> Result<()> {
-    if ech_config_list.is_empty() {
-        return Err(AetherError::Ech("empty ech config list".into()));
-    }
+    ensure_offerable(ech_config_list)?;
 
     let ssl: &mut boring::ssl::SslRef = conn.as_mut();
     let ssl_ptr = ssl.as_ptr() as *mut c_void;
@@ -231,14 +229,191 @@ pub fn extract_ech_retry_configs(conn: &mut quiche::Connection) -> Option<Vec<u8
     }
 
     let slice = unsafe { std::slice::from_raw_parts(out, out_len) };
-    Some(slice.to_vec())
+    usable_retry(slice)
+}
+
+/// Whether the handshake of `conn` went with ECH: the server took the key it was offered.
+pub fn ech_accepted(conn: &mut quiche::Connection) -> bool {
+    let ssl: &mut boring::ssl::SslRef = conn.as_mut();
+    ssl.ech_accepted()
+}
+
+/// `retry`, the ECHConfigList a server handed back as it turned the offered one down, when
+/// BoringSSL can offer it: a handshake given one it cannot would go without ECH.
+pub fn usable_retry(retry: &[u8]) -> Option<Vec<u8>> {
+    match check_ech_config_list(retry) {
+        Ok(()) => Some(retry.to_vec()),
+        Err(reason) => {
+            log::warn!(
+                "the server handed back an ECH key that cannot be offered ({reason}); not retrying with it"
+            );
+            None
+        }
+    }
 }
 
 pub fn decode_ech_config_list(b64: &str) -> Result<Vec<u8>> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
-        .map_err(|e| AetherError::Ech(e.to_string()))
+        .map_err(|e| AetherError::Ech(format!("the --ech value is not base64: {e}")))
+}
+
+/// How the core says that it does not start a session for want of an ECH key: with --ech
+/// given, a session without a key it can offer would send the server name in the clear.
+/// An app that runs the core reads it to tell its user why the session stopped.
+pub const NO_ECH_KEY: &str = "ECH is on but there is no ECH key to offer";
+
+/// The ECHConfig version BoringSSL offers, which is the code point of the extension as well.
+const ECH_CONFIG_VERSION: u16 = 0xfe0d;
+/// The HPKE algorithms BoringSSL offers ECH with, as a client: one KEM, one KDF, and the
+/// AEADs AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305.
+const HPKE_DHKEM_X25519_HKDF_SHA256: u16 = 0x0020;
+const HPKE_HKDF_SHA256: u16 = 0x0001;
+const HPKE_AEADS: [u16; 3] = [0x0001, 0x0002, 0x0003];
+const X25519_PUBLIC_KEY_LEN: usize = 32;
+
+/// `check_ech_config_list`, as the error of a handshake about to be given `list`.
+pub fn ensure_offerable(list: &[u8]) -> Result<()> {
+    check_ech_config_list(list)
+        .map_err(|reason| AetherError::Ech(format!("the ECH key cannot be offered: {reason}")))
+}
+
+/// Whether BoringSSL offers ECH when it is given `list`, an ECHConfigList. BoringSSL takes
+/// any list that parses, even one with no config it can use, and then sends the server
+/// name in the clear (with a GREASE ECH extension), so a key is checked here before a
+/// handshake is given it. The list has to parse as BoringSSL parses it, and the first
+/// config BoringSSL picks from it has to hold an X25519 key. This follows
+/// ssl/encrypted_client_hello.cc (parse_ech_config, ssl_is_valid_ech_public_name,
+/// ssl_select_ech_config) of the BoringSSL that boring 4.22 builds.
+pub fn check_ech_config_list(list: &[u8]) -> std::result::Result<(), String> {
+    let malformed = || "it is no ECHConfigList".to_string();
+    let mut whole = Fields(list);
+    let mut configs = whole.u16_prefixed().ok_or_else(malformed)?;
+    if configs.is_empty() || !whole.is_empty() {
+        return Err(malformed());
+    }
+    // BoringSSL parses every config as it takes the list, and offers the first it can.
+    let mut picked = None;
+    while !configs.is_empty() {
+        let config = ech_config(&mut configs).ok_or_else(malformed)?;
+        picked = picked.or(config);
+    }
+    match picked {
+        Some(key) if key.len() == X25519_PUBLIC_KEY_LEN => Ok(()),
+        Some(_) => Err("the X25519 key of its config is not 32 bytes long".into()),
+        None => Err(
+            "it holds no config BoringSSL offers: ECH version 0xfe0d, X25519, and \
+                     HKDF-SHA256 with AES-GCM or ChaCha20-Poly1305"
+                .into(),
+        ),
+    }
+}
+
+/// Reads one ECHConfig off `configs` as BoringSSL's parse_ech_config does. None when it
+/// does not parse, for which BoringSSL turns the whole list down; Some(None) for a config
+/// BoringSSL passes over; its public key for one BoringSSL would offer.
+fn ech_config<'a>(configs: &mut Fields<'a>) -> Option<Option<&'a [u8]>> {
+    let version = configs.u16()?;
+    let mut contents = configs.u16_prefixed()?;
+    if version != ECH_CONFIG_VERSION {
+        return Some(None);
+    }
+    let _config_id = contents.u8()?;
+    let kem_id = contents.u16()?;
+    let public_key = contents.u16_prefixed()?.0;
+    let mut cipher_suites = contents.u16_prefixed()?;
+    let _maximum_name_length = contents.u8()?;
+    let public_name = contents.u8_prefixed()?.0;
+    let mut extensions = contents.u16_prefixed()?;
+    if public_key.is_empty()
+        || cipher_suites.is_empty()
+        || cipher_suites.0.len() % 4 != 0
+        || public_name.is_empty()
+        || !contents.is_empty()
+    {
+        return None;
+    }
+    // A config whose public name is invalid is passed over before its extensions are read.
+    if !valid_public_name(public_name) {
+        return Some(None);
+    }
+    let mut mandatory_extension = false;
+    while !extensions.is_empty() {
+        let kind = extensions.u16()?;
+        extensions.u16_prefixed()?;
+        mandatory_extension |= kind & 0x8000 != 0;
+    }
+    let mut cipher_suite = false;
+    while !cipher_suites.is_empty() {
+        let (kdf, aead) = (cipher_suites.u16()?, cipher_suites.u16()?);
+        cipher_suite |= kdf == HPKE_HKDF_SHA256 && HPKE_AEADS.contains(&aead);
+    }
+    let offered = !mandatory_extension && kem_id == HPKE_DHKEM_X25519_HKDF_SHA256 && cipher_suite;
+    Some(offered.then_some(public_key))
+}
+
+/// BoringSSL's ssl_is_valid_ech_public_name: dot-separated labels of 1 to 63 letters,
+/// digits and hyphens, none starting or ending with a hyphen, the last of them no decimal
+/// number and no 0x hex one.
+fn valid_public_name(name: &[u8]) -> bool {
+    let mut last: &[u8] = &[];
+    for label in name.split(|&b| b == b'.') {
+        let ldh = label
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'-');
+        if label.is_empty()
+            || label.len() > 63
+            || label[0] == b'-'
+            || label[label.len() - 1] == b'-'
+            || !ldh
+        {
+            return false;
+        }
+        last = label;
+    }
+    let decimal = last.iter().all(u8::is_ascii_digit);
+    let hex = last.len() >= 2
+        && last[0] == b'0'
+        && (last[1] == b'x' || last[1] == b'X')
+        && last[2..].iter().all(u8::is_ascii_hexdigit);
+    !decimal && !hex
+}
+
+/// The fields of an ECHConfigList, read in order as BoringSSL's CBS reads them.
+struct Fields<'a>(&'a [u8]);
+
+impl<'a> Fields<'a> {
+    fn take(&mut self, len: usize) -> Option<&'a [u8]> {
+        if self.0.len() < len {
+            return None;
+        }
+        let (head, rest) = self.0.split_at(len);
+        self.0 = rest;
+        Some(head)
+    }
+
+    fn u8(&mut self) -> Option<u8> {
+        self.take(1).map(|b| b[0])
+    }
+
+    fn u16(&mut self) -> Option<u16> {
+        self.take(2).map(|b| u16::from_be_bytes([b[0], b[1]]))
+    }
+
+    fn u8_prefixed(&mut self) -> Option<Fields<'a>> {
+        let len = self.u8()?;
+        self.take(len.into()).map(Fields)
+    }
+
+    fn u16_prefixed(&mut self) -> Option<Fields<'a>> {
+        let len = self.u16()?;
+        self.take(len.into()).map(Fields)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -269,5 +444,155 @@ mod tests {
             assert_eq!(session_ech(), Some(vec![8]));
         }
         assert_eq!(session_ech(), None);
+    }
+
+    /// An ECHConfig: `version`, config id 7, the KEM `kem` with a key of `key_len` bytes, the
+    /// cipher suites `suites` as (KDF, AEAD), the public name `name`, and `extensions` as they
+    /// go on the wire.
+    fn config(
+        version: u16,
+        kem: u16,
+        key_len: usize,
+        suites: &[(u16, u16)],
+        name: &str,
+        extensions: &[u8],
+    ) -> Vec<u8> {
+        let mut contents = vec![7];
+        contents.extend_from_slice(&kem.to_be_bytes());
+        contents.extend_from_slice(&(key_len as u16).to_be_bytes());
+        contents.extend(std::iter::repeat(0x42).take(key_len));
+        contents.extend_from_slice(&((suites.len() * 4) as u16).to_be_bytes());
+        for (kdf, aead) in suites {
+            contents.extend_from_slice(&kdf.to_be_bytes());
+            contents.extend_from_slice(&aead.to_be_bytes());
+        }
+        contents.push(0);
+        contents.push(name.len() as u8);
+        contents.extend_from_slice(name.as_bytes());
+        contents.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+        contents.extend_from_slice(extensions);
+        let mut config = version.to_be_bytes().to_vec();
+        config.extend_from_slice(&(contents.len() as u16).to_be_bytes());
+        config.extend(contents);
+        config
+    }
+
+    fn list(configs: &[Vec<u8>]) -> Vec<u8> {
+        let body = configs.concat();
+        let mut list = (body.len() as u16).to_be_bytes().to_vec();
+        list.extend(body);
+        list
+    }
+
+    /// A config like Cloudflare's: X25519, HKDF-SHA256 with AES-128-GCM.
+    fn offered(name: &str) -> Vec<u8> {
+        config(0xfe0d, 0x0020, 32, &[(1, 1)], name, &[])
+    }
+
+    #[test]
+    fn cloudflares_key_is_one_boringssl_offers() {
+        // Cloudflare's key of cloudflare-ech.com on 2026-10-01.
+        let key = decode_ech_config_list(
+            "AEX+DQBBrwAgACCbK1mYDYFz/BAn6S5t+Q/v+Oej3eFNxtPWgz50fNnFPAAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=",
+        )
+        .expect("base64");
+        assert_eq!(check_ech_config_list(&key), Ok(()));
+        // The same fields as built here, the key aside.
+        let mut built = list(&[offered("cloudflare-ech.com")]);
+        built[2 + 2 + 2 + 1 + 2 + 2..][..32].copy_from_slice(&key[11..43]);
+        built[6] = key[6];
+        assert_eq!(built, key);
+    }
+
+    #[test]
+    fn a_key_boringssl_would_pass_over_is_turned_down() {
+        // Each parses, so BoringSSL would take it, offer nothing, and send the name in the clear.
+        let passed_over = [
+            config(0xfe0c, 0x0020, 32, &[(1, 1)], "cloudflare-ech.com", &[]),
+            // P-256, its key as long as an X25519 one so that only the KEM tells them apart.
+            config(0xfe0d, 0x0010, 32, &[(1, 1)], "cloudflare-ech.com", &[]),
+            config(0xfe0d, 0x0020, 32, &[(2, 1)], "cloudflare-ech.com", &[]),
+            config(0xfe0d, 0x0020, 32, &[(1, 4)], "cloudflare-ech.com", &[]),
+            config(
+                0xfe0d,
+                0x0020,
+                32,
+                &[(1, 1)],
+                "cloudflare-ech.com",
+                &[0x80, 1, 0, 0],
+            ),
+            offered("192.0.2.1"),
+            offered("example.0x1F"),
+            offered("-example.com"),
+            offered("example-.com"),
+            offered("example..com"),
+            offered("example.com."),
+            offered("exa_mple.com"),
+            offered(&"a".repeat(64)),
+        ];
+        for config in passed_over {
+            let list = list(&[config]);
+            assert!(check_ech_config_list(&list).is_err(), "{list:02x?}");
+            assert!(usable_retry(&list).is_none());
+        }
+    }
+
+    #[test]
+    fn the_first_config_boringssl_can_offer_is_the_one_it_offers() {
+        let older = config(0xfe0c, 0x0020, 32, &[(1, 1)], "x.example", &[]);
+        assert_eq!(
+            check_ech_config_list(&list(&[older, offered("a.example")])),
+            Ok(())
+        );
+        // An extension that is not mandatory is passed over, and one good suite is enough.
+        let optional = config(
+            0xfe0d,
+            0x0020,
+            32,
+            &[(2, 1), (1, 3)],
+            "a.example",
+            &[0, 1, 0, 1, 9],
+        );
+        assert_eq!(check_ech_config_list(&list(&[optional])), Ok(()));
+        // Only a last label that is a number disqualifies a name.
+        assert_eq!(
+            check_ech_config_list(&list(&[offered("0x1f.example")])),
+            Ok(())
+        );
+        assert_eq!(check_ech_config_list(&list(&[offered("a.0x1g")])), Ok(()));
+        assert_eq!(check_ech_config_list(&list(&[offered("a.b1")])), Ok(()));
+        // A config it picks with a key of the wrong length fails the handshake: no later one counts.
+        let short = config(0xfe0d, 0x0020, 31, &[(1, 1)], "a.example", &[]);
+        assert!(check_ech_config_list(&list(&[short, offered("a.example")])).is_err());
+    }
+
+    #[test]
+    fn a_list_boringssl_cannot_parse_is_turned_down() {
+        let mut trailing = list(&[offered("a.example")]);
+        trailing.push(0);
+        let mut cut = list(&[offered("a.example")]);
+        cut.pop();
+        // A config it would pass over still has to parse: here its extensions are cut short.
+        let broken = list(&[
+            offered("a.example"),
+            config(0xfe0d, 0x0020, 32, &[(1, 1)], "a.example", &[0]),
+        ]);
+        let no_key = list(&[config(0xfe0d, 0x0020, 0, &[(1, 1)], "a.example", &[])]);
+        let no_name = list(&[offered("")]);
+        // What BoringSSL hands out for retry configs when it has none.
+        let placeholder = vec![0xfe, 0x0d, 0xff, 0xff, 0xff];
+        for bad in [
+            vec![],
+            vec![0, 0],
+            trailing,
+            cut,
+            broken,
+            no_key,
+            no_name,
+            placeholder,
+        ] {
+            assert!(check_ech_config_list(&bad).is_err(), "{bad:02x?}");
+            assert!(ensure_offerable(&bad).is_err());
+        }
     }
 }
