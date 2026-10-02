@@ -1300,7 +1300,13 @@ fn lastconn_path(config_path: &str) -> String {
     derive_sibling_path(config_path, "lastconn")
 }
 
-async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr) -> bool {
+/// Whether `peer` serves MASQUE, by a quick check on the carrier the session uses, which
+/// offers `ech`: the session's key, or that of a job of the library.
+async fn quick_verify_masque_peer(
+    identity: &account::Identity,
+    peer: SocketAddr,
+    ech: Option<Vec<u8>>,
+) -> bool {
     let vp = quic::VerifyParams {
         peer,
         sni: consts::CONNECT_SNI.to_string(),
@@ -1308,7 +1314,7 @@ async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr
         path: quic::default_path().to_string(),
         cert_pem: identity.cert_pem.clone(),
         key_pem: identity.key_pem.clone(),
-        ech_config_list: tls::session_ech(),
+        ech_config_list: ech.clone(),
         noize: noize_config(),
         timeout: std::time::Duration::from_secs(5),
         local_ipv4: parse_local_v4(&identity.ipv4),
@@ -1326,7 +1332,7 @@ async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr
             quiet: true,
             pin_endpoint: true,
             expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
-            ech_config_list: tls::session_ech(),
+            ech_config_list: ech,
         };
         return masque_h2::verify_h2(&cfg, std::time::Duration::from_secs(5))
             .await
@@ -1367,7 +1373,7 @@ async fn run_masque(
             .and_then(|value| value.parse::<SocketAddr>().ok())
         {
             log::info!("[*] verifying the endpoint the organization assigned: {assigned}");
-            if quick_verify_masque_peer(&identity, assigned).await {
+            if quick_verify_masque_peer(&identity, assigned, tls::session_ech()).await {
                 log::info!("[+] the assigned endpoint {assigned} works; skipping the scan");
                 quick_peer = Some(assigned);
             } else {
@@ -1384,7 +1390,7 @@ async fn run_masque(
             if !ring.is_empty() && want_quick_reconnect(&cached).await {
                 for peer in ring {
                     log::info!("[*] verifying cached gateway {peer} before reuse");
-                    if quick_verify_masque_peer(&identity, peer).await {
+                    if quick_verify_masque_peer(&identity, peer, tls::session_ech()).await {
                         log::info!("[+] cached gateway {peer} still works; skipping scan");
                         quick_peer = Some(peer);
                         break;
@@ -1415,7 +1421,7 @@ async fn run_masque(
             let retried = match last_good_peer {
                 Some(p) => {
                     log::info!("[*] retrying last known-good gateway {p} before rescanning");
-                    if quick_verify_masque_peer(&identity, p).await {
+                    if quick_verify_masque_peer(&identity, p, tls::session_ech()).await {
                         Some(p)
                     } else {
                         log::warn!(

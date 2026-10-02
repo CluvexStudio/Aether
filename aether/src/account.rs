@@ -221,6 +221,29 @@ pub fn generate_masque_keypair() -> Result<MasqueKeyPair> {
     })
 }
 
+/// An identity with a MASQUE key pair of its own and nothing registered: enough to start a
+/// MASQUE handshake with in a test, never to get through to WARP.
+#[cfg(test)]
+pub(crate) fn handshake_identity() -> Identity {
+    let pair = generate_masque_keypair().expect("a MASQUE key pair");
+    Identity {
+        device_id: "device".to_string(),
+        access_token: "token".to_string(),
+        cert_pem: pair.cert_pem,
+        key_pem: pair.key_pem,
+        cert_issued_at: now_unix(),
+        ipv4: "172.16.0.2".to_string(),
+        ipv6: String::new(),
+        wg_private_key: [0u8; 32],
+        wg_peer_public_key: [0u8; 32],
+        client_id: [0u8; 3],
+        organization: String::new(),
+        gateway_proxy: String::new(),
+        assigned_endpoint: String::new(),
+        refused: false,
+    }
+}
+
 /// How long one attempt at a call to the WARP API may take.
 const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 

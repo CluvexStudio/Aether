@@ -1025,6 +1025,23 @@ async fn flush_connected(conn: &mut quiche::Connection, sock: &UdpSocket) -> Res
     Ok(())
 }
 
+/// Whether a QUIC v1 Initial, the packet that carries a ClientHello, reaches `peer` within
+/// `wait`. The version bait (QUIC v2) and the junk of the obfuscation are no Initial.
+#[cfg(test)]
+pub(crate) async fn hears_a_client_hello(peer: &UdpSocket, wait: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut packet = [0u8; 2048];
+    while let Ok(Ok((read, _))) =
+        tokio::time::timeout_at(deadline, peer.recv_from(&mut packet)).await
+    {
+        // A long header of the Initial type, and version 1.
+        if read > 5 && packet[0] & 0xf0 == 0xc0 && packet[1..5] == [0, 0, 0, 1] {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod v2_bait_tests {
     use super::*;

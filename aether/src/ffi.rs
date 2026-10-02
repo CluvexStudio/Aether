@@ -173,6 +173,20 @@ fn describe(error: crate::error::AetherError) -> String {
     error.to_string()
 }
 
+/// The ECH key of a job whose payload asks for ECH (`want`) on `transport`: none for WireGuard,
+/// which has no TLS handshake to hide a name in; for MASQUE, the key the lookup finds, or the
+/// error that ends the job before any handshake, which would send the server name in the clear.
+async fn job_ech(
+    want: bool,
+    transport: api::Transport,
+) -> std::result::Result<Option<Vec<u8>>, String> {
+    if want && transport == api::Transport::Masque {
+        api::fetch_ech_config().await.map(Some).map_err(describe)
+    } else {
+        Ok(None)
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct TeamPayload {
     team: String,
@@ -404,9 +418,7 @@ pub unsafe extern "C" fn aether_scan_start(identity: u64, payload: *const c_char
 
         spawn_job(move |cancel| async move {
             let mut request = request;
-            if want_ech {
-                request.ech_config_list = api::fetch_ech_config().await;
-            }
+            request.ech_config_list = job_ech(want_ech, request.transport).await?;
             let endpoint = api::scan(&identity, &request, &cancel)
                 .await
                 .map_err(describe)?;
@@ -441,8 +453,11 @@ pub unsafe extern "C" fn aether_verify_start(identity: u64, payload: *const c_ch
         let identity = identity_of(identity)?;
         let peer = socket_of(&payload.peer, "the peer address")?;
         let spec = tunnel_spec_of(&payload)?;
+        let want_ech = payload.ech.unwrap_or(false);
 
         spawn_job(move |cancel| async move {
+            let mut spec = spec;
+            spec.ech = job_ech(want_ech, spec.transport).await?;
             let reachable = api::verify_endpoint(&identity, peer, &spec, &cancel)
                 .await
                 .map_err(describe)?;
@@ -462,9 +477,7 @@ pub unsafe extern "C" fn aether_tunnel_start(identity: u64, payload: *const c_ch
 
         spawn_job(move |cancel| async move {
             let mut spec = spec;
-            if want_ech && matches!(spec.transport, api::Transport::Masque) {
-                spec.ech = api::fetch_ech_config().await;
-            }
+            spec.ech = job_ech(want_ech, spec.transport).await?;
 
             match api::connect(&identity, peer, &spec, &cancel).await {
                 Ok(()) => Ok(json!({"state": "closed"})),
@@ -788,5 +801,67 @@ mod tests {
         let payload = text_of("{\"peer\":\"nonsense\"}");
         let reply = take(unsafe { aether_verify_start(1, payload.as_ptr()) });
         assert_eq!(reply["ok"], json!(false));
+    }
+
+    /// The result of the job `started` names, once it is done, within `wait`.
+    fn finished(started: Value, wait: std::time::Duration) -> Value {
+        assert_eq!(started["ok"], json!(true), "{started}");
+        let id = started["job"].as_u64().expect("a job id");
+        let deadline = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < deadline {
+            let polled = take(aether_job_poll(id));
+            if polled["state"] == json!("done") {
+                take(aether_job_free(id));
+                return polled["result"].clone();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("job {id} was not done within {wait:?}");
+    }
+
+    #[test]
+    fn a_job_that_asks_for_ech_does_not_start_without_a_key_it_can_offer() {
+        // The one test that names the resolver of the ECH lookup: an address that turns the
+        // connection down, so that the lookup fails.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let resolver = closed.local_addr().expect("its address");
+        drop(closed);
+        std::env::set_var("AETHER_ECH_DNS", format!("tcp://{resolver}"));
+
+        // WireGuard has no TLS handshake to hide a name in, and a job that does not ask for
+        // ECH looks no key up.
+        let runtime = runtime().expect("the runtime");
+        assert_eq!(
+            runtime.block_on(job_ech(true, api::Transport::WireGuard)),
+            Ok(None)
+        );
+        assert_eq!(
+            runtime.block_on(job_ech(false, api::Transport::Masque)),
+            Ok(None)
+        );
+
+        let identity = keep_identity(crate::account::handshake_identity())["identity"]
+            .as_u64()
+            .expect("an identity id");
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").expect("a peer");
+        let payload = text_of(&format!(
+            "{{\"peer\":\"{}\",\"socks\":\"127.0.0.1:0\",\"ech\":true}}",
+            peer.local_addr().expect("its address")
+        ));
+        let verify = take(unsafe { aether_verify_start(identity, payload.as_ptr()) });
+        let tunnel = take(unsafe { aether_tunnel_start(identity, payload.as_ptr()) });
+        for started in [verify, tunnel] {
+            let result = finished(started, std::time::Duration::from_secs(30));
+            assert_eq!(result["ok"], json!(false), "{result}");
+            let error = result["error"].as_str().expect("an error");
+            assert!(error.contains(crate::tls::NO_ECH_KEY), "{error}");
+        }
+        std::env::remove_var("AETHER_ECH_DNS");
+        identities().lock().remove(&identity);
+
+        // Neither job sent the peer anything.
+        peer.set_nonblocking(true).expect("non-blocking");
+        let mut packet = [0u8; 2048];
+        assert!(peer.recv_from(&mut packet).is_err());
     }
 }
