@@ -121,6 +121,9 @@ pub struct EchLookup {
     pub dns_variable: &'static str,
     pub domain_flag: &'static str,
     pub domain_variable: &'static str,
+    /// The TLS 1.2 cipher suites the lookup lists over DNS-over-HTTPS: those of the
+    /// handshakes the key is for.
+    pub ciphers: &'static crate::tls::CipherOption,
 }
 
 /// The lookup of --ech auto, whose key the MASQUE handshakes of a session offer.
@@ -129,6 +132,7 @@ pub const SESSION_ECH: EchLookup = EchLookup {
     dns_variable: "AETHER_ECH_DNS",
     domain_flag: "--ech-domain",
     domain_variable: "AETHER_ECH_DOMAIN",
+    ciphers: &crate::tls::TLS_CIPHERS,
 };
 
 /// The lookup of --get-warp-key-ech auto, whose key the calls to the WARP API offer.
@@ -137,6 +141,7 @@ pub const WARP_KEY_ECH: EchLookup = EchLookup {
     dns_variable: "AETHER_GET_WARP_KEY_ECH_DNS",
     domain_flag: "--get-warp-key-ech-domain",
     domain_variable: "AETHER_GET_WARP_KEY_ECH_DOMAIN",
+    ciphers: &crate::tls::WARP_KEY_TLS_CIPHERS,
 };
 
 /// The resolver `lookup` names, or the default one.
@@ -174,11 +179,12 @@ pub async fn fetch_ech_config(lookup: &EchLookup) -> Result<Vec<u8>> {
         .map_err(|e| AetherError::Ech(format!("{}: {e}", lookup.dns_flag)))?;
     let domain = configured_domain(lookup)
         .map_err(|e| AetherError::Ech(format!("{}: {e}", lookup.domain_flag)))?;
+    let ciphers = lookup.ciphers;
     let lookup = async {
         match &dns {
             EchDns::Udp(server) => query_udp(*server, &domain).await,
             EchDns::Tcp(server) => query_tcp(*server, &domain).await,
-            EchDns::Https(url) => query_https(url, &domain).await,
+            EchDns::Https(url) => query_https(url, &domain, ciphers).await,
         }
     };
     let ech = match tokio::time::timeout(ECH_LOOKUP_TIMEOUT, lookup).await {
@@ -246,11 +252,20 @@ async fn query_tcp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
     answer_ech(&msg, domain)
 }
 
-async fn query_https(url: &str, domain: &str) -> Result<Vec<u8>> {
+/// Asks `url`, a DoH endpoint, for the HTTPS record of `domain`; the ClientHello lists the
+/// TLS 1.2 cipher suites `ciphers` gives, if any.
+async fn query_https(
+    url: &str,
+    domain: &str,
+    ciphers: &crate::tls::CipherOption,
+) -> Result<Vec<u8>> {
     let mut builder = reqwest::Client::builder()
         .timeout(ECH_LOOKUP_TIMEOUT)
         // TLS server-certificate verification disabled (unconditional).
         .danger_accept_invalid_certs(true);
+    if let Some(list) = ciphers.configured() {
+        builder = builder.use_preconfigured_tls(crate::tls::rustls_tls(ciphers, &list)?);
+    }
     if let Some(upstream) = crate::upstream::configured() {
         builder = builder.proxy(upstream.as_reqwest_proxy()?);
     }
@@ -655,5 +670,52 @@ mod tests {
             "cloudflare-ech.com",
             RR_HTTPS
         ));
+    }
+
+    #[test]
+    fn each_lookup_lists_the_suites_of_the_handshakes_its_key_is_for() {
+        assert_eq!(SESSION_ECH.ciphers.flag, "--tls-ciphers");
+        assert_eq!(WARP_KEY_ECH.ciphers.flag, "--get-warp-key-tls-ciphers");
+    }
+
+    /// The ClientHello of `lookup` over DoH, as a server on this machine reads it before it
+    /// hangs up.
+    async fn doh_hello(lookup: &EchLookup) -> crate::tls::client_hello::ClientHello {
+        let (server, hello) = crate::tls::client_hello::catch().await;
+        std::env::set_var(lookup.dns_variable, format!("https://{server}/dns-query"));
+        assert!(fetch_ech_config(lookup).await.is_err());
+        std::env::remove_var(lookup.dns_variable);
+        hello.await.expect("the ClientHello")
+    }
+
+    #[tokio::test]
+    async fn a_doh_lookup_lists_the_tls12_suites_of_its_cipher_option() {
+        // A lookup and an option of the test's own, so that no other test sees their variables.
+        const CIPHERS: crate::tls::CipherOption = crate::tls::CipherOption {
+            flag: "--doh-test-ciphers",
+            variable: "AETHER_DOH_TEST_CIPHERS",
+            rustls_handshakes: "the DoH lookup of the test",
+        };
+        const LOOKUP: EchLookup = EchLookup {
+            dns_flag: "--doh-test-dns",
+            dns_variable: "AETHER_DOH_TEST_DNS",
+            domain_flag: "--doh-test-domain",
+            domain_variable: "AETHER_DOH_TEST_DOMAIN",
+            ciphers: &CIPHERS,
+        };
+        let own = doh_hello(&LOOKUP).await;
+        std::env::set_var(
+            CIPHERS.variable,
+            "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA",
+        );
+        let listed = doh_hello(&LOOKUP).await;
+        std::env::remove_var(CIPHERS.variable);
+        // reqwest's TLS 1.3 suites as they were, then those of the list rustls has, in the
+        // list's order, then the renegotiation SCSV; AES256-SHA rustls has not.
+        assert_eq!(listed.suites[..3], own.suites[..3]);
+        assert_eq!(listed.suites[3..], [0xc02f, 0xcca9, 0x00ff]);
+        assert!(own.suites.contains(&0xc02b), "{:04x?}", own.suites);
+        // Nothing else changes: the same extensions with the same contents.
+        assert_eq!(listed.comparable_extensions(), own.comparable_extensions());
     }
 }

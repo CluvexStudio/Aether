@@ -31,23 +31,31 @@ const CHROME_GROUPS: &str = "P-256:X25519:P-384";
 /// An option that sets TLS 1.2 cipher suites: a BoringSSL cipher string, names separated
 /// by ':'. A ClientHello lists them after BoringSSL's own TLS 1.3 suites, which no cipher
 /// string changes, and only where it offers TLS 1.2 as well.
+#[derive(Debug)]
 pub struct CipherOption {
     pub flag: &'static str,
     pub variable: &'static str,
+    /// The handshakes of the option that rustls makes, through reqwest, which take only the
+    /// suites rustls has; see `rustls_tls`.
+    pub rustls_handshakes: &'static str,
 }
 
-/// --tls-ciphers: the TLS 1.2 cipher suites of the MASQUE handshakes over HTTP/2. HTTP/3
-/// has none: QUIC offers TLS 1.3 alone.
+/// --tls-ciphers: the TLS 1.2 cipher suites of the MASQUE handshakes over HTTP/2, and of
+/// the DoH lookup of --ech-dns. HTTP/3 has none: QUIC offers TLS 1.3 alone.
 pub const TLS_CIPHERS: CipherOption = CipherOption {
     flag: "--tls-ciphers",
     variable: "AETHER_TLS_CIPHERS",
+    rustls_handshakes: "the DoH lookup of --ech-dns",
 };
 
 /// --get-warp-key-tls-ciphers: the TLS 1.2 cipher suites of the calls to the WARP API that
-/// offer TLS 1.2: the direct route and the camouflaged fingerprints that do.
+/// offer TLS 1.2, which all do but the camouflaged split-tls13 fingerprint, and of the DoH
+/// lookup of --get-warp-key-ech-dns.
 pub const WARP_KEY_TLS_CIPHERS: CipherOption = CipherOption {
     flag: "--get-warp-key-tls-ciphers",
     variable: "AETHER_GET_WARP_KEY_TLS_CIPHERS",
+    rustls_handshakes:
+        "the direct route to the WARP API and the DoH lookup of --get-warp-key-ech-dns",
 };
 
 impl CipherOption {
@@ -113,6 +121,122 @@ pub fn check_cipher_options() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The rustls clients built for the cipher options, once for the run: by option and list.
+static RUSTLS_TLS: std::sync::Mutex<Vec<(&'static str, String, rustls::ClientConfig)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The TLS of the handshakes reqwest makes for `option`, given `list`: what reqwest builds by
+/// itself (rustls with ring, TLS 1.3 and 1.2, its TLS 1.3 suites as they are, no certificate
+/// checks, ALPN h2 then http/1.1), with the TLS 1.2 suites of `list` in place of its own. Those
+/// rustls has, ECDHE with AES-GCM or ChaCha20, go in the order of the list; the others are left
+/// out. With none of them, the handshakes offer TLS 1.3 alone.
+pub fn rustls_tls(option: &CipherOption, list: &str) -> Result<rustls::ClientConfig> {
+    let mut built = RUSTLS_TLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, _, config)) = built
+        .iter()
+        .find(|(flag, for_list, _)| *flag == option.flag && for_list == list)
+    {
+        return Ok(config.clone());
+    }
+
+    let mut provider = rustls::crypto::ring::default_provider();
+    let (mut suites, tls12): (Vec<_>, Vec<_>) = provider
+        .cipher_suites
+        .iter()
+        .copied()
+        .partition(|suite| suite.tls13().is_some());
+    let tls13_suites = suites.len();
+    for (id, name) in tls12_ciphers(list)? {
+        match tls12.iter().find(|suite| u16::from(suite.suite()) == id) {
+            Some(suite) => suites.push(*suite),
+            None => log::warn!(
+                "[!] {}: {name} is left out of {}, as rustls has ECDHE with AES-GCM or ChaCha20 only",
+                option.flag,
+                option.rustls_handshakes
+            ),
+        }
+    }
+    let versions: &[&'static rustls::SupportedProtocolVersion] = if suites.len() > tls13_suites {
+        &[&rustls::version::TLS13, &rustls::version::TLS12]
+    } else {
+        log::warn!(
+            "[!] {}: TLS 1.3 alone in {}, as rustls has none of the list's TLS 1.2 suites",
+            option.flag,
+            option.rustls_handshakes
+        );
+        &[&rustls::version::TLS13]
+    };
+    provider.cipher_suites = suites;
+
+    let mut config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(provider))
+        .with_protocol_versions(versions)
+        .map_err(|e| AetherError::Tls(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(AnyCertificate))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    built.push((option.flag, list.to_string(), config.clone()));
+    Ok(config)
+}
+
+/// Takes any certificate, as reqwest's own verifier for danger_accept_invalid_certs does, and
+/// offers the signature schemes it offers, so that the ClientHello stays the one reqwest
+/// writes by itself, but for the cipher suites.
+#[derive(Debug)]
+struct AnyCertificate;
+
+impl rustls::client::danger::ServerCertVerifier for AnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        use rustls::SignatureScheme;
+        vec![
+            SignatureScheme::RSA_PKCS1_SHA1,
+            SignatureScheme::ECDSA_SHA1_Legacy,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::ECDSA_NISTP521_SHA512,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::ED25519,
+            SignatureScheme::ED448,
+        ]
+    }
 }
 
 pub struct TlsParams<'a> {
@@ -833,5 +957,196 @@ mod tests {
             assert!(check_ech_config_list(&bad).is_err(), "{bad:02x?}");
             assert!(ensure_offerable(&bad).is_err());
         }
+    }
+
+    /// The ClientHello rustls writes with `config`, to a server named example.com.
+    fn rustls_hello(config: rustls::ClientConfig) -> client_hello::ClientHello {
+        let name = rustls::pki_types::ServerName::try_from("example.com").expect("a name");
+        let mut connection =
+            rustls::ClientConnection::new(std::sync::Arc::new(config), name).expect("a client");
+        let mut wire = Vec::new();
+        connection.write_tls(&mut wire).expect("the ClientHello");
+        client_hello::parse(&wire)
+    }
+
+    #[test]
+    fn rustls_takes_the_suites_of_the_list_it_has_in_the_lists_order() {
+        // In neither rustls's order nor the sorted one.
+        let config = rustls_tls(
+            &TLS_CIPHERS,
+            "ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA:ECDHE-RSA-AES128-GCM-SHA256",
+        )
+        .expect("a list BoringSSL takes");
+        assert_eq!(
+            config.alpn_protocols,
+            [b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+        let hello = rustls_hello(config);
+        // rustls's TLS 1.3 suites as they are, then those of the list it has, in the list's
+        // order, then the renegotiation SCSV it ends with; AES256-SHA it has not.
+        assert_eq!(
+            hello.suites,
+            [0x1302, 0x1301, 0x1303, 0xcca9, 0xc02f, 0x00ff]
+        );
+        assert_eq!(hello.versions(), [0x0304, 0x0303]);
+    }
+
+    #[test]
+    fn rustls_offers_tls13_alone_without_a_suite_of_the_list_it_has() {
+        let config = rustls_tls(&WARP_KEY_TLS_CIPHERS, "AES256-SHA:ECDHE-RSA-AES128-SHA")
+            .expect("a list BoringSSL takes");
+        let hello = rustls_hello(config);
+        // No renegotiation SCSV either: rustls lists it only with TLS 1.2.
+        assert_eq!(hello.suites, [0x1302, 0x1301, 0x1303]);
+        assert_eq!(hello.versions(), [0x0304]);
+    }
+
+    #[test]
+    fn rustls_builds_a_client_for_each_list() {
+        let first = "ECDHE-ECDSA-AES128-GCM-SHA256";
+        let second = "ECDHE-RSA-AES256-GCM-SHA384";
+        for _ in 0..2 {
+            let hello = rustls_hello(rustls_tls(&TLS_CIPHERS, first).expect("a list"));
+            assert_eq!(hello.suites[3..], [0xc02b, 0x00ff]);
+            let hello = rustls_hello(rustls_tls(&TLS_CIPHERS, second).expect("a list"));
+            assert_eq!(hello.suites[3..], [0xc030, 0x00ff]);
+        }
+    }
+
+    #[test]
+    fn rustls_takes_no_list_boringssl_does_not() {
+        assert!(rustls_tls(&TLS_CIPHERS, "ECDHE-RSA-AES128-GCM-SHA256:NO-SUCH-SUITE").is_err());
+    }
+}
+
+/// A ClientHello as a server reads it, and a server on this machine that reads one and hangs
+/// up, for the tests of the handshakes that list cipher suites.
+#[cfg(test)]
+pub(crate) mod client_hello {
+    use tokio::io::AsyncReadExt;
+
+    pub struct ClientHello {
+        /// The cipher suites, in order.
+        pub suites: Vec<u16>,
+        /// The extensions, in order: their type and what they carry.
+        pub extensions: Vec<(u16, Vec<u8>)>,
+    }
+
+    /// Whether `value` is a GREASE value (RFC 8701).
+    fn grease(value: u16) -> bool {
+        value & 0x0f0f == 0x0a0a && value >> 8 == value & 0xff
+    }
+
+    fn be16(bytes: &[u8], at: usize) -> usize {
+        u16::from_be_bytes([bytes[at], bytes[at + 1]]) as usize
+    }
+
+    impl ClientHello {
+        fn extension(&self, kind: u16) -> Option<&[u8]> {
+            self.extensions
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .map(|(_, data)| data.as_slice())
+        }
+
+        /// The TLS 1.2 cipher suites: GREASE and the TLS 1.3 ones left out.
+        pub fn tls12_suites(&self) -> Vec<u16> {
+            self.suites
+                .iter()
+                .copied()
+                .filter(|suite| !grease(*suite) && !(0x1301..=0x1305).contains(suite))
+                .collect()
+        }
+
+        /// The versions of supported_versions, GREASE left out.
+        pub fn versions(&self) -> Vec<u16> {
+            let data = self.extension(43).expect("supported_versions");
+            data[1..1 + data[0] as usize]
+                .chunks(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .filter(|version| !grease(*version))
+                .collect()
+        }
+
+        /// The name in server_name.
+        pub fn server_name(&self) -> Option<String> {
+            let data = self.extension(0)?;
+            Some(String::from_utf8_lossy(&data[5..5 + be16(data, 3)]).into_owned())
+        }
+
+        /// Whether it offers ECH: encrypted_client_hello.
+        pub fn offers_ech(&self) -> bool {
+            self.extension(0xfe0d).is_some()
+        }
+
+        /// The extensions sorted by type, with only the groups of key_share, whose keys are new
+        /// each time: rustls shuffles their order for each ClientHello.
+        pub fn comparable_extensions(&self) -> Vec<(u16, Vec<u8>)> {
+            let mut extensions: Vec<_> = self
+                .extensions
+                .iter()
+                .map(|(kind, data)| {
+                    if *kind != 51 {
+                        return (*kind, data.clone());
+                    }
+                    let (mut groups, mut at) = (Vec::new(), 2);
+                    while at + 4 <= data.len() {
+                        groups.extend_from_slice(&data[at..at + 2]);
+                        at += 4 + be16(data, at + 2);
+                    }
+                    (*kind, groups)
+                })
+                .collect();
+            extensions.sort();
+            extensions
+        }
+    }
+
+    /// The ClientHello in `record`, a TLS record as it goes over the wire.
+    pub fn parse(record: &[u8]) -> ClientHello {
+        assert_eq!(record[0], 0x16, "a handshake record");
+        let message = &record[5..5 + be16(record, 3)];
+        assert_eq!(message[0], 1, "a ClientHello");
+        let hello = &message[4..];
+        let mut at = 2 + 32;
+        at += 1 + hello[at] as usize;
+        let suites = hello[at + 2..at + 2 + be16(hello, at)]
+            .chunks(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect();
+        at += 2 + be16(hello, at);
+        at += 1 + hello[at] as usize;
+        let end = at + 2 + be16(hello, at);
+        at += 2;
+        let mut extensions = Vec::new();
+        while at + 4 <= end {
+            let len = be16(hello, at + 2);
+            extensions.push((be16(hello, at) as u16, hello[at + 4..at + 4 + len].to_vec()));
+            at += 4 + len;
+        }
+        ClientHello { suites, extensions }
+    }
+
+    /// Listens on this machine: the task ends with the first ClientHello sent there, read
+    /// before the server hangs up, and fails when none comes within ten seconds.
+    pub async fn catch() -> (std::net::SocketAddr, tokio::task::JoinHandle<ClientHello>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let address = listener.local_addr().expect("its address");
+        let caught = tokio::spawn(async move {
+            let (mut tcp, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+                    .await
+                    .expect("a connection within ten seconds")
+                    .expect("a connection");
+            let mut record = vec![0u8; 5];
+            tcp.read_exact(&mut record).await.expect("a record header");
+            let len = be16(&record, 3);
+            record.resize(5 + len, 0);
+            tcp.read_exact(&mut record[5..]).await.expect("the record");
+            parse(&record)
+        });
+        (address, caught)
     }
 }

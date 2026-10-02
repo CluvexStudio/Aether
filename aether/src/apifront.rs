@@ -370,31 +370,18 @@ async fn exchange(
     })
 }
 
-/// The TLS of the ECH route: TLS 1.3, which ECH needs, with Chrome's fingerprint, which
-/// offers ECH, and `ech` offered in place of the server name.
+/// The TLS of the ECH route: Chrome's fingerprint, which offers ECH, with `ech` offered in
+/// place of the server name. As Chrome's, its ClientHello offers TLS 1.2 next to TLS 1.3,
+/// with --get-warp-key-tls-ciphers for its TLS 1.2 suites. The name goes only into the
+/// encrypted ClientHello, which offers TLS 1.3 alone; a server that answers with TLS 1.2
+/// has turned the ECH down, and BoringSSL ends that handshake with ECH_REJECTED.
 fn ech_configuration(ech: &[u8]) -> Result<boring::ssl::ConnectConfiguration> {
-    let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
-    let mut builder = SslConnector::builder(SslMethod::tls()).map_err(tls)?;
-
-    // TLS server-certificate verification disabled (unconditional), as on the other routes.
-    builder.set_verify(SslVerifyMode::NONE);
-    builder
-        .set_min_proto_version(Some(SslVersion::TLS1_3))
-        .map_err(tls)?;
-    builder
-        .set_max_proto_version(Some(SslVersion::TLS1_3))
-        .map_err(tls)?;
-    builder.set_grease_enabled(true);
-    builder.set_permute_extensions(true);
-    builder.set_curves_list(CHROME_GROUPS).map_err(tls)?;
-    builder.set_alpn_protos(ALPN_HTTP1).map_err(tls)?;
-    builder.enable_signed_cert_timestamps();
-    builder.enable_ocsp_stapling();
-
-    let mut config = builder.build().configure().map_err(tls)?;
+    let mut config = Fingerprint::ChromeLike.configure()?;
     // BoringSSL takes a key it offers nothing from, and the name would go in the clear.
     crate::tls::ensure_offerable(ech)?;
-    config.set_ech_config_list(ech).map_err(tls)?;
+    config
+        .set_ech_config_list(ech)
+        .map_err(|e| AetherError::Tls(e.to_string()))?;
     Ok(config)
 }
 
@@ -616,6 +603,45 @@ mod tests {
         assert!(Fingerprint::SplitModern.fragments().enabled);
         assert!(!Fingerprint::Modern.fragments().enabled);
         assert!(!Fingerprint::ChromeLike.fragments().enabled);
+    }
+
+    /// Cloudflare's key of cloudflare-ech.com on 2026-10-01.
+    const CLOUDFLARE_ECH: &str =
+        "AEX+DQBBrwAgACCbK1mYDYFz/BAn6S5t+Q/v+Oej3eFNxtPWgz50fNnFPAAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=";
+
+    /// The ClientHello of the ECH route, as a server on this machine reads it before it hangs
+    /// up.
+    async fn ech_route_hello() -> crate::tls::client_hello::ClientHello {
+        let request = ApiRequest {
+            method: "GET".to_string(),
+            host: "api.cloudflareclient.com".to_string(),
+            path: "/".to_string(),
+            headers: Vec::new(),
+            body: None,
+        };
+        let mut ech = crate::tls::decode_ech_config_list(CLOUDFLARE_ECH).expect("base64");
+        let (server, hello) = crate::tls::client_hello::catch().await;
+        assert!(exchange_over_ech(&request, server, &mut ech).await.is_err());
+        hello.await.expect("the ClientHello")
+    }
+
+    #[tokio::test]
+    async fn the_ech_route_offers_tls12_as_chrome_does_with_the_warp_key_ciphers() {
+        let own = ech_route_hello().await;
+        assert!(own.offers_ech());
+        assert_eq!(own.server_name().as_deref(), Some("cloudflare-ech.com"));
+        assert_eq!(own.versions(), [0x0304, 0x0303]);
+        assert!(!own.tls12_suites().is_empty());
+
+        // Any other test that reads the variable meanwhile gets a list BoringSSL takes.
+        std::env::set_var(
+            crate::tls::WARP_KEY_TLS_CIPHERS.variable,
+            "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA",
+        );
+        let listed = ech_route_hello().await;
+        std::env::remove_var(crate::tls::WARP_KEY_TLS_CIPHERS.variable);
+        assert!(listed.offers_ech());
+        assert_eq!(listed.tls12_suites(), [0xc02f, 0xcca9, 0x0035]);
     }
 
     #[tokio::test]

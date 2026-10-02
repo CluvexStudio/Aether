@@ -275,18 +275,23 @@ Config files:
                            (default cloudflare-ech.com)
   --get-warp-key-tls-ciphers <list>
                            TLS 1.2 cipher suites of the calls to the WARP API
-                           that offer TLS 1.2, listed after the TLS 1.3 ones;
-                           names separated by ':', as --tls-ciphers takes them.
-                           The direct route takes those rustls has: ECDHE with
-                           AES-GCM or ChaCha20
+                           that offer TLS 1.2, the ECH route among them, and of
+                           the DoH lookup of --get-warp-key-ech-dns, listed after
+                           the TLS 1.3 ones; names separated by ':', as
+                           --tls-ciphers takes them. The direct route and the DoH
+                           lookup take those rustls has: ECDHE with AES-GCM or
+                           ChaCha20
 
 Advanced:
   --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
   --tls-ciphers <list>     TLS 1.2 cipher suites of the MASQUE handshakes over
-                           HTTP/2, listed after the TLS 1.3 ones, which stay as
-                           they are; names separated by ':', e.g.
+                           HTTP/2 and of the DoH lookup of --ech-dns, listed
+                           after the TLS 1.3 ones, which stay as they are; names
+                           separated by ':', e.g.
                            \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256\".
-                           HTTP/3 has none: QUIC offers TLS 1.3 alone
+                           HTTP/3 has none: QUIC offers TLS 1.3 alone. The DoH
+                           lookup takes those rustls has: ECDHE with AES-GCM or
+                           ChaCha20
   --perf <low|medium|high> force a resource profile instead of auto-detecting from cpu/ram
                            (low: routers/small boards, medium: typical desktop, high: servers)
   --log-level <level>      error | warn | info | debug | trace (default info)
