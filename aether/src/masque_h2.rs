@@ -18,7 +18,9 @@ use crate::masque::{self, Capsule, CapsuleParser};
 use crate::quic::{AssignedAddr, Control, Internals};
 use crate::tls;
 
-const H2_ALPN: &[u8] = b"\x02h2";
+/// ALPN: HTTP/2, then HTTP/1.1, as Chrome offers them; the edge picks HTTP/2, which the
+/// tunnel speaks.
+const H2_ALPN: &[u8] = b"\x02h2\x08http/1.1";
 
 /// The largest DATA frame we let the edge send us. The h2 default is the RFC
 /// minimum of 16 KiB, so a fast stream pays four times the frame headers and

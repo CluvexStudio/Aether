@@ -624,7 +624,10 @@ mod tests {
         assert_eq!(own.server_name().as_deref(), Some("api.example.test"));
         assert!(own.has_grease());
         assert!(!own.offers_ech());
-        assert!(!own.tls12_suites().is_empty());
+        assert_eq!(
+            own.tls12_suites(),
+            crate::tls::client_hello::chrome_tls12_suites()
+        );
 
         // Every name BoringSSL knows, AES256-SHA among them, in the list's order.
         let changed = Fingerprint {
@@ -656,7 +659,10 @@ mod tests {
         // As Chrome's, the outer ClientHello offers TLS 1.2 as well, with the fingerprint's
         // suites; a server that answers with TLS 1.2 has turned the ECH down.
         assert_eq!(outer.versions(), [0x0304, 0x0303]);
-        assert!(!outer.tls12_suites().is_empty());
+        assert_eq!(
+            outer.tls12_suites(),
+            crate::tls::client_hello::chrome_tls12_suites()
+        );
         assert_eq!(outer.alpn(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
     }
 

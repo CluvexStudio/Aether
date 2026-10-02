@@ -142,7 +142,8 @@ TLS:
                            (default cloudflare-ech.com)
   --tls-ciphers <list>     TLS 1.2 cipher suites, listed after the TLS 1.3 ones,
                            which stay as they are; names separated by ':', e.g.
-                           \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256\".
+                           \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256\"
+                           (default Chrome's, \"ALL:!aPSK:!ECDSA+SHA1:!3DES\").
                            HTTP/3 lists none: QUIC offers TLS 1.3 alone
   --tls-groups <list>      TLS groups, in order, the first with a key share
                            (default \"P-256:X25519:P-384\")

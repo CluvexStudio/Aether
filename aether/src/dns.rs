@@ -920,6 +920,10 @@ mod tests {
         // up is the one ECH would need.
         assert!(own.has_grease());
         assert_eq!(own.alpn(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
+        assert_eq!(
+            own.tls12_suites(),
+            crate::tls::client_hello::chrome_tls12_suites()
+        );
         assert_eq!(own.groups(), [0x0017, 0x001d, 0x0018]);
         assert!(!own.offers_ech() && !changed.offers_ech());
         // Every suite of the list, in its order, AES256-SHA among them; the groups; no GREASE.

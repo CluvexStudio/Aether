@@ -29,6 +29,11 @@ extern "C" {
 /// The groups of the fingerprint, in order, unless --tls-groups names others.
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
 
+/// The TLS 1.2 cipher suites of the fingerprint unless --tls-ciphers names others: Chrome's
+/// own rule, which BoringSSL orders as it does for Chrome, AES-GCM before ChaCha20 on
+/// hardware with AES instructions and after it elsewhere.
+pub const CHROME_CIPHERS: &str = "ALL:!aPSK:!ECDSA+SHA1:!3DES";
+
 /// An option that sets TLS 1.2 cipher suites: a BoringSSL cipher string, names separated
 /// by ':'. A ClientHello lists them after BoringSSL's own TLS 1.3 suites, which no cipher
 /// string changes, and only where it offers TLS 1.2 as well.
@@ -38,8 +43,8 @@ pub struct CipherOption {
     pub variable: &'static str,
 }
 
-/// --tls-ciphers: the TLS 1.2 cipher suites of the handshakes `Fingerprint` makes. HTTP/3
-/// lists none: QUIC offers TLS 1.3 alone.
+/// --tls-ciphers: the TLS 1.2 cipher suites of the handshakes `Fingerprint` makes, in place
+/// of Chrome's (`CHROME_CIPHERS`). HTTP/3 lists none: QUIC offers TLS 1.3 alone.
 pub const TLS_CIPHERS: CipherOption = CipherOption {
     flag: "--tls-ciphers",
     variable: "AETHER_TLS_CIPHERS",
@@ -110,7 +115,7 @@ fn set_groups(builder: &mut SslContextBuilder, groups: &str) -> Result<()> {
 /// --disable-grease change of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
-    /// --tls-ciphers: the TLS 1.2 cipher suites in place of BoringSSL's, when given.
+    /// --tls-ciphers: the TLS 1.2 cipher suites in place of Chrome's, when given.
     pub ciphers: Option<String>,
     /// --tls-groups: the groups, in order; the first gets a key share.
     pub groups: String,
@@ -148,8 +153,8 @@ impl Fingerprint {
 
     /// Gives `builder` the fingerprint, offering `alpn`, in wire format: TLS 1.2 and 1.3, the
     /// groups, the extensions in a new order on each handshake, signed certificate timestamps
-    /// and OCSP asked for, GREASE unless it is off, and the TLS 1.2 suites of the cipher list
-    /// when there is one. TLS server-certificate verification disabled (unconditional).
+    /// and OCSP asked for, GREASE unless it is off, and the TLS 1.2 suites, Chrome's unless the
+    /// cipher list names others. TLS server-certificate verification disabled (unconditional).
     pub fn apply(&self, builder: &mut SslContextBuilder, alpn: &[u8]) -> Result<()> {
         let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
         builder.set_verify(SslVerifyMode::NONE);
@@ -165,9 +170,7 @@ impl Fingerprint {
         builder.set_alpn_protos(alpn).map_err(tls)?;
         builder.enable_signed_cert_timestamps();
         builder.enable_ocsp_stapling();
-        if let Some(list) = &self.ciphers {
-            set_tls12_ciphers(builder, list)?;
-        }
+        set_tls12_ciphers(builder, self.ciphers.as_deref().unwrap_or(CHROME_CIPHERS))?;
         Ok(())
     }
 }
@@ -865,7 +868,17 @@ mod tests {
         );
         // Signed certificate timestamps and OCSP asked for, as Chrome asks.
         assert!(chrome.has_extension(18) && chrome.has_extension(5));
-        assert!(!chrome.tls12_suites().is_empty());
+        // Chrome's TLS 1.2 suites, in the order Chrome's rule gets on this machine.
+        assert_eq!(chrome.tls12_suites(), client_hello::chrome_tls12_suites());
+        let mut suites = chrome.tls12_suites();
+        suites.sort_unstable();
+        assert_eq!(
+            suites,
+            [
+                0x002f, 0x0035, 0x009c, 0x009d, 0xc013, 0xc014, 0xc02b, 0xc02c, 0xc02f, 0xc030,
+                0xcca8, 0xcca9
+            ]
+        );
 
         let plain = Fingerprint {
             grease: false,
@@ -1188,6 +1201,16 @@ pub(crate) mod client_hello {
             at += 4 + len;
         }
         ClientHello { suites, extensions }
+    }
+
+    /// Chrome's TLS 1.2 suites, in the order BoringSSL gives Chrome's rule on this machine,
+    /// which depends on its AES hardware.
+    pub fn chrome_tls12_suites() -> Vec<u16> {
+        super::tls12_ciphers(super::CHROME_CIPHERS)
+            .expect("Chrome's rule")
+            .iter()
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// Listens on this machine: the task ends with the first ClientHello sent there, read
