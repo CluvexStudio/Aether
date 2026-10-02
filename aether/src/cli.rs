@@ -111,9 +111,25 @@ MASQUE transport:
                            (it is on by default; it opens a path for HTTP/3 on
                            networks that block QUIC v1 but let QUIC v2 through)
   --h2-peer <ip:port>      override the peer used for the HTTP/2 transport
-  --ech <auto|base64>      enable Encrypted Client Hello, with the key looked
-                           up (auto) or given in base64; without a key it can
-                           offer, the session does not start
+  --no-data-check          skip the end-to-end data-plane validation
+  --validate-secs <n>      seconds to wait for data-plane validation (default 10)
+  --startup-secs <n>       total MASQUE startup deadline (default 30)
+  --reconnect-secs <n>     delay before reconnecting after a tunnel drop (default 2)
+  --dns <list>             resolvers used inside the tunnel (default 1.1.1.1,1.0.0.1)
+  --fragment               fragment the TLS ClientHello on the HTTP/2 transport
+  --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
+  --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
+
+TLS:
+  the TLS handshakes of the tunnel and its setup, MASQUE over HTTP/2 and HTTP/3,
+  the calls to the WARP API and the DoH lookup of --ech-dns, have Chrome's
+  fingerprint as BoringSSL writes it, with what these change; certificates go
+  unchecked
+  --ech <auto|base64>      enable Encrypted Client Hello on the MASQUE handshakes
+                           and the calls to the WARP API, with the key looked up
+                           (auto) or given in base64; without a key it can
+                           offer, neither goes ahead rather than send a name in
+                           the clear. The DoH lookup of the key goes without it
   --ech-dns <url>          the resolver --ech auto asks for the key:
                            udp://ip[:port] or tcp://ip[:port], port 53 unless
                            given, or a DNS-over-HTTPS https:// URL, port 443
@@ -124,14 +140,15 @@ MASQUE transport:
                            https://doq.dns4all.eu/dns-query@address=2.2.2.2@sni=google.com
   --ech-domain <name>      the domain whose key --ech auto takes
                            (default cloudflare-ech.com)
-  --no-data-check          skip the end-to-end data-plane validation
-  --validate-secs <n>      seconds to wait for data-plane validation (default 10)
-  --startup-secs <n>       total MASQUE startup deadline (default 30)
-  --reconnect-secs <n>     delay before reconnecting after a tunnel drop (default 2)
-  --dns <list>             resolvers used inside the tunnel (default 1.1.1.1,1.0.0.1)
-  --fragment               fragment the TLS ClientHello on the HTTP/2 transport
-  --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
-  --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
+  --tls-ciphers <list>     TLS 1.2 cipher suites, listed after the TLS 1.3 ones,
+                           which stay as they are; names separated by ':', e.g.
+                           \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256\".
+                           HTTP/3 lists none: QUIC offers TLS 1.3 alone
+  --tls-groups <list>      TLS groups, in order, the first with a key share
+                           (default \"P-256:X25519:P-384\")
+  --enable-grease          add GREASE values (RFC 8701) to the cipher suites,
+                           extensions, groups, key shares and versions (off by
+                           default)
 
 WireGuard:
   --keepalive <n>          persistent keepalive interval in seconds (default 5)
@@ -265,34 +282,13 @@ Config files:
                            carrier whatever the protocol: they are https, which
                            tor and psiphon carry, so --wg and --gool are refused
                            there only for the tunnel
-  --get-warp-key-ech <auto|base64>
-                           ask the WARP API, which registers and enrolls the
-                           keys, over Encrypted Client Hello alone, at
-                           Cloudflare edge addresses, with the key looked up
-                           (auto) or given in base64; without a key it can
-                           offer, the API is not asked
-  --get-warp-key-ech-dns <url>
-                           the resolver --get-warp-key-ech auto asks for the
-                           key, as --ech-dns (default udp://1.1.1.1)
-  --get-warp-key-ech-domain <name>
-                           the domain whose key --get-warp-key-ech auto takes
-                           (default cloudflare-ech.com)
-  --get-warp-key-tls-ciphers <list>
-                           TLS 1.2 cipher suites of the calls to the WARP API
-                           that offer TLS 1.2, which all do but the camouflaged
-                           split-tls13 fingerprint, and of the DoH lookup of
-                           --get-warp-key-ech-dns, listed after the TLS 1.3
-                           ones; names separated by ':', as --tls-ciphers takes
-                           them
+  --enroll-address <ip|name>
+                           where the calls to the WARP API, which register and
+                           enroll the keys, go, on port 443 (default
+                           api.cloudflareclient.com); the server name and the
+                           HTTP host stay api.cloudflareclient.com
 
 Advanced:
-  --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
-  --tls-ciphers <list>     TLS 1.2 cipher suites of the MASQUE handshakes over
-                           HTTP/2 and of the DoH lookup of --ech-dns, listed
-                           after the TLS 1.3 ones, which stay as they are; names
-                           separated by ':', e.g.
-                           \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256\".
-                           HTTP/3 has none: QUIC offers TLS 1.3 alone
   --perf <low|medium|high> force a resource profile instead of auto-detecting from cpu/ram
                            (low: routers/small boards, medium: typical desktop, high: servers)
   --log-level <level>      error | warn | info | debug | trace (default info)
@@ -365,9 +361,6 @@ Environment variables:
   AETHER_MASQUE_HTTP2              --h2 (1), or --h3 (0)
   AETHER_QUIC_V2                   0 for --no-quic-v2 (the opener is on by default)
   AETHER_MASQUE_H2_PEER            --h2-peer
-  AETHER_ECH                       --ech
-  AETHER_ECH_DNS                   --ech-dns
-  AETHER_ECH_DOMAIN                --ech-domain
   AETHER_MASQUE_NO_DATA_CHECK      --no-data-check, MASQUE side
   AETHER_WG_NO_DATA_CHECK          --no-data-check, WireGuard side
   AETHER_MASQUE_VALIDATE_SECS      --validate-secs, MASQUE side
@@ -379,6 +372,12 @@ Environment variables:
   AETHER_MASQUE_H2_FRAGMENT        --fragment
   AETHER_MASQUE_H2_FRAGMENT_SIZE   --fragment-size
   AETHER_MASQUE_H2_FRAGMENT_DELAY  --fragment-delay
+  AETHER_ECH                       --ech
+  AETHER_ECH_DNS                   --ech-dns
+  AETHER_ECH_DOMAIN                --ech-domain
+  AETHER_TLS_CIPHERS               --tls-ciphers
+  AETHER_TLS_GROUPS                --tls-groups
+  AETHER_ENABLE_GREASE             --enable-grease
   AETHER_WG_KEEPALIVE              --keepalive
   AETHER_WG_NO_PROFILE_RETRY       --no-profile-retry
   AETHER_TEAM                      --team
@@ -394,12 +393,7 @@ Environment variables:
   AETHER_WG_CONFIG                 --wg-config
   AETHER_MASQUE_CONFIG             --masque-config
   AETHER_REGISTER                  --register
-  AETHER_GET_WARP_KEY_ECH          --get-warp-key-ech
-  AETHER_GET_WARP_KEY_ECH_DNS      --get-warp-key-ech-dns
-  AETHER_GET_WARP_KEY_ECH_DOMAIN   --get-warp-key-ech-domain
-  AETHER_GET_WARP_KEY_TLS_CIPHERS  --get-warp-key-tls-ciphers
-  AETHER_TLS_GROUPS                --tls-groups
-  AETHER_TLS_CIPHERS               --tls-ciphers
+  AETHER_ENROLL_ADDRESS            --enroll-address
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
 
@@ -587,10 +581,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
             "--register" => set("AETHER_REGISTER", next_value!()),
-            "--get-warp-key-ech" => set("AETHER_GET_WARP_KEY_ECH", next_value!()),
-            "--get-warp-key-ech-dns" => set("AETHER_GET_WARP_KEY_ECH_DNS", next_value!()),
-            "--get-warp-key-ech-domain" => set("AETHER_GET_WARP_KEY_ECH_DOMAIN", next_value!()),
-            "--get-warp-key-tls-ciphers" => set("AETHER_GET_WARP_KEY_TLS_CIPHERS", next_value!()),
+            "--enroll-address" => set("AETHER_ENROLL_ADDRESS", next_value!()),
 
             "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
             "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),
@@ -605,6 +596,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
             "--tls-ciphers" => set("AETHER_TLS_CIPHERS", next_value!()),
+            "--enable-grease" => set("AETHER_ENABLE_GREASE", "1"),
             "--perf" => set("AETHER_PERF_PROFILE", next_value!()),
             "--log-level" => set("AETHER_LOG_LEVEL", next_value!()),
             "--verbose" => set("AETHER_LOG_LEVEL", "debug"),

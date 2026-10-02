@@ -2,7 +2,6 @@
 pub mod account;
 pub mod aethernoize;
 pub mod api;
-pub mod apifront;
 pub mod bridges;
 pub mod cli;
 pub mod config;
@@ -105,8 +104,10 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     stats::spawn_reporter();
 
     install_netstack_panic_guard();
-    // A cipher string BoringSSL does not take stops the core here, with its option named.
-    tls::check_cipher_options()?;
+    // A cipher string or a group list BoringSSL does not take, or an address the calls to the
+    // WARP API cannot use, stops the core here, with its option named.
+    tls::check_tls_options()?;
+    account::check_enroll_address()?;
 
     let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 
@@ -1210,11 +1211,21 @@ async fn select_wg_peers(
 }
 
 /// The ECH key of the session, by --ech (AETHER_ECH): none without it; with it, the key it
-/// gives in base64, or with auto, the key the lookup of --ech-dns and --ech-domain finds.
-/// With ECH asked for and no key BoringSSL can offer, the session does not start, so that
-/// the server name never goes out in the clear.
+/// gives in base64, or with auto, the key the lookup of --ech-dns and --ech-domain finds; a
+/// key the calls to the WARP API offered in this run serves without a second lookup. With
+/// ECH asked for and no key BoringSSL can offer, the session does not start, so that the
+/// server name never goes out in the clear.
 async fn resolve_ech() -> Result<Option<Vec<u8>>> {
     let setting = std::env::var(tls::SESSION_ECH_OPTION.variable).ok();
+    if setting.as_deref().is_some_and(|value| !value.is_empty()) {
+        if let Some(key) = account::api_ech_in_use() {
+            log::info!(
+                "[+] offering the ECHConfigList the WARP API took ({} bytes)",
+                key.len()
+            );
+            return Ok(Some(key));
+        }
+    }
     let key = tls::ech_key(&tls::SESSION_ECH_OPTION, setting.as_deref(), || {
         dns::fetch_ech_config(&dns::SESSION_ECH)
     })

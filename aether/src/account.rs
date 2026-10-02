@@ -9,7 +9,6 @@ use boring::x509::{X509Builder, X509NameBuilder};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::apifront;
 use crate::consts;
 use crate::error::{AetherError, Result};
 
@@ -222,8 +221,8 @@ pub fn generate_masque_keypair() -> Result<MasqueKeyPair> {
     })
 }
 
-/// How long a call to the WARP API by the direct route may take.
-const DIRECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long one attempt at a call to the WARP API may take.
+const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 const API_ATTEMPTS: u32 = 5;
 const API_BACKOFF_BASE_MS: u64 = 900;
@@ -291,56 +290,8 @@ fn front_headers(bearer: Option<&str>, jwt: Option<&str>) -> Vec<(String, String
     headers
 }
 
-async fn fallback_call(
-    label: &str,
-    method: &str,
-    path: &str,
-    body: Option<Vec<u8>>,
-    bearer: Option<&str>,
-    jwt: Option<&str>,
-) -> Result<AccountData> {
-    log::info!(
-        "[*] {label} retrying over a camouflaged route: random cloudflare edge address, \
-         no dns lookup, split client hello, alternate tls fingerprints"
-    );
-
-    let request = apifront::ApiRequest {
-        method: method.to_string(),
-        host: api_host().to_string(),
-        path: path.to_string(),
-        headers: front_headers(bearer, jwt),
-        body,
-    };
-
-    let response = apifront::fetch(&request).await?;
-
-    if (200..300).contains(&response.status) {
-        log::info!(
-            "[+] {label} went through the camouflaged route ({})",
-            response.route
-        );
-        return serde_json::from_str::<AccountData>(&response.body).map_err(|e| {
-            AetherError::Api(format!(
-                "{label} decode over {}: {e} ({} byte answer)",
-                response.route,
-                response.body.len()
-            ))
-        });
-    }
-
-    let described = format!(
-        "{label} over {}: {}",
-        response.route,
-        describe_status(response.status, &response.body)
-    );
-    if matches!(response.status, 401 | 404 | 410) {
-        return Err(AetherError::IdentityRefused(described));
-    }
-    Err(AetherError::Api(described))
-}
-
-/// The ECH key the calls to the WARP API offer for the rest of the run, by
-/// --get-warp-key-ech, once looked up; a key a server hands back takes its place.
+/// The ECH key the calls to the WARP API offer for the rest of the run, by --ech, once
+/// looked up; a key a server hands back takes its place.
 static API_ECH: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
 
 fn remember_api_ech(ech: Vec<u8>) {
@@ -349,110 +300,37 @@ fn remember_api_ech(ech: Vec<u8>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ech);
 }
 
-/// The ECH key of the calls to the WARP API, by --get-warp-key-ech: none without the
-/// option, which leaves the direct and the camouflaged route; otherwise the key, looked up
-/// once for the run. With the option and no key BoringSSL can offer, an error that says
-/// so: the API is not asked with its name in the clear.
+/// The key the calls to the WARP API offered last in this run, if any: the MASQUE session
+/// starts with it rather than look one up again.
+pub fn api_ech_in_use() -> Option<Vec<u8>> {
+    API_ECH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// The ECH key of the calls to the WARP API, by --ech, as the MASQUE handshakes take it: none
+/// without the option; otherwise the key it gives, or with auto the one the lookup of
+/// --ech-dns and --ech-domain finds, once for the run. With the option and no key BoringSSL
+/// can offer, an error that says so: the API is not asked with its name in the clear.
 async fn api_ech() -> Result<Option<Vec<u8>>> {
-    let option = &crate::tls::WARP_KEY_ECH_OPTION;
+    let option = &crate::tls::API_ECH_OPTION;
     let setting = std::env::var(option.variable).ok();
     if setting.as_deref().is_none_or(str::is_empty) {
         return Ok(None);
     }
-    let remembered = API_ECH
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    let remembered = api_ech_in_use();
     if remembered.is_some() {
         return Ok(remembered);
     }
     let key = crate::tls::ech_key(option, setting.as_deref(), || {
-        crate::dns::fetch_ech_config(&crate::dns::WARP_KEY_ECH)
+        crate::dns::fetch_ech_config(&crate::dns::SESSION_ECH)
     })
     .await?;
     if let Some(key) = &key {
         remember_api_ech(key.clone());
     }
     Ok(key)
-}
-
-/// A call to the WARP API by --get-warp-key-ech: over ECH alone, to Cloudflare edge
-/// addresses, with the API's name inside the encrypted ClientHello; never by the direct or
-/// the camouflaged route, which send it in the clear. Retried as the direct route is.
-async fn ech_call(
-    label: &str,
-    method: &str,
-    path: &str,
-    body: Option<Vec<u8>>,
-    bearer: Option<&str>,
-    jwt: Option<&str>,
-    mut ech: Vec<u8>,
-) -> Result<AccountData> {
-    let request = apifront::ApiRequest {
-        method: method.to_string(),
-        host: api_host().to_string(),
-        path: path.to_string(),
-        headers: front_headers(bearer, jwt),
-        body,
-    };
-    let mut last_error = AetherError::Api(format!("{label}: no attempt was made"));
-
-    for attempt in 0..API_ATTEMPTS {
-        if attempt > 0 {
-            let wait = backoff_delay(attempt - 1);
-            log::warn!(
-                "[!] {label} retry {}/{} over ECH in {:.1}s: {last_error}",
-                attempt,
-                API_ATTEMPTS - 1,
-                wait.as_secs_f32()
-            );
-            tokio::time::sleep(wait).await;
-        }
-
-        let address = apifront::random_edge_address();
-        let outcome = apifront::exchange_over_ech(&request, address, &mut ech).await;
-        // A key a server handed back is the one the later calls offer.
-        remember_api_ech(ech.clone());
-        let response = match outcome {
-            Ok(response) => response,
-            Err(error) => {
-                last_error = AetherError::Api(format!("{label} over ECH: {error}"));
-                continue;
-            }
-        };
-
-        if (200..300).contains(&response.status) {
-            log::info!("[+] {label} went over ECH ({})", response.route);
-            return serde_json::from_str::<AccountData>(&response.body).map_err(|e| {
-                AetherError::Api(format!(
-                    "{label} decode over ECH: {e} ({} byte answer)",
-                    response.body.len()
-                ))
-            });
-        }
-
-        let described = format!(
-            "{label} over {}: {}",
-            response.route,
-            describe_status(response.status, &response.body)
-        );
-        if matches!(response.status, 401 | 404 | 410) {
-            return Err(AetherError::IdentityRefused(described));
-        }
-        last_error = AetherError::Api(described);
-        if !reqwest::StatusCode::from_u16(response.status).is_ok_and(worth_retrying) {
-            return Err(last_error);
-        }
-    }
-
-    Err(last_error)
-}
-
-fn describe_status(status: u16, body: &str) -> String {
-    match reqwest::StatusCode::from_u16(status) {
-        Ok(code) => describe_rejection(code, body),
-        Err(_) => format!("status {status}: {body}"),
-    }
 }
 
 fn describe_rejection(status: reqwest::StatusCode, body: &str) -> String {
@@ -507,10 +385,34 @@ fn extract_api_error(body: &str) -> Option<String> {
     }
 }
 
-/// A call to the WARP API by the direct route: to the API's name, over BoringSSL with Chrome's
-/// ClientHello and --get-warp-key-tls-ciphers (see `https`), through the upstream proxy when there
-/// is one. Retried on a transient answer, after as long as the API asks to wait when it does.
-async fn direct_call(
+/// --enroll-address (AETHER_ENROLL_ADDRESS): where the calls to the WARP API go, on port 443:
+/// an IP address or a domain name, the API's name when it is not given. The API's name stays
+/// the server name of the ClientHello and the HTTP host.
+fn enroll_address() -> Result<String> {
+    let value = std::env::var("AETHER_ENROLL_ADDRESS").unwrap_or_default();
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(api_host().to_string());
+    }
+    crate::dns::host_address(value).ok_or_else(|| {
+        AetherError::Api(format!(
+            "--enroll-address: {value} is no IP address or domain name (the port is 443)"
+        ))
+    })
+}
+
+/// Checks --enroll-address as the core starts: an address it cannot use stops it, with the
+/// option named.
+pub fn check_enroll_address() -> Result<()> {
+    enroll_address().map(drop)
+}
+
+/// A call to the WARP API: to --enroll-address, the API's name unless it names another, on
+/// port 443, with the API's name for the server name and the HTTP host, over BoringSSL with the
+/// core's TLS fingerprint (see `https`), offering the ECH key of --ech when it is given, through
+/// the upstream proxy when there is one. Retried on a transient answer, after as long as the API
+/// asks to wait when it does.
+async fn api_call(
     label: &str,
     method: &str,
     path: &str,
@@ -518,20 +420,26 @@ async fn direct_call(
     bearer: Option<&str>,
     jwt: Option<&str>,
 ) -> Result<AccountData> {
-    // The system resolver looks the API's name up outside the socket mark; through the upstream
-    // proxy, the proxy looks it up and only the marked connection to the proxy leaves.
-    if crate::egress::mark() != 0 && crate::upstream::configured().is_none() {
+    let address = enroll_address()?;
+    // The system resolver looks a name up outside the socket mark; through the upstream proxy,
+    // the proxy looks it up and only the marked connection to the proxy leaves.
+    if crate::egress::mark() != 0
+        && crate::upstream::configured().is_none()
+        && address.parse::<std::net::IpAddr>().is_err()
+    {
         return Err(AetherError::Api(format!(
-            "{label}: the direct route looks the API's name up outside the socket mark, so it would loop back into the tunnel"
+            "{label}: {address} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --enroll-address an IP address"
         )));
     }
 
+    let mut ech = api_ech().await?;
+    let fingerprint = crate::tls::Fingerprint::configured();
     let headers = front_headers(bearer, jwt);
     let request = crate::https::Request {
         method,
         host: api_host(),
         port: 443,
-        address: None,
+        address: Some(&address),
         sni: None,
         path,
         headers: &headers,
@@ -551,8 +459,11 @@ async fn direct_call(
             tokio::time::sleep(wait).await;
         }
 
-        let sent =
-            crate::https::send(&request, &crate::tls::WARP_KEY_TLS_CIPHERS, DIRECT_TIMEOUT).await;
+        let sent = crate::https::send(&request, &fingerprint, ech.as_mut(), API_TIMEOUT).await;
+        if let Some(key) = &ech {
+            // A key a server handed back is the one the later calls offer.
+            remember_api_ech(key.clone());
+        }
         let response = match sent {
             Ok(response) => response,
             Err(error) => {
@@ -567,6 +478,9 @@ async fn direct_call(
         let body = String::from_utf8_lossy(&response.body);
 
         if status.is_success() {
+            if ech.is_some() {
+                log::info!("[+] {label} went over ECH");
+            }
             return serde_json::from_str::<AccountData>(&body).map_err(|e| {
                 AetherError::Api(format!("{label} decode: {e} ({} byte answer)", body.len()))
             });
@@ -645,29 +559,7 @@ pub async fn register(
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
-    if let Some(ech) = api_ech().await? {
-        let account =
-            ech_call("registration", "POST", &path, Some(encoded), None, jwt, ech).await?;
-        return Ok((account, wg_private));
-    }
-
-    let direct = direct_call("registration", "POST", &path, Some(&encoded), None, jwt).await;
-
-    let account = match direct {
-        Ok(account) => account,
-        Err(primary) => {
-            log::warn!("[!] registration failed over the direct route: {primary}");
-            match fallback_call("registration", "POST", &path, Some(encoded), None, jwt).await {
-                Ok(account) => account,
-                Err(secondary) => {
-                    return Err(AetherError::Api(format!(
-                        "registration: direct route -> {primary}; camouflaged route -> {secondary}"
-                    )));
-                }
-            }
-        }
-    };
-
+    let account = api_call("registration", "POST", &path, Some(&encoded), None, jwt).await?;
     Ok((account, wg_private))
 }
 
@@ -688,20 +580,7 @@ pub async fn enroll_key(
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
-    if let Some(ech) = api_ech().await? {
-        return ech_call(
-            "key enrollment",
-            "PATCH",
-            &path,
-            Some(encoded),
-            Some(token),
-            None,
-            ech,
-        )
-        .await;
-    }
-
-    let direct = direct_call(
+    api_call(
         "key enrollment",
         "PATCH",
         &path,
@@ -709,29 +588,7 @@ pub async fn enroll_key(
         Some(token),
         None,
     )
-    .await;
-
-    match direct {
-        Ok(account) => Ok(account),
-        Err(primary) => {
-            log::warn!("[!] key enrollment failed over the direct route: {primary}");
-            match fallback_call(
-                "key enrollment",
-                "PATCH",
-                &path,
-                Some(encoded),
-                Some(token),
-                None,
-            )
-            .await
-            {
-                Ok(account) => Ok(account),
-                Err(secondary) => Err(AetherError::Api(format!(
-                    "key enrollment: direct route -> {primary}; camouflaged route -> {secondary}"
-                ))),
-            }
-        }
-    }
+    .await
 }
 
 fn extract_wg_peer(reg: &AccountData) -> Result<[u8; 32]> {
@@ -761,21 +618,7 @@ pub async fn register_with_team(
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
-    if let Some(ech) = api_ech().await? {
-        let account = ech_call(
-            "team registration",
-            "POST",
-            &path,
-            Some(encoded),
-            None,
-            Some(token),
-            ech,
-        )
-        .await?;
-        return Ok((account, wg_private));
-    }
-
-    let direct = direct_call(
+    let account = api_call(
         "team registration",
         "POST",
         &path,
@@ -783,33 +626,7 @@ pub async fn register_with_team(
         None,
         Some(token),
     )
-    .await;
-
-    let account = match direct {
-        Ok(account) => account,
-        Err(primary) => {
-            log::warn!("[!] team registration failed over the direct route: {primary}");
-            match fallback_call(
-                "team registration",
-                "POST",
-                &path,
-                Some(encoded),
-                None,
-                Some(token),
-            )
-            .await
-            {
-                Ok(account) => account,
-                Err(secondary) => {
-                    return Err(AetherError::Api(format!(
-                        "team registration: direct route -> {primary}; \
-                         camouflaged route -> {secondary}"
-                    )));
-                }
-            }
-        }
-    };
-
+    .await?;
     Ok((account, wg_private))
 }
 
@@ -831,19 +648,7 @@ pub async fn provision_wg(model: &str, locale: &str, jwt: Option<&str>) -> Resul
 pub async fn fetch_device(device_id: &str, token: &str) -> Result<AccountData> {
     let path = format!("/{}/reg/{}", consts::API_VERSION, device_id);
 
-    if let Some(ech) = api_ech().await? {
-        return ech_call("device refresh", "GET", &path, None, Some(token), None, ech).await;
-    }
-
-    let direct = direct_call("device refresh", "GET", &path, None, Some(token), None).await;
-
-    match direct {
-        Ok(account) => Ok(account),
-        Err(primary) => {
-            log::debug!("[!] device refresh failed over the direct route: {primary}");
-            fallback_call("device refresh", "GET", &path, None, Some(token), None).await
-        }
-    }
+    api_call("device refresh", "GET", &path, None, Some(token), None).await
 }
 
 pub fn endpoint_from(reg: &AccountData) -> String {
@@ -1225,9 +1030,57 @@ mod tests {
         assert!(retry_after(&headers).is_none());
     }
 
+    #[test]
+    fn an_enroll_address_is_an_ip_address_or_a_domain_name() {
+        let address = |value: Option<&str>| {
+            match value {
+                Some(value) => std::env::set_var("AETHER_ENROLL_ADDRESS", value),
+                None => std::env::remove_var("AETHER_ENROLL_ADDRESS"),
+            }
+            enroll_address().map_err(|e| e.to_string())
+        };
+        assert_eq!(address(None).as_deref(), Ok("api.cloudflareclient.com"));
+        assert_eq!(
+            address(Some("  ")).as_deref(),
+            Ok("api.cloudflareclient.com")
+        );
+        assert_eq!(
+            address(Some(" 162.159.137.105 ")).as_deref(),
+            Ok("162.159.137.105")
+        );
+        assert_eq!(
+            address(Some("[2606:4700::6810:1]")).as_deref(),
+            Ok("2606:4700::6810:1")
+        );
+        assert_eq!(
+            address(Some("2606:4700::6810:1")).as_deref(),
+            Ok("2606:4700::6810:1")
+        );
+        assert_eq!(
+            address(Some("edge.example.com")).as_deref(),
+            Ok("edge.example.com")
+        );
+        for refused in [
+            "162.159.137.105:443",
+            "https://edge.example.com",
+            "edge example.com",
+        ] {
+            let said = address(Some(refused)).expect_err(refused);
+            assert_eq!(
+                said,
+                format!(
+                    "api: --enroll-address: {refused} is no IP address or domain name (the port is 443)"
+                )
+            );
+            assert!(check_enroll_address().is_err());
+        }
+        std::env::remove_var("AETHER_ENROLL_ADDRESS");
+        assert!(check_enroll_address().is_ok());
+    }
+
     #[tokio::test]
-    #[ignore = "registers a real warp device over the camouflaged route"]
-    async fn the_camouflaged_route_can_register_a_real_device() {
+    #[ignore = "registers a real warp device"]
+    async fn the_api_registers_a_real_device() {
         let (_, public) = generate_x25519_keypair();
         let body = Registration {
             key: public,
@@ -1245,9 +1098,9 @@ mod tests {
         let encoded = serde_json::to_vec(&body).expect("encode");
         let path = format!("/{}/reg", consts::API_VERSION);
 
-        let account = fallback_call("registration", "POST", &path, Some(encoded), None, None)
+        let account = api_call("registration", "POST", &path, Some(&encoded), None, None)
             .await
-            .expect("the camouflaged route should register a device");
+            .expect("the API should register a device");
 
         println!(
             "device={} ipv4={}",

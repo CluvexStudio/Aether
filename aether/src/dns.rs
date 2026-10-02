@@ -71,11 +71,7 @@ impl DohEndpoint {
             let (slot, checked) = match name.trim().to_ascii_lowercase().as_str() {
                 "address" => (
                     &mut endpoint.address,
-                    match bare.parse::<IpAddr>() {
-                        Ok(ip) => Some(ip.to_string()),
-                        Err(_) => valid_domain(setting).then(|| setting.to_string()),
-                    }
-                    .ok_or_else(|| {
+                    host_address(setting).ok_or_else(|| {
                         format!(
                             "@address={setting} is no IP address or domain name; the port is the URL's"
                         )
@@ -170,6 +166,19 @@ fn socket_address(text: &str, default_port: u16) -> Option<SocketAddr> {
         .map(|ip| SocketAddr::new(IpAddr::V6(ip), default_port))
 }
 
+/// `value` as the address a connection goes to: an IP address, an IPv6 one with or without
+/// brackets, or a domain name; None when it is neither.
+pub fn host_address(value: &str) -> Option<String> {
+    let bare = value
+        .strip_prefix('[')
+        .and_then(|inside| inside.strip_suffix(']'))
+        .unwrap_or(value);
+    match bare.parse::<IpAddr>() {
+        Ok(ip) => Some(ip.to_string()),
+        Err(_) => valid_domain(value).then(|| value.to_string()),
+    }
+}
+
 /// Whether `name` is a domain whose HTTPS record can be asked for: labels of letters,
 /// digits, '-' and '_', of 1 to 63 bytes each and 253 in all, a trailing dot allowed.
 pub fn valid_domain(name: &str) -> bool {
@@ -193,27 +202,15 @@ pub struct EchLookup {
     pub dns_variable: &'static str,
     pub domain_flag: &'static str,
     pub domain_variable: &'static str,
-    /// The TLS 1.2 cipher suites the lookup lists over DNS-over-HTTPS: those of the
-    /// handshakes the key is for.
-    pub ciphers: &'static crate::tls::CipherOption,
 }
 
-/// The lookup of --ech auto, whose key the MASQUE handshakes of a session offer.
+/// The lookup of --ech auto, whose key the MASQUE handshakes of a session and the calls to
+/// the WARP API offer.
 pub const SESSION_ECH: EchLookup = EchLookup {
     dns_flag: "--ech-dns",
     dns_variable: "AETHER_ECH_DNS",
     domain_flag: "--ech-domain",
     domain_variable: "AETHER_ECH_DOMAIN",
-    ciphers: &crate::tls::TLS_CIPHERS,
-};
-
-/// The lookup of --get-warp-key-ech auto, whose key the calls to the WARP API offer.
-pub const WARP_KEY_ECH: EchLookup = EchLookup {
-    dns_flag: "--get-warp-key-ech-dns",
-    dns_variable: "AETHER_GET_WARP_KEY_ECH_DNS",
-    domain_flag: "--get-warp-key-ech-domain",
-    domain_variable: "AETHER_GET_WARP_KEY_ECH_DOMAIN",
-    ciphers: &crate::tls::WARP_KEY_TLS_CIPHERS,
 };
 
 /// The resolver `lookup` names, or the default one.
@@ -245,18 +242,25 @@ fn configured_domain(lookup: &EchLookup) -> std::result::Result<String, String> 
 
 /// Fetches an ECHConfigList: the ech parameter of the HTTPS record of the domain
 /// `lookup` names, asked of the resolver it names, through the upstream proxy when there
-/// is one.
+/// is one. Over DNS-over-HTTPS, the handshake has the core's TLS fingerprint.
 pub async fn fetch_ech_config(lookup: &EchLookup) -> Result<Vec<u8>> {
+    fetch_ech_config_with(lookup, &crate::tls::Fingerprint::configured()).await
+}
+
+/// `fetch_ech_config` with `fingerprint` for the handshake of DNS-over-HTTPS.
+async fn fetch_ech_config_with(
+    lookup: &EchLookup,
+    fingerprint: &crate::tls::Fingerprint,
+) -> Result<Vec<u8>> {
     let dns = configured_dns(lookup)
         .map_err(|e| AetherError::Ech(format!("{}: {e}", lookup.dns_flag)))?;
     let domain = configured_domain(lookup)
         .map_err(|e| AetherError::Ech(format!("{}: {e}", lookup.domain_flag)))?;
-    let ciphers = lookup.ciphers;
     let lookup = async {
         match &dns {
             EchDns::Udp(server) => query_udp(*server, &domain).await,
             EchDns::Tcp(server) => query_tcp(*server, &domain).await,
-            EchDns::Https(endpoint) => query_https(endpoint, &domain, ciphers).await,
+            EchDns::Https(endpoint) => query_https(endpoint, &domain, fingerprint).await,
         }
     };
     let ech = match tokio::time::timeout(ECH_LOOKUP_TIMEOUT, lookup).await {
@@ -325,13 +329,13 @@ async fn query_tcp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
 }
 
 /// Asks `endpoint`, a DoH endpoint, for the HTTPS record of `domain`, over BoringSSL with
-/// Chrome's ClientHello (see `https`), which lists the TLS 1.2 cipher suites `ciphers` gives,
-/// if any. The URL's host is the HTTP host; the connection goes to the endpoint's address and
+/// `fingerprint` (see `https`), and without ECH: the key it looks up is the one ECH would
+/// need. The URL's host is the HTTP host; the connection goes to the endpoint's address and
 /// the ClientHello names its sni when it has them, the URL's host otherwise.
 async fn query_https(
     endpoint: &DohEndpoint,
     domain: &str,
-    ciphers: &crate::tls::CipherOption,
+    fingerprint: &crate::tls::Fingerprint,
 ) -> Result<Vec<u8>> {
     let url = &endpoint.url;
     let parsed = reqwest::Url::parse(url).map_err(|e| AetherError::Ech(format!("{url}: {e}")))?;
@@ -366,7 +370,7 @@ async fn query_https(
         headers: &headers,
         body: Some(&query),
     };
-    let response = crate::https::send(&request, ciphers, ECH_LOOKUP_TIMEOUT)
+    let response = crate::https::send(&request, fingerprint, None, ECH_LOOKUP_TIMEOUT)
         .await
         .map_err(|e| AetherError::Ech(e.to_string()))?;
     if !(200..300).contains(&response.status) {
@@ -825,12 +829,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn each_lookup_lists_the_suites_of_the_handshakes_its_key_is_for() {
-        assert_eq!(SESSION_ECH.ciphers.flag, "--tls-ciphers");
-        assert_eq!(WARP_KEY_ECH.ciphers.flag, "--get-warp-key-tls-ciphers");
-    }
-
     /// The ClientHello of `lookup` over DoH, as a server on this machine reads it before it
     /// hangs up.
     async fn doh_hello(lookup: &EchLookup) -> crate::tls::client_hello::ClientHello {
@@ -842,33 +840,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_doh_lookup_lists_the_tls12_suites_of_its_cipher_option() {
+    async fn a_doh_lookup_has_the_fingerprint_the_options_give_and_no_ech() {
         let _setting = crate::upstream::hold_setting().await;
-        // A lookup and an option of the test's own, so that no other test sees their variables.
-        const CIPHERS: crate::tls::CipherOption = crate::tls::CipherOption {
-            flag: "--doh-test-ciphers",
-            variable: "AETHER_DOH_TEST_CIPHERS",
-        };
+        let _options = crate::tls::hold_options().await;
+        // A lookup of the test's own, so that no other test sees its variables.
         const LOOKUP: EchLookup = EchLookup {
             dns_flag: "--doh-test-dns",
             dns_variable: "AETHER_DOH_TEST_DNS",
             domain_flag: "--doh-test-domain",
             domain_variable: "AETHER_DOH_TEST_DOMAIN",
-            ciphers: &CIPHERS,
         };
         let own = doh_hello(&LOOKUP).await;
         std::env::set_var(
-            CIPHERS.variable,
+            "AETHER_TLS_CIPHERS",
             "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA",
         );
-        let listed = doh_hello(&LOOKUP).await;
-        std::env::remove_var(CIPHERS.variable);
-        // BoringSSL's ClientHello, Chrome's, offering HTTP/2 first.
-        assert!(own.has_grease());
+        std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
+        std::env::set_var("AETHER_ENABLE_GREASE", "1");
+        let changed = doh_hello(&LOOKUP).await;
+        // The core's ClientHello, Chrome's, offering HTTP/2 first, never ECH: the key it looks
+        // up is the one ECH would need.
+        assert!(!own.has_grease());
         assert_eq!(own.alpn(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
-        // Every suite of the list, in its order, AES256-SHA among them.
-        assert_eq!(listed.tls12_suites(), [0xc02f, 0xcca9, 0x0035]);
-        assert_ne!(own.tls12_suites(), listed.tls12_suites());
+        assert_eq!(own.groups(), [0x0017, 0x001d, 0x0018]);
+        assert!(!own.offers_ech() && !changed.offers_ech());
+        // Every suite of the list, in its order, AES256-SHA among them; the groups; GREASE.
+        assert_eq!(changed.tls12_suites(), [0xc02f, 0xcca9, 0x0035]);
+        assert_ne!(own.tls12_suites(), changed.tls12_suites());
+        assert_eq!(changed.groups(), [0x001d, 0x0017]);
+        assert!(changed.has_grease());
     }
 
     /// A reply to `query` that holds one HTTPS record for its name, with `ech` for its ech
@@ -1007,16 +1007,11 @@ mod tests {
     #[tokio::test]
     async fn a_doh_lookup_reads_the_key_over_http2_or_http1() {
         let _setting = crate::upstream::hold_setting().await;
-        const CIPHERS: crate::tls::CipherOption = crate::tls::CipherOption {
-            flag: "--doh-server-test-ciphers",
-            variable: "AETHER_DOH_SERVER_TEST_CIPHERS",
-        };
         const LOOKUP: EchLookup = EchLookup {
             dns_flag: "--doh-server-test-dns",
             dns_variable: "AETHER_DOH_SERVER_TEST_DNS",
             domain_flag: "--doh-server-test-domain",
             domain_variable: "AETHER_DOH_SERVER_TEST_DOMAIN",
-            ciphers: &CIPHERS,
         };
         const KEY: &[u8] = b"\x00\x05a key";
         for alpn in [&b"\x02h2"[..], &b"\x08http/1.1"[..]] {
@@ -1025,7 +1020,7 @@ mod tests {
                 LOOKUP.dns_variable,
                 format!("https://{server}/dns-query?ct"),
             );
-            let key = fetch_ech_config(&LOOKUP).await;
+            let key = fetch_ech_config_with(&LOOKUP, &crate::tls::Fingerprint::default()).await;
             std::env::remove_var(LOOKUP.dns_variable);
             assert_eq!(key.expect("the key").as_slice(), KEY, "{alpn:?}");
             let asked = served.await.expect("the server");
@@ -1041,16 +1036,11 @@ mod tests {
     #[tokio::test]
     async fn a_doh_lookup_goes_to_its_address_with_its_server_name() {
         let _setting = crate::upstream::hold_setting().await;
-        const CIPHERS: crate::tls::CipherOption = crate::tls::CipherOption {
-            flag: "--doh-front-test-ciphers",
-            variable: "AETHER_DOH_FRONT_TEST_CIPHERS",
-        };
         const LOOKUP: EchLookup = EchLookup {
             dns_flag: "--doh-front-test-dns",
             dns_variable: "AETHER_DOH_FRONT_TEST_DNS",
             domain_flag: "--doh-front-test-domain",
             domain_variable: "AETHER_DOH_FRONT_TEST_DOMAIN",
-            ciphers: &CIPHERS,
         };
         const KEY: &[u8] = b"\x00\x05a key";
         for alpn in [&b"\x02h2"[..], &b"\x08http/1.1"[..]] {
@@ -1063,7 +1053,7 @@ mod tests {
                     server.port()
                 ),
             );
-            let key = fetch_ech_config(&LOOKUP).await;
+            let key = fetch_ech_config_with(&LOOKUP, &crate::tls::Fingerprint::default()).await;
             std::env::remove_var(LOOKUP.dns_variable);
             assert_eq!(key.expect("the key").as_slice(), KEY, "{alpn:?}");
             let asked = served.await.expect("the server");

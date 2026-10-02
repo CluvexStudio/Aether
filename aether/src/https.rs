@@ -1,17 +1,17 @@
-//! HTTPS over BoringSSL for the calls that are not tunnels: the direct route to the WARP API
-//! and the DoH lookups of the ECH keys. The ClientHello is Chrome's, as apifront's chrome
-//! fingerprint writes it, offering HTTP/2 then HTTP/1.1; the request goes over HTTP/2 when the
-//! server picks it, over HTTP/1.1 otherwise.
+//! HTTPS over BoringSSL for the calls that are not tunnels: the calls to the WARP API and the
+//! DoH lookup of the ECH key. The ClientHello is the core's fingerprint (see
+//! `tls::Fingerprint`), offering HTTP/2 then HTTP/1.1, and ECH when the caller gives a key; the
+//! request goes over HTTP/2 when the server picks it, over HTTP/1.1 otherwise.
 
 use std::time::Duration;
 
+use boring::ssl::{ConnectConfiguration, SslConnector, SslMethod};
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::apifront::Fingerprint;
 use crate::error::{AetherError, Result};
-use crate::tls::CipherOption;
+use crate::tls::Fingerprint;
 
 /// ALPN: HTTP/2, then HTTP/1.1, as Chrome offers them.
 const ALPN_H2_HTTP1: &[u8] = b"\x02h2\x08http/1.1";
@@ -21,7 +21,8 @@ const MAX_BODY: usize = 512 * 1024;
 
 /// A request: `host` is the HTTP host, of Host or :authority, a name or an IP address, an IPv6
 /// one without brackets, and `path` the path with its query. The connection goes to `host` on
-/// `port`, and the ClientHello names `host`, unless `address` and `sni` name others.
+/// `port`, and the ClientHello names `host`, unless `address` and `sni` name others; offering
+/// ECH, the name goes inside the encrypted ClientHello.
 pub struct Request<'a> {
     pub method: &'a str,
     pub host: &'a str,
@@ -45,14 +46,17 @@ pub struct Response {
     pub protocol: &'static str,
 }
 
-/// Sends `request`, with the TLS 1.2 suites of `ciphers` when the option is given, and gives up
-/// after `timeout`.
+/// Sends `request` with the TLS fingerprint `fingerprint`, and gives up after `timeout`. With
+/// `ech`, an ECHConfigList, the handshake offers it and goes no further without it: a server
+/// that turns it down hands back the key it holds now, which takes its place in `ech`, and the
+/// handshake is made once more with that one.
 pub async fn send(
     request: &Request<'_>,
-    ciphers: &CipherOption,
+    fingerprint: &Fingerprint,
+    ech: Option<&mut Vec<u8>>,
     timeout: Duration,
 ) -> Result<Response> {
-    tokio::time::timeout(timeout, exchange(request, ciphers))
+    tokio::time::timeout(timeout, exchange(request, fingerprint, ech))
         .await
         .map_err(|_| {
             AetherError::Api(format!(
@@ -63,26 +67,77 @@ pub async fn send(
         })?
 }
 
-async fn exchange(request: &Request<'_>, ciphers: &CipherOption) -> Result<Response> {
+async fn exchange(
+    request: &Request<'_>,
+    fingerprint: &Fingerprint,
+    mut ech: Option<&mut Vec<u8>>,
+) -> Result<Response> {
     let address = request.address.unwrap_or(request.host);
-    let tcp = dial(address, request.port).await?;
-    let _ = tcp.set_nodelay(true);
-    // TLS server-certificate verification disabled (unconditional), as the fingerprint has it:
-    // the server name may be neither the HTTP host nor the address.
-    let config = Fingerprint::ChromeLike.configure_for(ALPN_H2_HTTP1, ciphers)?;
-    let tls = tokio_boring::connect(config, request.sni.unwrap_or(request.host), tcp)
-        .await
-        .map_err(|e| {
-            AetherError::Tls(format!(
-                "handshake with {}: {e}",
-                authority(address, request.port)
-            ))
-        })?;
+    let mut retried = false;
+    let tls = loop {
+        let mut config = configuration(fingerprint)?;
+        if let Some(list) = ech.as_deref() {
+            // BoringSSL takes a key it offers nothing from, and the name would go in the clear.
+            crate::tls::ensure_offerable(list)?;
+            config
+                .set_ech_config_list(list)
+                .map_err(|e| AetherError::Tls(e.to_string()))?;
+        }
+        let tcp = dial(address, request.port).await?;
+        let _ = tcp.set_nodelay(true);
+        match tokio_boring::connect(config, request.sni.unwrap_or(request.host), tcp).await {
+            Ok(tls) => break tls,
+            Err(e) => {
+                let message = e.to_string();
+                // BoringSSL reports a key the server turned down as ECH_REJECTED, and only then
+                // hands out the key the server sent back.
+                let retry = match ech.as_deref_mut() {
+                    Some(list) if !retried && message.contains("ECH_REJECTED") => e
+                        .ssl()
+                        .and_then(|ssl| ssl.get_ech_retry_configs())
+                        .filter(|configs| !configs.is_empty())
+                        .and_then(crate::tls::usable_retry)
+                        .map(|retry| (list, retry)),
+                    _ => None,
+                };
+                let Some((list, retry)) = retry else {
+                    return Err(AetherError::Tls(format!(
+                        "handshake with {}: {message}",
+                        authority(address, request.port)
+                    )));
+                };
+                log::debug!(
+                    "[https] {} turned the ECH key down; offering the one it handed back ({} bytes)",
+                    authority(address, request.port),
+                    retry.len()
+                );
+                *list = retry;
+                retried = true;
+            }
+        }
+    };
+    // Nothing goes over a handshake that went without the key it was given.
+    if ech.is_some() && !tls.ssl().ech_accepted() {
+        return Err(AetherError::Ech("the handshake went without ECH".into()));
+    }
     if tls.ssl().selected_alpn_protocol() == Some(b"h2") {
         over_http2(tls, request).await
     } else {
         over_http1(tls, request).await
     }
+}
+
+/// The TLS of a request: the fingerprint, offering HTTP/2 then HTTP/1.1.
+fn configuration(fingerprint: &Fingerprint) -> Result<ConnectConfiguration> {
+    let mut builder =
+        SslConnector::builder(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
+    // TLS server-certificate verification disabled (unconditional), as the fingerprint has it:
+    // the server name may be neither the HTTP host nor the address.
+    fingerprint.apply(&mut builder, ALPN_H2_HTTP1)?;
+    builder
+        .build()
+        .configure()
+        .map_err(|e| AetherError::Tls(e.to_string()))
 }
 
 /// A TCP connection to `host`:`port`: through the upstream proxy when there is one, which looks
@@ -218,7 +273,7 @@ where
         }
     }
 
-    let (status, fields, body) = crate::apifront::parse_http1(&raw)?;
+    let (status, fields, body) = parse_http1(&raw)?;
     let mut headers = http::HeaderMap::new();
     for (name, value) in fields {
         if let (Ok(name), Ok(value)) = (
@@ -300,6 +355,72 @@ fn chunks_complete(body: &[u8]) -> bool {
     }
 }
 
+/// The status, the header fields and the body of `raw`, an HTTP/1.1 response read to its end;
+/// a chunked body comes back joined.
+fn parse_http1(raw: &[u8]) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+    let split = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| AetherError::Api("truncated response head".into()))?;
+
+    let head = String::from_utf8_lossy(&raw[..split]);
+    let mut body = raw[split + 4..].to_vec();
+
+    let mut lines = head.split("\r\n");
+    let status_line = lines
+        .next()
+        .ok_or_else(|| AetherError::Api("empty response".into()))?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|token| token.parse::<u16>().ok())
+        .ok_or_else(|| AetherError::Api(format!("bad status line: {status_line}")))?;
+
+    let fields: Vec<(String, String)> = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        .collect();
+    let chunked = fields.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("transfer-encoding") && value.to_lowercase().contains("chunked")
+    });
+
+    if chunked {
+        body = dechunk(&body);
+    }
+
+    Ok((status, fields, body))
+}
+
+fn dechunk(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+
+    while cursor < body.len() {
+        let line_end = match body[cursor..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+        {
+            Some(offset) => cursor + offset,
+            None => break,
+        };
+        let line = String::from_utf8_lossy(&body[cursor..line_end]);
+        let token = line.split(';').next().unwrap_or("").trim();
+        let size = match usize::from_str_radix(token, 16) {
+            Ok(0) | Err(_) => break,
+            Ok(value) => value,
+        };
+        let start = line_end + 2;
+        let end = match start.checked_add(size) {
+            Some(end) if end <= body.len() => end,
+            _ => break,
+        };
+        out.extend_from_slice(&body[start..end]);
+        cursor = end + 2;
+    }
+
+    out
+}
+
 /// A TLS server on this machine for the tests, which picks `alpn` when the client offers it.
 #[cfg(test)]
 pub(crate) async fn test_server(
@@ -332,12 +453,6 @@ pub(crate) async fn test_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A cipher option of the tests' own, so that no other test sees its variable.
-    const CIPHERS: CipherOption = CipherOption {
-        flag: "--https-test-ciphers",
-        variable: "AETHER_HTTPS_TEST_CIPHERS",
-    };
 
     fn headers() -> Vec<(String, String)> {
         vec![
@@ -391,9 +506,14 @@ mod tests {
             headers: &headers,
             body: Some(b"{\"key\":\"x\"}"),
         };
-        let response = send(&request, &CIPHERS, Duration::from_secs(10))
-            .await
-            .expect("an answer");
+        let response = send(
+            &request,
+            &Fingerprint::default(),
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("an answer");
         assert_eq!(response.protocol, "h2");
         assert_eq!(response.status, 429);
         assert_eq!(response.headers["retry-after"], "7");
@@ -446,9 +566,14 @@ mod tests {
             headers: &headers,
             body: None,
         };
-        let response = send(&request, &CIPHERS, Duration::from_secs(5))
-            .await
-            .expect("an answer before the connection ends");
+        let response = send(
+            &request,
+            &Fingerprint::default(),
+            None,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("an answer before the connection ends");
         assert_eq!(response.protocol, "http/1.1");
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"ok-h1");
@@ -463,45 +588,114 @@ mod tests {
         assert!(!sent.contains("Content-Length"));
     }
 
-    #[tokio::test]
-    async fn the_client_hello_is_chromes_with_http2_first_and_the_options_suites() {
-        let _setting = crate::upstream::hold_setting().await;
-        let hello = |list: Option<&'static str>| async move {
-            let (address, hello) = crate::tls::client_hello::catch().await;
-            if let Some(list) = list {
-                std::env::set_var(CIPHERS.variable, list);
-            }
-            let headers = headers();
-            let request = Request {
-                method: "GET",
-                host: "127.0.0.1",
-                port: address.port(),
-                address: None,
-                sni: None,
-                path: "/",
-                headers: &headers,
-                body: None,
-            };
-            assert!(send(&request, &CIPHERS, Duration::from_secs(10))
-                .await
-                .is_err());
-            std::env::remove_var(CIPHERS.variable);
-            hello.await.expect("the ClientHello")
+    /// The ClientHello of a request to `host` on this machine with `fingerprint`, offering
+    /// `ech` when given, as the server reads it before it hangs up.
+    async fn hello(
+        host: &str,
+        fingerprint: &Fingerprint,
+        ech: Option<&mut Vec<u8>>,
+    ) -> crate::tls::client_hello::ClientHello {
+        let (address, hello) = crate::tls::client_hello::catch().await;
+        let headers = headers();
+        let request = Request {
+            method: "GET",
+            host,
+            port: address.port(),
+            address: Some("127.0.0.1"),
+            sni: None,
+            path: "/",
+            headers: &headers,
+            body: None,
         };
+        assert!(send(&request, fingerprint, ech, Duration::from_secs(10))
+            .await
+            .is_err());
+        hello.await.expect("the ClientHello")
+    }
 
-        let own = hello(None).await;
+    #[tokio::test]
+    async fn the_client_hello_is_the_fingerprints_with_http2_first() {
+        let _setting = crate::upstream::hold_setting().await;
+        let own = hello("api.example.test", &Fingerprint::default(), None).await;
         assert_eq!(own.alpn(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
         assert_eq!(own.versions(), [0x0304, 0x0303]);
-        assert!(own.has_grease());
+        assert_eq!(own.server_name().as_deref(), Some("api.example.test"));
+        assert!(!own.has_grease());
+        assert!(!own.offers_ech());
         assert!(!own.tls12_suites().is_empty());
 
         // Every name BoringSSL knows, AES256-SHA among them, in the list's order.
-        let listed = hello(Some(
-            "ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA:ECDHE-RSA-AES128-GCM-SHA256",
-        ))
-        .await;
+        let changed = Fingerprint {
+            ciphers: Some(
+                "ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA:ECDHE-RSA-AES128-GCM-SHA256".to_string(),
+            ),
+            groups: "X25519:P-256".to_string(),
+            grease: true,
+        };
+        let listed = hello("api.example.test", &changed, None).await;
         assert_eq!(listed.tls12_suites(), [0xcca9, 0x0035, 0xc02f]);
+        assert_eq!(listed.groups(), [0x001d, 0x0017]);
+        assert!(listed.has_grease());
         assert_eq!(listed.alpn(), own.alpn());
+    }
+
+    /// Cloudflare's key of cloudflare-ech.com on 2026-10-01.
+    const CLOUDFLARE_ECH: &str =
+        "AEX+DQBBrwAgACCbK1mYDYFz/BAn6S5t+Q/v+Oej3eFNxtPWgz50fNnFPAAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=";
+
+    #[tokio::test]
+    async fn with_an_ech_key_the_name_goes_inside_the_encrypted_client_hello() {
+        let _setting = crate::upstream::hold_setting().await;
+        let mut ech = crate::tls::decode_ech_config_list(CLOUDFLARE_ECH).expect("base64");
+        let outer = hello("api.example.test", &Fingerprint::default(), Some(&mut ech)).await;
+        assert!(outer.offers_ech());
+        // The key's public name in the clear, the host only inside.
+        assert_eq!(outer.server_name().as_deref(), Some("cloudflare-ech.com"));
+        // As Chrome's, the outer ClientHello offers TLS 1.2 as well, with the fingerprint's
+        // suites; a server that answers with TLS 1.2 has turned the ECH down.
+        assert_eq!(outer.versions(), [0x0304, 0x0303]);
+        assert!(!outer.tls12_suites().is_empty());
+        assert_eq!(outer.alpn(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn a_key_that_cannot_be_offered_goes_no_further() {
+        let _setting = crate::upstream::hold_setting().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let headers = headers();
+        let request = Request {
+            method: "GET",
+            host: "api.example.test",
+            port: listener.local_addr().expect("its address").port(),
+            address: Some("127.0.0.1"),
+            sni: None,
+            path: "/",
+            headers: &headers,
+            body: None,
+        };
+        // BoringSSL would take this list and offer nothing from it: its only config is of
+        // another version, so the name would go in the clear.
+        let mut unusable = vec![0, 6, 0xfe, 0x0c, 0, 2, 0, 0];
+        let refused = send(
+            &request,
+            &Fingerprint::default(),
+            Some(&mut unusable),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("no request without ECH");
+        assert!(
+            refused.to_string().contains("cannot be offered"),
+            "{refused}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), listener.accept())
+                .await
+                .is_err(),
+            "nothing was sent"
+        );
     }
 
     /// The server name of the ClientHello and the :authority of a request to `host` on this
@@ -544,9 +738,14 @@ mod tests {
             headers: &headers,
             body: None,
         };
-        let response = send(&request, &CIPHERS, Duration::from_secs(10))
-            .await
-            .expect("an answer");
+        let response = send(
+            &request,
+            &Fingerprint::default(),
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("an answer");
         assert_eq!(response.status, 204);
         served.await.expect("the server")
     }
@@ -600,6 +799,59 @@ mod tests {
         assert!(http1_complete(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Sum: 1\r\n\r\n"
         ));
+    }
+
+    #[test]
+    fn a_plain_answer_is_parsed() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"id\":\"x\"}";
+        let (status, fields, body) = parse_http1(raw).expect("parsed");
+        assert_eq!(status, 200);
+        assert_eq!(
+            fields,
+            [("Content-Type".to_string(), "application/json".to_string())]
+        );
+        assert_eq!(body, b"{\"id\":\"x\"}");
+    }
+
+    #[test]
+    fn a_chunked_answer_is_joined() {
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"a\"\r\n4\r\n:1}\n\r\n0\r\n\r\n";
+        let (status, _, body) = parse_http1(raw).expect("parsed");
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{\"a\":1}\n");
+    }
+
+    #[test]
+    fn a_rejection_is_reported_rather_than_hidden() {
+        let raw = b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\n\r\nslow down";
+        let (status, fields, body) = parse_http1(raw).expect("parsed");
+        assert_eq!(status, 429);
+        assert!(fields.contains(&("Retry-After".to_string(), "30".to_string())));
+        assert_eq!(body, b"slow down");
+    }
+
+    #[test]
+    fn a_headless_answer_is_an_error() {
+        assert!(parse_http1(b"garbage").is_err());
+    }
+
+    #[test]
+    fn a_chunked_body_is_joined_on_bytes_without_panicking() {
+        let text = "ééé".as_bytes();
+        let mut raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        raw.extend_from_slice(format!("{:x}\r\n", 3).as_bytes());
+        raw.extend_from_slice(&text[..3]);
+        raw.extend_from_slice(format!("\r\n{:x}\r\n", text.len() - 3).as_bytes());
+        raw.extend_from_slice(&text[3..]);
+        raw.extend_from_slice(b"\r\n0\r\n\r\n");
+        let (status, _, body) = parse_http1(&raw).expect("parsed");
+        assert_eq!(status, 200);
+        assert_eq!(body, text);
+
+        let raw =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\nabc\r\n";
+        let (_, _, body) = parse_http1(raw).expect("parsed");
+        assert!(body.is_empty());
     }
 
     #[test]

@@ -26,6 +26,7 @@ extern "C" {
     fn SSL_CTX_set_strict_cipher_list(ctx: *mut c_void, str: *const c_char) -> c_int;
 }
 
+/// The groups of the fingerprint, in order, unless --tls-groups names others.
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
 
 /// An option that sets TLS 1.2 cipher suites: a BoringSSL cipher string, names separated
@@ -37,19 +38,11 @@ pub struct CipherOption {
     pub variable: &'static str,
 }
 
-/// --tls-ciphers: the TLS 1.2 cipher suites of the MASQUE handshakes over HTTP/2, and of
-/// the DoH lookup of --ech-dns. HTTP/3 has none: QUIC offers TLS 1.3 alone.
+/// --tls-ciphers: the TLS 1.2 cipher suites of the handshakes `Fingerprint` makes. HTTP/3
+/// lists none: QUIC offers TLS 1.3 alone.
 pub const TLS_CIPHERS: CipherOption = CipherOption {
     flag: "--tls-ciphers",
     variable: "AETHER_TLS_CIPHERS",
-};
-
-/// --get-warp-key-tls-ciphers: the TLS 1.2 cipher suites of the calls to the WARP API that
-/// offer TLS 1.2, which all do but the camouflaged split-tls13 fingerprint, and of the DoH
-/// lookup of --get-warp-key-ech-dns.
-pub const WARP_KEY_TLS_CIPHERS: CipherOption = CipherOption {
-    flag: "--get-warp-key-tls-ciphers",
-    variable: "AETHER_GET_WARP_KEY_TLS_CIPHERS",
 };
 
 impl CipherOption {
@@ -100,21 +93,139 @@ pub fn tls12_ciphers(list: &str) -> Result<Vec<(u16, &'static str)>> {
         .unwrap_or_default())
 }
 
-/// Checks the cipher strings given to --tls-ciphers and --get-warp-key-tls-ciphers as the
-/// core starts: one BoringSSL does not take stops it, with the option named.
-pub fn check_cipher_options() -> Result<()> {
-    for option in [&TLS_CIPHERS, &WARP_KEY_TLS_CIPHERS] {
-        if let Some(list) = option.configured() {
-            tls12_ciphers(&list).map_err(|e| {
-                let reason = match e {
-                    AetherError::Tls(reason) => reason,
-                    other => other.to_string(),
-                };
-                AetherError::Tls(format!("{}: {reason}", option.flag))
-            })?;
+/// Sets `groups`, a BoringSSL group list, names separated by ':', as the groups of `builder`,
+/// in order.
+fn set_groups(builder: &mut SslContextBuilder, groups: &str) -> Result<()> {
+    builder.set_curves_list(groups).map_err(|_| {
+        AetherError::Tls(format!(
+            "{groups:?} is no group list BoringSSL takes (group names separated by ':')"
+        ))
+    })
+}
+
+/// The TLS fingerprint of the handshakes of the tunnel and its setup: MASQUE over HTTP/2 and
+/// over HTTP/3, the calls to the WARP API and the DoH lookup of the ECH key, each with its
+/// own ALPN.
+/// It is Chrome's, as BoringSSL writes it, with what --tls-ciphers, --tls-groups and
+/// --enable-grease change of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fingerprint {
+    /// --tls-ciphers: the TLS 1.2 cipher suites in place of BoringSSL's, when given.
+    pub ciphers: Option<String>,
+    /// --tls-groups: the groups, in order; the first gets a key share.
+    pub groups: String,
+    /// --enable-grease: GREASE values (RFC 8701) among the cipher suites, the extensions,
+    /// the groups, the key shares and the versions.
+    pub grease: bool,
+}
+
+impl Default for Fingerprint {
+    /// Chrome's, with none of the options given.
+    fn default() -> Self {
+        Fingerprint {
+            ciphers: None,
+            groups: CHROME_GROUPS.to_string(),
+            grease: false,
         }
     }
-    Ok(())
+}
+
+impl Fingerprint {
+    /// The fingerprint the options give: --tls-ciphers (AETHER_TLS_CIPHERS), --tls-groups
+    /// (AETHER_TLS_GROUPS) and --enable-grease (AETHER_ENABLE_GREASE).
+    pub fn configured() -> Self {
+        let groups = std::env::var("AETHER_TLS_GROUPS")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        Fingerprint {
+            ciphers: TLS_CIPHERS.configured(),
+            groups: groups.unwrap_or_else(|| CHROME_GROUPS.to_string()),
+            grease: std::env::var("AETHER_ENABLE_GREASE")
+                .is_ok_and(|value| crate::fragment::is_truthy(&value)),
+        }
+    }
+
+    /// Gives `builder` the fingerprint, offering `alpn`, in wire format: TLS 1.2 and 1.3, the
+    /// groups, the extensions in a new order on each handshake, signed certificate timestamps
+    /// and OCSP asked for, GREASE when it is on, and the TLS 1.2 suites of the cipher list
+    /// when there is one. TLS server-certificate verification disabled (unconditional).
+    pub fn apply(&self, builder: &mut SslContextBuilder, alpn: &[u8]) -> Result<()> {
+        let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
+        builder.set_verify(SslVerifyMode::NONE);
+        builder
+            .set_min_proto_version(Some(SslVersion::TLS1_2))
+            .map_err(tls)?;
+        builder
+            .set_max_proto_version(Some(SslVersion::TLS1_3))
+            .map_err(tls)?;
+        builder.set_grease_enabled(self.grease);
+        builder.set_permute_extensions(true);
+        set_groups(builder, &self.groups)?;
+        builder.set_alpn_protos(alpn).map_err(tls)?;
+        builder.enable_signed_cert_timestamps();
+        builder.enable_ocsp_stapling();
+        if let Some(list) = &self.ciphers {
+            set_tls12_ciphers(builder, list)?;
+        }
+        Ok(())
+    }
+}
+
+/// Checks --tls-ciphers and --tls-groups as the core starts: a cipher string or a group list
+/// BoringSSL does not take stops it, with the option named.
+pub fn check_tls_options() -> Result<()> {
+    let named = |flag: &str, e: AetherError| {
+        let reason = match e {
+            AetherError::Tls(reason) => reason,
+            other => other.to_string(),
+        };
+        AetherError::Tls(format!("{flag}: {reason}"))
+    };
+    let fingerprint = Fingerprint::configured();
+    if let Some(list) = &fingerprint.ciphers {
+        tls12_ciphers(list).map_err(|e| named(TLS_CIPHERS.flag, e))?;
+    }
+    let mut builder =
+        SslContextBuilder::new(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
+    set_groups(&mut builder, &fingerprint.groups).map_err(|e| named("--tls-groups", e))
+}
+
+/// The variables of the options of the fingerprint.
+#[cfg(test)]
+const OPTION_VARIABLES: [&str; 3] = [
+    "AETHER_TLS_CIPHERS",
+    "AETHER_TLS_GROUPS",
+    "AETHER_ENABLE_GREASE",
+];
+
+/// A hold on the options of the fingerprint, which the whole process shares, for a test that
+/// sets them or reads them through `Fingerprint::configured`: they start out clear, and are
+/// cleared again as it ends. A test that holds AETHER_UPSTREAM as well takes that first.
+#[cfg(test)]
+pub(crate) struct OptionsHeld(tokio::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl Drop for OptionsHeld {
+    fn drop(&mut self) {
+        for variable in OPTION_VARIABLES {
+            std::env::remove_var(variable);
+        }
+    }
+}
+
+/// Waits for the hold on the options of the fingerprint, see `OptionsHeld`.
+#[cfg(test)]
+pub(crate) async fn hold_options() -> OptionsHeld {
+    static OPTIONS: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let held = OPTIONS
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    for variable in OPTION_VARIABLES {
+        std::env::remove_var(variable);
+    }
+    OptionsHeld(held)
 }
 
 pub struct TlsParams<'a> {
@@ -159,29 +270,16 @@ pub fn build_config(params: &TlsParams) -> Result<quiche::Config> {
     let mut builder =
         SslContextBuilder::new(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
 
+    let mut alpn = Vec::with_capacity(consts::ALPN_H3.len() + 1);
+    alpn.push(consts::ALPN_H3.len() as u8);
+    alpn.extend_from_slice(consts::ALPN_H3);
+    Fingerprint::configured().apply(&mut builder, &alpn)?;
+    // QUIC carries TLS 1.3 alone, so the TLS 1.2 suites of --tls-ciphers never show here.
     builder
         .set_min_proto_version(Some(SslVersion::TLS1_3))
         .map_err(|e| AetherError::Tls(e.to_string()))?;
     builder
         .set_max_proto_version(Some(SslVersion::TLS1_3))
-        .map_err(|e| AetherError::Tls(e.to_string()))?;
-
-    builder.set_grease_enabled(true);
-    let groups = std::env::var("AETHER_TLS_GROUPS").ok();
-    let groups = groups
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(CHROME_GROUPS);
-    builder
-        .set_curves_list(groups)
-        .map_err(|e| AetherError::Tls(e.to_string()))?;
-
-    let mut alpn = Vec::with_capacity(consts::ALPN_H3.len() + 1);
-    alpn.push(consts::ALPN_H3.len() as u8);
-    alpn.extend_from_slice(consts::ALPN_H3);
-    builder
-        .set_alpn_protos(&alpn)
         .map_err(|e| AetherError::Tls(e.to_string()))?;
 
     let cert = X509::from_pem(params.cert_pem).map_err(|e| AetherError::Tls(e.to_string()))?;
@@ -350,9 +448,8 @@ pub fn decode_ech_config_list(b64: &str) -> Result<Vec<u8>> {
         .map_err(|e| AetherError::Ech(format!("not base64: {e}")))
 }
 
-/// How the core says that it goes no further for want of an ECH key: with --ech or
-/// --get-warp-key-ech given, going on without a key it can offer would send a server
-/// name in the clear. An app that runs the core reads it to tell its user why it stopped.
+/// How the core says that it goes no further for want of an ECH key: with --ech given,
+/// going on without a key it can offer would send a server name in the clear. An app that runs the core reads it to tell its user why it stopped.
 pub const NO_ECH_KEY: &str = "ECH is on but there is no ECH key to offer";
 
 /// An option that asks for an ECH key: its name and variable, what the key is for, and
@@ -372,11 +469,10 @@ pub const SESSION_ECH_OPTION: EchOption = EchOption {
     refusal: "stopping rather than send the server name in the clear",
 };
 
-/// --get-warp-key-ech: the key the calls to the WARP API offer, which register and enroll
-/// the WARP keys.
-pub const WARP_KEY_ECH_OPTION: EchOption = EchOption {
-    flag: "--get-warp-key-ech",
-    variable: "AETHER_GET_WARP_KEY_ECH",
+/// --ech as the calls to the WARP API take it, which register and enroll the WARP keys.
+pub const API_ECH_OPTION: EchOption = EchOption {
+    flag: "--ech",
+    variable: "AETHER_ECH",
     purpose: " for the WARP API",
     refusal: "not asking it rather than send its name in the clear",
 };
@@ -636,7 +732,7 @@ mod tests {
                 "udp://1.1.1.1:53 did not answer for cloudflare-ech.com".into(),
             ))
         };
-        for option in [&SESSION_ECH_OPTION, &WARP_KEY_ECH_OPTION] {
+        for option in [&SESSION_ECH_OPTION, &API_ECH_OPTION] {
             assert_eq!(ech_key(option, None, unused).await.ok(), Some(None));
             assert_eq!(ech_key(option, Some(""), unused).await.ok(), Some(None));
             assert_eq!(
@@ -678,13 +774,124 @@ mod tests {
             )
         );
         assert_eq!(
-            said(ech_key(&WARP_KEY_ECH_OPTION, Some("auto"), silent).await).as_deref(),
+            said(ech_key(&API_ECH_OPTION, Some("auto"), silent).await).as_deref(),
             Some(
                 "ech: ECH is on but there is no ECH key to offer for the WARP API (udp://1.1.1.1:53 \
                  did not answer for cloudflare-ech.com); not asking it rather than send its name in \
                  the clear"
             )
         );
+    }
+
+    #[tokio::test]
+    async fn the_fingerprint_is_chromes_with_what_the_options_change() {
+        let _options = hold_options().await;
+        assert_eq!(Fingerprint::configured(), Fingerprint::default());
+        assert_eq!(
+            Fingerprint::default(),
+            Fingerprint {
+                ciphers: None,
+                groups: "P-256:X25519:P-384".to_string(),
+                grease: false,
+            }
+        );
+        assert!(check_tls_options().is_ok());
+
+        std::env::set_var("AETHER_TLS_CIPHERS", " ECDHE-RSA-AES128-GCM-SHA256 ");
+        std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
+        for (value, on) in [("1", true), ("on", true), ("TRUE", true), ("0", false)] {
+            std::env::set_var("AETHER_ENABLE_GREASE", value);
+            assert_eq!(
+                Fingerprint::configured(),
+                Fingerprint {
+                    ciphers: Some("ECDHE-RSA-AES128-GCM-SHA256".to_string()),
+                    groups: "X25519:P-256".to_string(),
+                    grease: on,
+                },
+                "{value}"
+            );
+        }
+        assert!(check_tls_options().is_ok());
+
+        std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-999");
+        let refused = check_tls_options().expect_err("a group BoringSSL does not know");
+        assert!(
+            refused.to_string().starts_with("tls: --tls-groups: "),
+            "{refused}"
+        );
+        std::env::set_var("AETHER_TLS_GROUPS", "X25519");
+        std::env::set_var(
+            "AETHER_TLS_CIPHERS",
+            "ECDHE-RSA-AES128-GCM-SHA256:NO-SUCH-SUITE",
+        );
+        let refused = check_tls_options().expect_err("a suite BoringSSL does not know");
+        assert!(
+            refused.to_string().starts_with("tls: --tls-ciphers: "),
+            "{refused}"
+        );
+    }
+
+    /// The ClientHello of `fingerprint`, offering HTTP/2, as a server on this machine reads it.
+    async fn hello_of(fingerprint: &Fingerprint) -> client_hello::ClientHello {
+        let (server, hello) = client_hello::catch().await;
+        let mut builder = boring::ssl::SslConnector::builder(SslMethod::tls()).expect("tls");
+        fingerprint
+            .apply(&mut builder, b"\x02h2")
+            .expect("the fingerprint");
+        let config = builder.build().configure().expect("a configuration");
+        let tcp = tokio::net::TcpStream::connect(server)
+            .await
+            .expect("a connection");
+        assert!(
+            tokio_boring::connect(config, "fingerprint.example.test", tcp)
+                .await
+                .is_err()
+        );
+        hello.await.expect("the ClientHello")
+    }
+
+    #[tokio::test]
+    async fn the_client_hello_carries_the_fingerprint() {
+        let chrome = hello_of(&Fingerprint::default()).await;
+        assert!(!chrome.has_grease());
+        assert!(!chrome.has_grease_extension());
+        assert_eq!(chrome.versions(), [0x0304, 0x0303]);
+        assert_eq!(chrome.groups(), [0x0017, 0x001d, 0x0018]);
+        assert_eq!(chrome.key_shares(), [0x0017]);
+        assert_eq!(chrome.alpn(), [b"h2".to_vec()]);
+        assert_eq!(
+            chrome.server_name().as_deref(),
+            Some("fingerprint.example.test")
+        );
+        // Signed certificate timestamps and OCSP asked for, as Chrome asks.
+        assert!(chrome.has_extension(18) && chrome.has_extension(5));
+        assert!(!chrome.tls12_suites().is_empty());
+
+        let greased = hello_of(&Fingerprint {
+            grease: true,
+            ..Fingerprint::default()
+        })
+        .await;
+        assert!(greased.has_grease());
+        assert!(greased.has_grease_extension());
+        assert_eq!(greased.groups(), chrome.groups());
+
+        let changed = hello_of(&Fingerprint {
+            ciphers: Some("ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA".to_string()),
+            groups: "X25519:P-384".to_string(),
+            grease: false,
+        })
+        .await;
+        assert_eq!(changed.tls12_suites(), [0xcca9, 0x0035]);
+        assert_eq!(changed.groups(), [0x001d, 0x0018]);
+        assert_eq!(changed.key_shares(), [0x001d]);
+
+        // The extensions go in a new order on each handshake, as Chrome's do.
+        let mut orders = std::collections::HashSet::new();
+        for _ in 0..4 {
+            orders.insert(hello_of(&Fingerprint::default()).await.extension_types());
+        }
+        assert!(orders.len() > 1, "{orders:?}");
     }
 
     /// An ECHConfig: `version`, config id 7, the KEM `kem` with a key of `key_len` bytes, the
@@ -914,6 +1121,46 @@ pub(crate) mod client_hello {
         /// Whether a GREASE value leads its cipher suites.
         pub fn has_grease(&self) -> bool {
             self.suites.first().is_some_and(|suite| grease(*suite))
+        }
+
+        /// Whether one of its extensions is a GREASE one.
+        pub fn has_grease_extension(&self) -> bool {
+            self.extensions.iter().any(|(kind, _)| grease(*kind))
+        }
+
+        /// Whether it carries the extension `kind`.
+        pub fn has_extension(&self, kind: u16) -> bool {
+            self.extension(kind).is_some()
+        }
+
+        /// The types of its extensions, in order.
+        pub fn extension_types(&self) -> Vec<u16> {
+            self.extensions.iter().map(|(kind, _)| *kind).collect()
+        }
+
+        /// The groups of supported_groups, in order, GREASE left out.
+        pub fn groups(&self) -> Vec<u16> {
+            let data = self.extension(10).expect("supported_groups");
+            data[2..2 + be16(data, 0)]
+                .chunks(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .filter(|group| !grease(*group))
+                .collect()
+        }
+
+        /// The groups of the shares of key_share, in order, GREASE left out.
+        pub fn key_shares(&self) -> Vec<u16> {
+            let data = self.extension(51).expect("key_share");
+            let mut groups = Vec::new();
+            let mut at = 2;
+            while at + 4 <= data.len() {
+                let group = be16(data, at) as u16;
+                if !grease(group) {
+                    groups.push(group);
+                }
+                at += 4 + be16(data, at + 2);
+            }
+            groups
         }
     }
 
