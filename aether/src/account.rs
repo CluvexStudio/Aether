@@ -531,6 +531,8 @@ async fn direct_call(
         method,
         host: api_host(),
         port: 443,
+        address: None,
+        sni: None,
         path,
         headers: &headers,
         body,

@@ -117,7 +117,11 @@ MASQUE transport:
   --ech-dns <url>          the resolver --ech auto asks for the key:
                            udp://ip[:port] or tcp://ip[:port], port 53 unless
                            given, or a DNS-over-HTTPS https:// URL, port 443
-                           unless given (default udp://1.1.1.1)
+                           unless given (default udp://1.1.1.1). After the URL,
+                           @address=<ip|name> sends the connection there and
+                           @sni=<name> puts that name in the ClientHello; the
+                           URL's host stays the HTTP host, e.g.
+                           https://doq.dns4all.eu/dns-query@address=2.2.2.2@sni=google.com
   --ech-domain <name>      the domain whose key --ech auto takes
                            (default cloudflare-ech.com)
   --no-data-check          skip the end-to-end data-plane validation

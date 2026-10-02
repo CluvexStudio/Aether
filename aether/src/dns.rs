@@ -28,22 +28,85 @@ const UDP_RESEND_AFTER: Duration = Duration::from_secs(2);
 pub enum EchDns {
     Udp(SocketAddr),
     Tcp(SocketAddr),
-    Https(String),
+    Https(DohEndpoint),
+}
+
+/// A DNS-over-HTTPS endpoint. The host of its URL is the HTTP host, of Host or :authority,
+/// and also where the connection goes and the server name of the ClientHello, unless
+/// `address` and `sni` name others.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DohEndpoint {
+    pub url: String,
+    /// Where the connection goes: an IP address or a domain name, on the URL's port.
+    pub address: Option<String>,
+    /// The server name of the ClientHello: a domain name.
+    pub sni: Option<String>,
+}
+
+impl DohEndpoint {
+    /// `value`: an `https://` URL, then `@address=` an IP address or a domain name and
+    /// `@sni=` a domain name, each at most once and in either order.
+    fn parse(value: &str) -> std::result::Result<Self, String> {
+        let mut pieces = value.split('@');
+        let url = pieces.next().unwrap_or("").trim();
+        let host = strip_scheme(url, "https://")
+            .and_then(|rest| rest.split(['/', '?', '#']).next())
+            .unwrap_or("");
+        if host.is_empty() {
+            return Err(format!("{value} names no host"));
+        }
+        let mut endpoint = DohEndpoint {
+            url: url.to_string(),
+            address: None,
+            sni: None,
+        };
+        for piece in pieces {
+            let neither = || format!("@{piece} in {value} is neither @address= nor @sni=");
+            let (name, setting) = piece.split_once('=').ok_or_else(neither)?;
+            let setting = setting.trim();
+            let bare = setting
+                .strip_prefix('[')
+                .and_then(|inside| inside.strip_suffix(']'))
+                .unwrap_or(setting);
+            let (slot, checked) = match name.trim().to_ascii_lowercase().as_str() {
+                "address" => (
+                    &mut endpoint.address,
+                    match bare.parse::<IpAddr>() {
+                        Ok(ip) => Some(ip.to_string()),
+                        Err(_) => valid_domain(setting).then(|| setting.to_string()),
+                    }
+                    .ok_or_else(|| {
+                        format!(
+                            "@address={setting} is no IP address or domain name; the port is the URL's"
+                        )
+                    }),
+                ),
+                "sni" => (
+                    &mut endpoint.sni,
+                    (bare.parse::<IpAddr>().is_err() && valid_domain(setting))
+                        .then(|| setting.to_string())
+                        .ok_or_else(|| format!("@sni={setting} is no domain name")),
+                ),
+                _ => return Err(neither()),
+            };
+            if slot.is_some() {
+                return Err(format!("{value} names @{} twice", name.trim()));
+            }
+            *slot = Some(checked?);
+        }
+        Ok(endpoint)
+    }
 }
 
 impl EchDns {
     /// The resolver `value` names: `udp://ip[:port]` or `tcp://ip[:port]`, on port 53
     /// unless one is given and with an IPv6 address in brackets, or an `https://` URL,
-    /// on port 443 unless it names one.
+    /// on port 443 unless it names one, with `@address=` and `@sni=` after it if need be,
+    /// see `DohEndpoint`.
     pub fn parse(value: &str) -> std::result::Result<Self, String> {
         let value = value.trim();
-        if let Some(rest) = strip_scheme(value, "https://") {
-            let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-            return if host.is_empty() {
-                Err(format!("{value} names no host"))
-            } else {
-                Ok(EchDns::Https(value.to_string()))
-            };
+        if strip_scheme(value, "https://").is_some() {
+            return DohEndpoint::parse(value).map(EchDns::Https);
         }
         let (rest, tcp) = if let Some(rest) = strip_scheme(value, "udp://") {
             (rest, false)
@@ -67,7 +130,16 @@ impl std::fmt::Display for EchDns {
         match self {
             EchDns::Udp(address) => write!(f, "udp://{address}"),
             EchDns::Tcp(address) => write!(f, "tcp://{address}"),
-            EchDns::Https(url) => f.write_str(url),
+            EchDns::Https(endpoint) => {
+                f.write_str(&endpoint.url)?;
+                if let Some(address) = &endpoint.address {
+                    write!(f, "@address={address}")?;
+                }
+                if let Some(sni) = &endpoint.sni {
+                    write!(f, "@sni={sni}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -184,7 +256,7 @@ pub async fn fetch_ech_config(lookup: &EchLookup) -> Result<Vec<u8>> {
         match &dns {
             EchDns::Udp(server) => query_udp(*server, &domain).await,
             EchDns::Tcp(server) => query_tcp(*server, &domain).await,
-            EchDns::Https(url) => query_https(url, &domain, ciphers).await,
+            EchDns::Https(endpoint) => query_https(endpoint, &domain, ciphers).await,
         }
     };
     let ech = match tokio::time::timeout(ECH_LOOKUP_TIMEOUT, lookup).await {
@@ -252,22 +324,25 @@ async fn query_tcp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
     answer_ech(&msg, domain)
 }
 
-/// Asks `url`, a DoH endpoint, for the HTTPS record of `domain`, over BoringSSL with Chrome's
-/// ClientHello (see `https`), which lists the TLS 1.2 cipher suites `ciphers` gives, if any.
+/// Asks `endpoint`, a DoH endpoint, for the HTTPS record of `domain`, over BoringSSL with
+/// Chrome's ClientHello (see `https`), which lists the TLS 1.2 cipher suites `ciphers` gives,
+/// if any. The URL's host is the HTTP host; the connection goes to the endpoint's address and
+/// the ClientHello names its sni when it has them, the URL's host otherwise.
 async fn query_https(
-    url: &str,
+    endpoint: &DohEndpoint,
     domain: &str,
     ciphers: &crate::tls::CipherOption,
 ) -> Result<Vec<u8>> {
-    let endpoint = reqwest::Url::parse(url).map_err(|e| AetherError::Ech(format!("{url}: {e}")))?;
-    let host = endpoint
+    let url = &endpoint.url;
+    let parsed = reqwest::Url::parse(url).map_err(|e| AetherError::Ech(format!("{url}: {e}")))?;
+    let host = parsed
         .host_str()
         .ok_or_else(|| AetherError::Ech(format!("{url} names no host")))?
         .trim_start_matches('[')
         .trim_end_matches(']');
-    let path = match endpoint.query() {
-        Some(query) => format!("{}?{query}", endpoint.path()),
-        None => endpoint.path().to_string(),
+    let path = match parsed.query() {
+        Some(query) => format!("{}?{query}", parsed.path()),
+        None => parsed.path().to_string(),
     };
 
     // RFC 8484 asks for the ID 0, which keeps the answers cacheable.
@@ -284,7 +359,9 @@ async fn query_https(
     let request = crate::https::Request {
         method: "POST",
         host,
-        port: endpoint.port_or_known_default().unwrap_or(443),
+        port: parsed.port_or_known_default().unwrap_or(443),
+        address: endpoint.address.as_deref(),
+        sni: endpoint.sni.as_deref(),
         path: &path,
         headers: &headers,
         body: Some(&query),
@@ -496,13 +573,11 @@ mod tests {
         );
         assert_eq!(
             EchDns::parse("https://doq.dns4all.eu/dns-query"),
-            Ok(EchDns::Https(
-                "https://doq.dns4all.eu/dns-query".to_string()
-            ))
+            Ok(doh("https://doq.dns4all.eu/dns-query", None, None))
         );
         assert_eq!(
             EchDns::parse("https://1.1.1.1:8443/dns-query"),
-            Ok(EchDns::Https("https://1.1.1.1:8443/dns-query".to_string()))
+            Ok(doh("https://1.1.1.1:8443/dns-query", None, None))
         );
         assert_eq!(
             EchDns::parse(DEFAULT_ECH_DNS),
@@ -512,6 +587,80 @@ mod tests {
             EchDns::parse("tcp://[::1]").unwrap().to_string(),
             "tcp://[::1]:53"
         );
+    }
+
+    fn doh(url: &str, address: Option<&str>, sni: Option<&str>) -> EchDns {
+        EchDns::Https(DohEndpoint {
+            url: url.to_string(),
+            address: address.map(str::to_string),
+            sni: sni.map(str::to_string),
+        })
+    }
+
+    #[test]
+    fn a_doh_url_takes_an_address_and_a_server_name_of_their_own() {
+        let url = "https://doq.dns4all.eu/dns-query";
+        for (text, address, sni) in [
+            (
+                "https://doq.dns4all.eu/dns-query@address=2.2.2.2@sni=google.com",
+                Some("2.2.2.2"),
+                Some("google.com"),
+            ),
+            (
+                " https://doq.dns4all.eu/dns-query@SNI=google.com@Address=2.2.2.2 ",
+                Some("2.2.2.2"),
+                Some("google.com"),
+            ),
+            (
+                "https://doq.dns4all.eu/dns-query@address=[2606:4700::1111]",
+                Some("2606:4700::1111"),
+                None,
+            ),
+            (
+                "https://doq.dns4all.eu/dns-query@address=2606:4700::1111",
+                Some("2606:4700::1111"),
+                None,
+            ),
+            (
+                "https://doq.dns4all.eu/dns-query@address=front.example.net",
+                Some("front.example.net"),
+                None,
+            ),
+            (
+                "https://doq.dns4all.eu/dns-query@sni=google.com",
+                None,
+                Some("google.com"),
+            ),
+        ] {
+            assert_eq!(EchDns::parse(text), Ok(doh(url, address, sni)), "{text}");
+        }
+        assert_eq!(
+            EchDns::parse("https://doq.dns4all.eu@address=2.2.2.2"),
+            Ok(doh("https://doq.dns4all.eu", Some("2.2.2.2"), None))
+        );
+        // As it is read, and as the log shows it.
+        let text = "https://doq.dns4all.eu/dns-query@address=2.2.2.2@sni=google.com";
+        assert_eq!(EchDns::parse(text).unwrap().to_string(), text);
+    }
+
+    #[test]
+    fn a_doh_url_with_a_parameter_it_cannot_use_is_refused() {
+        for text in [
+            "https://doq.dns4all.eu/dns-query@address=",
+            "https://doq.dns4all.eu/dns-query@address=2.2.2.2:443",
+            "https://doq.dns4all.eu/dns-query@address=not a name",
+            "https://doq.dns4all.eu/dns-query@sni=",
+            "https://doq.dns4all.eu/dns-query@sni=2.2.2.2",
+            "https://doq.dns4all.eu/dns-query@sni=[::1]",
+            "https://doq.dns4all.eu/dns-query@sni=google.com@sni=bing.com",
+            "https://doq.dns4all.eu/dns-query@address=1.1.1.1@address=2.2.2.2",
+            "https://doq.dns4all.eu/dns-query@port=443",
+            "https://doq.dns4all.eu/dns-query@google.com",
+            "https://user@doq.dns4all.eu/dns-query",
+            "https://@address=2.2.2.2",
+        ] {
+            assert!(EchDns::parse(text).is_err(), "{text}");
+        }
     }
 
     #[test]
@@ -742,22 +891,33 @@ mod tests {
         msg
     }
 
+    /// What a DoH server on this machine was asked.
+    struct Asked {
+        method: String,
+        path: String,
+        kind: String,
+        /// The server name of the ClientHello.
+        server_name: Option<String>,
+        /// The HTTP host: Host, or :authority.
+        host: String,
+    }
+
     /// A DoH server on this machine that speaks the protocol of `alpn` and answers one query
-    /// with `ech`; the task ends with the method, the path and the content type it was asked
-    /// with.
+    /// with `ech`; the task ends with what it was asked.
     async fn doh_server(
         alpn: &'static [u8],
         ech: &'static [u8],
-    ) -> (
-        SocketAddr,
-        tokio::task::JoinHandle<(String, String, String)>,
-    ) {
+    ) -> (SocketAddr, tokio::task::JoinHandle<Asked>) {
         let (address, listener, acceptor) = crate::https::test_server(alpn).await;
         let served = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.expect("a connection");
             let mut tls = tokio_boring::accept(&acceptor, tcp)
                 .await
                 .expect("a handshake");
+            let server_name = tls
+                .ssl()
+                .servername(boring::ssl::NameType::HOST_NAME)
+                .map(str::to_string);
             if alpn == b"\x02h2" {
                 let mut connection = h2::server::handshake(tls).await.expect("h2");
                 let (request, mut respond) = connection
@@ -782,7 +942,17 @@ mod tests {
                 while let Some(Ok(_)) = connection.accept().await {}
                 let kind = parts.headers["content-type"].to_str().unwrap().to_string();
                 let path = parts.uri.path_and_query().map(|path| path.to_string());
-                (parts.method.to_string(), path.unwrap_or_default(), kind)
+                Asked {
+                    method: parts.method.to_string(),
+                    path: path.unwrap_or_default(),
+                    kind,
+                    server_name,
+                    host: parts
+                        .uri
+                        .authority()
+                        .map(|a| a.to_string())
+                        .unwrap_or_default(),
+                }
             } else {
                 let mut raw = Vec::new();
                 let mut chunk = [0u8; 4096];
@@ -815,12 +985,20 @@ mod tests {
                 let mut words = head.split_whitespace();
                 let method = words.next().unwrap_or("").to_string();
                 let path = words.next().unwrap_or("").to_string();
-                let kind = head
-                    .lines()
-                    .find_map(|line| line.strip_prefix("Content-Type: "))
-                    .unwrap_or("")
-                    .to_string();
-                (method, path, kind)
+                let field = |name: &str| {
+                    head.lines()
+                        .find_map(|line| line.strip_prefix(name))
+                        .unwrap_or("")
+                        .trim()
+                        .to_string()
+                };
+                Asked {
+                    method,
+                    path,
+                    kind: field("Content-Type: "),
+                    server_name,
+                    host: field("Host: "),
+                }
             }
         });
         (address, served)
@@ -850,10 +1028,48 @@ mod tests {
             let key = fetch_ech_config(&LOOKUP).await;
             std::env::remove_var(LOOKUP.dns_variable);
             assert_eq!(key.expect("the key").as_slice(), KEY, "{alpn:?}");
-            let (method, path, kind) = served.await.expect("the server");
-            assert_eq!(method, "POST");
-            assert_eq!(path, "/dns-query?ct");
-            assert_eq!(kind, "application/dns-message");
+            let asked = served.await.expect("the server");
+            assert_eq!(asked.method, "POST");
+            assert_eq!(asked.path, "/dns-query?ct");
+            assert_eq!(asked.kind, "application/dns-message");
+            // An address for its host: neither a server name nor a host of its own.
+            assert_eq!(asked.server_name, None);
+            assert_eq!(asked.host, server.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_doh_lookup_goes_to_its_address_with_its_server_name() {
+        let _setting = crate::upstream::hold_setting().await;
+        const CIPHERS: crate::tls::CipherOption = crate::tls::CipherOption {
+            flag: "--doh-front-test-ciphers",
+            variable: "AETHER_DOH_FRONT_TEST_CIPHERS",
+        };
+        const LOOKUP: EchLookup = EchLookup {
+            dns_flag: "--doh-front-test-dns",
+            dns_variable: "AETHER_DOH_FRONT_TEST_DNS",
+            domain_flag: "--doh-front-test-domain",
+            domain_variable: "AETHER_DOH_FRONT_TEST_DOMAIN",
+            ciphers: &CIPHERS,
+        };
+        const KEY: &[u8] = b"\x00\x05a key";
+        for alpn in [&b"\x02h2"[..], &b"\x08http/1.1"[..]] {
+            let (server, served) = doh_server(alpn, KEY).await;
+            // doh.example.test is never looked up: the connection goes to the address.
+            std::env::set_var(
+                LOOKUP.dns_variable,
+                format!(
+                    "https://doh.example.test:{}/dns-query@address=127.0.0.1@sni=front.example.test",
+                    server.port()
+                ),
+            );
+            let key = fetch_ech_config(&LOOKUP).await;
+            std::env::remove_var(LOOKUP.dns_variable);
+            assert_eq!(key.expect("the key").as_slice(), KEY, "{alpn:?}");
+            let asked = served.await.expect("the server");
+            assert_eq!(asked.server_name.as_deref(), Some("front.example.test"));
+            assert_eq!(asked.host, format!("doh.example.test:{}", server.port()));
+            assert_eq!(asked.path, "/dns-query");
         }
     }
 }

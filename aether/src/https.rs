@@ -19,12 +19,17 @@ const ALPN_H2_HTTP1: &[u8] = b"\x02h2\x08http/1.1";
 /// The most of an answer that is read.
 const MAX_BODY: usize = 512 * 1024;
 
-/// A request: `host` is a name or an IP address, an IPv6 one without brackets, and `path` the
-/// path with its query.
+/// A request: `host` is the HTTP host, of Host or :authority, a name or an IP address, an IPv6
+/// one without brackets, and `path` the path with its query. The connection goes to `host` on
+/// `port`, and the ClientHello names `host`, unless `address` and `sni` name others.
 pub struct Request<'a> {
     pub method: &'a str,
     pub host: &'a str,
     pub port: u16,
+    /// Where the connection goes instead of `host`: a name or an IP address, on `port`.
+    pub address: Option<&'a str>,
+    /// The server name of the ClientHello instead of `host`.
+    pub sni: Option<&'a str>,
     pub path: &'a str,
     pub headers: &'a [(String, String)],
     pub body: Option<&'a [u8]>,
@@ -59,15 +64,18 @@ pub async fn send(
 }
 
 async fn exchange(request: &Request<'_>, ciphers: &CipherOption) -> Result<Response> {
-    let tcp = dial(request.host, request.port).await?;
+    let address = request.address.unwrap_or(request.host);
+    let tcp = dial(address, request.port).await?;
     let _ = tcp.set_nodelay(true);
+    // TLS server-certificate verification disabled (unconditional), as the fingerprint has it:
+    // the server name may be neither the HTTP host nor the address.
     let config = Fingerprint::ChromeLike.configure_for(ALPN_H2_HTTP1, ciphers)?;
-    let tls = tokio_boring::connect(config, request.host, tcp)
+    let tls = tokio_boring::connect(config, request.sni.unwrap_or(request.host), tcp)
         .await
         .map_err(|e| {
             AetherError::Tls(format!(
                 "handshake with {}: {e}",
-                authority(request.host, request.port)
+                authority(address, request.port)
             ))
         })?;
     if tls.ssl().selected_alpn_protocol() == Some(b"h2") {
@@ -377,6 +385,8 @@ mod tests {
             method: "POST",
             host: "127.0.0.1",
             port: address.port(),
+            address: None,
+            sni: None,
             path: "/v0a4471/reg",
             headers: &headers,
             body: Some(b"{\"key\":\"x\"}"),
@@ -430,6 +440,8 @@ mod tests {
             method: "GET",
             host: "127.0.0.1",
             port: address.port(),
+            address: None,
+            sni: None,
             path: "/v0a4471/reg/a-device?x=1",
             headers: &headers,
             body: None,
@@ -464,6 +476,8 @@ mod tests {
                 method: "GET",
                 host: "127.0.0.1",
                 port: address.port(),
+                address: None,
+                sni: None,
                 path: "/",
                 headers: &headers,
                 body: None,
@@ -488,6 +502,71 @@ mod tests {
         .await;
         assert_eq!(listed.tls12_suites(), [0xcca9, 0x0035, 0xc02f]);
         assert_eq!(listed.alpn(), own.alpn());
+    }
+
+    /// The server name of the ClientHello and the :authority of a request to `host` on this
+    /// machine, sent to `address` with `sni` when given.
+    async fn server_name_and_authority(
+        host: &str,
+        address: Option<&str>,
+        sni: Option<&str>,
+    ) -> (Option<String>, String) {
+        let (listening, listener, acceptor) = test_server(b"\x02h2").await;
+        let served = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("a connection");
+            let tls = tokio_boring::accept(&acceptor, tcp)
+                .await
+                .expect("a handshake");
+            let name = tls
+                .ssl()
+                .servername(boring::ssl::NameType::HOST_NAME)
+                .map(str::to_string);
+            let mut connection = h2::server::handshake(tls).await.expect("h2");
+            let (request, mut respond) = connection
+                .accept()
+                .await
+                .expect("a request")
+                .expect("a whole request");
+            let authority = request.uri().authority().expect("an authority").to_string();
+            let answer = http::Response::builder().status(204).body(()).unwrap();
+            respond.send_response(answer, true).expect("an answer");
+            while let Some(Ok(_)) = connection.accept().await {}
+            (name, authority)
+        });
+        let headers = headers();
+        let request = Request {
+            method: "GET",
+            host,
+            port: listening.port(),
+            address,
+            sni,
+            path: "/",
+            headers: &headers,
+            body: None,
+        };
+        let response = send(&request, &CIPHERS, Duration::from_secs(10))
+            .await
+            .expect("an answer");
+        assert_eq!(response.status, 204);
+        served.await.expect("the server")
+    }
+
+    #[tokio::test]
+    async fn a_request_goes_to_its_address_with_its_server_name_and_its_host() {
+        let _setting = crate::upstream::hold_setting().await;
+        let (name, authority) = server_name_and_authority(
+            "doh.example.test",
+            Some("127.0.0.1"),
+            Some("front.example.test"),
+        )
+        .await;
+        assert_eq!(name.as_deref(), Some("front.example.test"));
+        assert!(authority.starts_with("doh.example.test:"), "{authority}");
+
+        // Without them the host is all three: the address, the server name and the HTTP host.
+        let (name, authority) = server_name_and_authority("localhost", None, None).await;
+        assert_eq!(name.as_deref(), Some("localhost"));
+        assert!(authority.starts_with("localhost:"), "{authority}");
     }
 
     #[test]
