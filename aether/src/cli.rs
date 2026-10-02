@@ -146,9 +146,9 @@ TLS:
                            HTTP/3 lists none: QUIC offers TLS 1.3 alone
   --tls-groups <list>      TLS groups, in order, the first with a key share
                            (default \"P-256:X25519:P-384\")
-  --enable-grease          add GREASE values (RFC 8701) to the cipher suites,
-                           extensions, groups, key shares and versions (off by
-                           default)
+  --disable-grease         leave out the GREASE values (RFC 8701) the cipher
+                           suites, extensions, groups, key shares and versions
+                           carry by default, as Chrome's do
 
 WireGuard:
   --keepalive <n>          persistent keepalive interval in seconds (default 5)
@@ -377,7 +377,7 @@ Environment variables:
   AETHER_ECH_DOMAIN                --ech-domain
   AETHER_TLS_CIPHERS               --tls-ciphers
   AETHER_TLS_GROUPS                --tls-groups
-  AETHER_ENABLE_GREASE             --enable-grease
+  AETHER_DISABLE_GREASE            --disable-grease
   AETHER_WG_KEEPALIVE              --keepalive
   AETHER_WG_NO_PROFILE_RETRY       --no-profile-retry
   AETHER_TEAM                      --team
@@ -596,7 +596,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
             "--tls-ciphers" => set("AETHER_TLS_CIPHERS", next_value!()),
-            "--enable-grease" => set("AETHER_ENABLE_GREASE", "1"),
+            "--disable-grease" => set("AETHER_DISABLE_GREASE", "1"),
             "--perf" => set("AETHER_PERF_PROFILE", next_value!()),
             "--log-level" => set("AETHER_LOG_LEVEL", next_value!()),
             "--verbose" => set("AETHER_LOG_LEVEL", "debug"),

@@ -856,19 +856,19 @@ mod tests {
             "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA",
         );
         std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
-        std::env::set_var("AETHER_ENABLE_GREASE", "1");
+        std::env::set_var("AETHER_DISABLE_GREASE", "1");
         let changed = doh_hello(&LOOKUP).await;
         // The core's ClientHello, Chrome's, offering HTTP/2 first, never ECH: the key it looks
         // up is the one ECH would need.
-        assert!(!own.has_grease());
+        assert!(own.has_grease());
         assert_eq!(own.alpn(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
         assert_eq!(own.groups(), [0x0017, 0x001d, 0x0018]);
         assert!(!own.offers_ech() && !changed.offers_ech());
-        // Every suite of the list, in its order, AES256-SHA among them; the groups; GREASE.
+        // Every suite of the list, in its order, AES256-SHA among them; the groups; no GREASE.
         assert_eq!(changed.tls12_suites(), [0xc02f, 0xcca9, 0x0035]);
         assert_ne!(own.tls12_suites(), changed.tls12_suites());
         assert_eq!(changed.groups(), [0x001d, 0x0017]);
-        assert!(changed.has_grease());
+        assert!(!changed.has_grease());
     }
 
     /// A reply to `query` that holds one HTTPS record for its name, with `ech` for its ech

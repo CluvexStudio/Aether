@@ -159,7 +159,7 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
 
-    // The core's TLS fingerprint, with --tls-ciphers, --tls-groups and --enable-grease.
+    // The core's TLS fingerprint, with --tls-ciphers, --tls-groups and --disable-grease.
     tls::Fingerprint::configured().apply(&mut builder, H2_ALPN)?;
 
     let cert = X509::from_pem(&cfg.cert_pem).map_err(|e| AetherError::Tls(e.to_string()))?;

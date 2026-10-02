@@ -194,21 +194,21 @@ HTTP/2 carrier, which defeats inspectors that read the SNI from a single packet.
 
 Four kinds of TLS handshake carry the tunnel and its setup: MASQUE on HTTP/3 and on
 HTTP/2, the calls to the WARP API, and the DNS-over-HTTPS lookup of the ECH config.
-All four send Chrome's ClientHello as BoringSSL writes it: TLS 1.3 and 1.2, the
-extensions in a new order on every handshake, signed certificate timestamps and
-OCSP asked for. Each offers its own protocols, `h3` over QUIC, `h2` on the HTTP/2
-carrier, `h2` then `http/1.1` to the WARP API and to the DNS-over-HTTPS resolver,
-and QUIC carries TLS 1.3 alone. Certificates are not checked. Zero Trust sign-in,
-the Tor bridge and relay lists and the exit-location lookup keep a TLS of their own.
-Three options change the fingerprint of all four:
+All four send Chrome's ClientHello as BoringSSL writes it: TLS 1.3 and 1.2, GREASE
+values (RFC 8701), the extensions in a new order on every handshake, signed
+certificate timestamps and OCSP asked for. Each offers its own protocols, `h3` over
+QUIC, `h2` on the HTTP/2 carrier, `h2` then `http/1.1` to the WARP API and to the
+DNS-over-HTTPS resolver, and QUIC carries TLS 1.3 alone. Certificates are not
+checked. Zero Trust sign-in, the Tor bridge and relay lists and the exit-location
+lookup keep a TLS of their own. Three options change the fingerprint of all four:
 
 - `--tls-ciphers` sets the TLS 1.2 cipher suites, listed after the TLS 1.3 ones,
   which stay as they are: names separated by `:`, as BoringSSL reads a cipher
   string. HTTP/3 lists none.
 - `--tls-groups` sets the groups, in order, the first one getting a key share
   (default `P-256:X25519:P-384`).
-- `--enable-grease` adds GREASE values (RFC 8701) to the cipher suites, the
-  extensions, the groups, the key shares and the versions. It is off by default.
+- `--disable-grease` leaves out the GREASE values, which all four otherwise put in
+  the cipher suites, the extensions, the groups, the key shares and the versions.
 
 A cipher or group name BoringSSL does not know stops the core as it starts, with
 the option named.
@@ -631,6 +631,6 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_ENROLL_ADDRESS` | where the calls to the WARP API go |
 | `AETHER_TLS_GROUPS` | TLS groups (see TLS) |
 | `AETHER_TLS_CIPHERS` | TLS 1.2 cipher suites (see TLS) |
-| `AETHER_ENABLE_GREASE` | `1` adds GREASE (see TLS) |
+| `AETHER_DISABLE_GREASE` | `1` leaves GREASE out (see TLS) |
 | `AETHER_PERF_PROFILE` | `low`, `medium`, `high` |
 | `AETHER_LOG_LEVEL` | `error` to `trace` |

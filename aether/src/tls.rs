@@ -107,15 +107,15 @@ fn set_groups(builder: &mut SslContextBuilder, groups: &str) -> Result<()> {
 /// over HTTP/3, the calls to the WARP API and the DoH lookup of the ECH key, each with its
 /// own ALPN.
 /// It is Chrome's, as BoringSSL writes it, with what --tls-ciphers, --tls-groups and
-/// --enable-grease change of it.
+/// --disable-grease change of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
     /// --tls-ciphers: the TLS 1.2 cipher suites in place of BoringSSL's, when given.
     pub ciphers: Option<String>,
     /// --tls-groups: the groups, in order; the first gets a key share.
     pub groups: String,
-    /// --enable-grease: GREASE values (RFC 8701) among the cipher suites, the extensions,
-    /// the groups, the key shares and the versions.
+    /// GREASE values (RFC 8701) among the cipher suites, the extensions, the groups, the key
+    /// shares and the versions, as Chrome sends them; --disable-grease leaves them out.
     pub grease: bool,
 }
 
@@ -125,14 +125,14 @@ impl Default for Fingerprint {
         Fingerprint {
             ciphers: None,
             groups: CHROME_GROUPS.to_string(),
-            grease: false,
+            grease: true,
         }
     }
 }
 
 impl Fingerprint {
     /// The fingerprint the options give: --tls-ciphers (AETHER_TLS_CIPHERS), --tls-groups
-    /// (AETHER_TLS_GROUPS) and --enable-grease (AETHER_ENABLE_GREASE).
+    /// (AETHER_TLS_GROUPS) and --disable-grease (AETHER_DISABLE_GREASE).
     pub fn configured() -> Self {
         let groups = std::env::var("AETHER_TLS_GROUPS")
             .ok()
@@ -141,14 +141,14 @@ impl Fingerprint {
         Fingerprint {
             ciphers: TLS_CIPHERS.configured(),
             groups: groups.unwrap_or_else(|| CHROME_GROUPS.to_string()),
-            grease: std::env::var("AETHER_ENABLE_GREASE")
+            grease: !std::env::var("AETHER_DISABLE_GREASE")
                 .is_ok_and(|value| crate::fragment::is_truthy(&value)),
         }
     }
 
     /// Gives `builder` the fingerprint, offering `alpn`, in wire format: TLS 1.2 and 1.3, the
     /// groups, the extensions in a new order on each handshake, signed certificate timestamps
-    /// and OCSP asked for, GREASE when it is on, and the TLS 1.2 suites of the cipher list
+    /// and OCSP asked for, GREASE unless it is off, and the TLS 1.2 suites of the cipher list
     /// when there is one. TLS server-certificate verification disabled (unconditional).
     pub fn apply(&self, builder: &mut SslContextBuilder, alpn: &[u8]) -> Result<()> {
         let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
@@ -196,7 +196,7 @@ pub fn check_tls_options() -> Result<()> {
 const OPTION_VARIABLES: [&str; 3] = [
     "AETHER_TLS_CIPHERS",
     "AETHER_TLS_GROUPS",
-    "AETHER_ENABLE_GREASE",
+    "AETHER_DISABLE_GREASE",
 ];
 
 /// A hold on the options of the fingerprint, which the whole process shares, for a test that
@@ -792,21 +792,21 @@ mod tests {
             Fingerprint {
                 ciphers: None,
                 groups: "P-256:X25519:P-384".to_string(),
-                grease: false,
+                grease: true,
             }
         );
         assert!(check_tls_options().is_ok());
 
         std::env::set_var("AETHER_TLS_CIPHERS", " ECDHE-RSA-AES128-GCM-SHA256 ");
         std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
-        for (value, on) in [("1", true), ("on", true), ("TRUE", true), ("0", false)] {
-            std::env::set_var("AETHER_ENABLE_GREASE", value);
+        for (value, greased) in [("1", false), ("on", false), ("TRUE", false), ("0", true)] {
+            std::env::set_var("AETHER_DISABLE_GREASE", value);
             assert_eq!(
                 Fingerprint::configured(),
                 Fingerprint {
                     ciphers: Some("ECDHE-RSA-AES128-GCM-SHA256".to_string()),
                     groups: "X25519:P-256".to_string(),
-                    grease: on,
+                    grease: greased,
                 },
                 "{value}"
             );
@@ -853,8 +853,8 @@ mod tests {
     #[tokio::test]
     async fn the_client_hello_carries_the_fingerprint() {
         let chrome = hello_of(&Fingerprint::default()).await;
-        assert!(!chrome.has_grease());
-        assert!(!chrome.has_grease_extension());
+        assert!(chrome.has_grease());
+        assert!(chrome.has_grease_extension());
         assert_eq!(chrome.versions(), [0x0304, 0x0303]);
         assert_eq!(chrome.groups(), [0x0017, 0x001d, 0x0018]);
         assert_eq!(chrome.key_shares(), [0x0017]);
@@ -867,14 +867,14 @@ mod tests {
         assert!(chrome.has_extension(18) && chrome.has_extension(5));
         assert!(!chrome.tls12_suites().is_empty());
 
-        let greased = hello_of(&Fingerprint {
-            grease: true,
+        let plain = Fingerprint {
+            grease: false,
             ..Fingerprint::default()
-        })
-        .await;
-        assert!(greased.has_grease());
-        assert!(greased.has_grease_extension());
-        assert_eq!(greased.groups(), chrome.groups());
+        };
+        let ungreased = hello_of(&plain).await;
+        assert!(!ungreased.has_grease());
+        assert!(!ungreased.has_grease_extension());
+        assert_eq!(ungreased.groups(), chrome.groups());
 
         let changed = hello_of(&Fingerprint {
             ciphers: Some("ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA".to_string()),
@@ -886,10 +886,11 @@ mod tests {
         assert_eq!(changed.groups(), [0x001d, 0x0018]);
         assert_eq!(changed.key_shares(), [0x001d]);
 
-        // The extensions go in a new order on each handshake, as Chrome's do.
+        // The extensions go in a new order on each handshake, as Chrome's do; without GREASE,
+        // whose values change on each handshake too, only the order can differ.
         let mut orders = std::collections::HashSet::new();
         for _ in 0..4 {
-            orders.insert(hello_of(&Fingerprint::default()).await.extension_types());
+            orders.insert(hello_of(&plain).await.extension_types());
         }
         assert!(orders.len() > 1, "{orders:?}");
     }

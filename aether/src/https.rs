@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(own.alpn(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
         assert_eq!(own.versions(), [0x0304, 0x0303]);
         assert_eq!(own.server_name().as_deref(), Some("api.example.test"));
-        assert!(!own.has_grease());
+        assert!(own.has_grease());
         assert!(!own.offers_ech());
         assert!(!own.tls12_suites().is_empty());
 
@@ -630,12 +630,12 @@ mod tests {
                 "ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA:ECDHE-RSA-AES128-GCM-SHA256".to_string(),
             ),
             groups: "X25519:P-256".to_string(),
-            grease: true,
+            grease: false,
         };
         let listed = hello("api.example.test", &changed, None).await;
         assert_eq!(listed.tls12_suites(), [0xcca9, 0x0035, 0xc02f]);
         assert_eq!(listed.groups(), [0x001d, 0x0017]);
-        assert!(listed.has_grease());
+        assert!(!listed.has_grease());
         assert_eq!(listed.alpn(), own.alpn());
     }
 
