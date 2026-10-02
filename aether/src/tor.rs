@@ -922,6 +922,30 @@ mod with_tor {
 mod tests {
     use super::*;
 
+    /// The hold on the tor settings of a test: the variables are the whole process's, and the
+    /// tests run side by side, so each test holds them first, or one clearing them would wipe a
+    /// value another had just set. They start out clear, and are cleared again as the hold is
+    /// let go, also by a test that failed half way.
+    struct SettingsHeld(std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for SettingsHeld {
+        fn drop(&mut self) {
+            clear();
+        }
+    }
+
+    /// Waits for the hold on the tor settings, see `SettingsHeld`. A test that failed while it
+    /// held them poisoned the lock, but cleared them all the same, so the lock is taken anyway.
+    fn hold_settings() -> SettingsHeld {
+        static SETTINGS: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let held = SETTINGS
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        clear();
+        SettingsHeld(held)
+    }
+
     fn clear() {
         std::env::remove_var("AETHER_TOR");
         std::env::remove_var("AETHER_TOR_DIR");
@@ -932,7 +956,7 @@ mod tests {
 
     #[test]
     fn every_mode_has_a_spelling() {
-        clear();
+        let _settings = hold_settings();
         assert_eq!(mode(), Mode::Off);
         for written in ["1", "on", "chain", "yes"] {
             std::env::set_var("AETHER_TOR", written);
@@ -950,12 +974,11 @@ mod tests {
             std::env::set_var("AETHER_TOR", written);
             assert_eq!(mode(), Mode::Off, "{written}");
         }
-        clear();
     }
 
     #[test]
     fn the_state_dir_sits_beside_the_identity_file() {
-        clear();
+        let _settings = hold_settings();
         assert_eq!(state_dir("aether.toml"), PathBuf::from("aether-tor"));
         assert_eq!(
             state_dir("/etc/aether/aether.toml"),
@@ -966,21 +989,19 @@ mod tests {
             state_dir("aether.toml"),
             PathBuf::from("/var/lib/aether-tor")
         );
-        clear();
     }
 
     #[test]
     fn the_tor_listener_has_a_default_of_its_own() {
-        clear();
+        let _settings = hold_settings();
         assert_eq!(listen_address(), "127.0.0.1:1820".parse().unwrap());
         std::env::set_var("AETHER_TOR_BIND", "127.0.0.1:9150");
         assert_eq!(listen_address(), "127.0.0.1:9150".parse().unwrap());
-        clear();
     }
 
     #[test]
     fn bridges_are_read_one_per_entry() {
-        clear();
+        let _settings = hold_settings();
         assert!(bridge_lines().is_empty());
         std::env::set_var(
             "AETHER_TOR_BRIDGES",
@@ -990,12 +1011,11 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with("obfs4 192.0.2.55"));
         assert!(lines[1].starts_with("obfs4 198.51.100.25"));
-        clear();
     }
 
     #[test]
     fn a_transport_may_be_named_or_assumed_to_be_obfs4() {
-        clear();
+        let _settings = hold_settings();
         assert!(transports().is_empty());
         std::env::set_var("AETHER_TOR_PT", "/usr/bin/lyrebird");
         assert_eq!(
@@ -1016,7 +1036,6 @@ mod tests {
                 ),
             ]
         );
-        clear();
     }
 }
 
