@@ -35,9 +35,6 @@ const CHROME_GROUPS: &str = "P-256:X25519:P-384";
 pub struct CipherOption {
     pub flag: &'static str,
     pub variable: &'static str,
-    /// The handshakes of the option that rustls makes, through reqwest, which take only the
-    /// suites rustls has; see `rustls_tls`.
-    pub rustls_handshakes: &'static str,
 }
 
 /// --tls-ciphers: the TLS 1.2 cipher suites of the MASQUE handshakes over HTTP/2, and of
@@ -45,7 +42,6 @@ pub struct CipherOption {
 pub const TLS_CIPHERS: CipherOption = CipherOption {
     flag: "--tls-ciphers",
     variable: "AETHER_TLS_CIPHERS",
-    rustls_handshakes: "the DoH lookup of --ech-dns",
 };
 
 /// --get-warp-key-tls-ciphers: the TLS 1.2 cipher suites of the calls to the WARP API that
@@ -54,8 +50,6 @@ pub const TLS_CIPHERS: CipherOption = CipherOption {
 pub const WARP_KEY_TLS_CIPHERS: CipherOption = CipherOption {
     flag: "--get-warp-key-tls-ciphers",
     variable: "AETHER_GET_WARP_KEY_TLS_CIPHERS",
-    rustls_handshakes:
-        "the direct route to the WARP API and the DoH lookup of --get-warp-key-ech-dns",
 };
 
 impl CipherOption {
@@ -121,122 +115,6 @@ pub fn check_cipher_options() -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The rustls clients built for the cipher options, once for the run: by option and list.
-static RUSTLS_TLS: std::sync::Mutex<Vec<(&'static str, String, rustls::ClientConfig)>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// The TLS of the handshakes reqwest makes for `option`, given `list`: what reqwest builds by
-/// itself (rustls with ring, TLS 1.3 and 1.2, its TLS 1.3 suites as they are, no certificate
-/// checks, ALPN h2 then http/1.1), with the TLS 1.2 suites of `list` in place of its own. Those
-/// rustls has, ECDHE with AES-GCM or ChaCha20, go in the order of the list; the others are left
-/// out. With none of them, the handshakes offer TLS 1.3 alone.
-pub fn rustls_tls(option: &CipherOption, list: &str) -> Result<rustls::ClientConfig> {
-    let mut built = RUSTLS_TLS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((_, _, config)) = built
-        .iter()
-        .find(|(flag, for_list, _)| *flag == option.flag && for_list == list)
-    {
-        return Ok(config.clone());
-    }
-
-    let mut provider = rustls::crypto::ring::default_provider();
-    let (mut suites, tls12): (Vec<_>, Vec<_>) = provider
-        .cipher_suites
-        .iter()
-        .copied()
-        .partition(|suite| suite.tls13().is_some());
-    let tls13_suites = suites.len();
-    for (id, name) in tls12_ciphers(list)? {
-        match tls12.iter().find(|suite| u16::from(suite.suite()) == id) {
-            Some(suite) => suites.push(*suite),
-            None => log::warn!(
-                "[!] {}: {name} is left out of {}, as rustls has ECDHE with AES-GCM or ChaCha20 only",
-                option.flag,
-                option.rustls_handshakes
-            ),
-        }
-    }
-    let versions: &[&'static rustls::SupportedProtocolVersion] = if suites.len() > tls13_suites {
-        &[&rustls::version::TLS13, &rustls::version::TLS12]
-    } else {
-        log::warn!(
-            "[!] {}: TLS 1.3 alone in {}, as rustls has none of the list's TLS 1.2 suites",
-            option.flag,
-            option.rustls_handshakes
-        );
-        &[&rustls::version::TLS13]
-    };
-    provider.cipher_suites = suites;
-
-    let mut config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(provider))
-        .with_protocol_versions(versions)
-        .map_err(|e| AetherError::Tls(e.to_string()))?
-        .dangerous()
-        .with_custom_certificate_verifier(std::sync::Arc::new(AnyCertificate))
-        .with_no_client_auth();
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    built.push((option.flag, list.to_string(), config.clone()));
-    Ok(config)
-}
-
-/// Takes any certificate, as reqwest's own verifier for danger_accept_invalid_certs does, and
-/// offers the signature schemes it offers, so that the ClientHello stays the one reqwest
-/// writes by itself, but for the cipher suites.
-#[derive(Debug)]
-struct AnyCertificate;
-
-impl rustls::client::danger::ServerCertVerifier for AnyCertificate {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        use rustls::SignatureScheme;
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA1,
-            SignatureScheme::ECDSA_SHA1_Legacy,
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-            SignatureScheme::ED448,
-        ]
-    }
 }
 
 pub struct TlsParams<'a> {
@@ -958,65 +836,6 @@ mod tests {
             assert!(ensure_offerable(&bad).is_err());
         }
     }
-
-    /// The ClientHello rustls writes with `config`, to a server named example.com.
-    fn rustls_hello(config: rustls::ClientConfig) -> client_hello::ClientHello {
-        let name = rustls::pki_types::ServerName::try_from("example.com").expect("a name");
-        let mut connection =
-            rustls::ClientConnection::new(std::sync::Arc::new(config), name).expect("a client");
-        let mut wire = Vec::new();
-        connection.write_tls(&mut wire).expect("the ClientHello");
-        client_hello::parse(&wire)
-    }
-
-    #[test]
-    fn rustls_takes_the_suites_of_the_list_it_has_in_the_lists_order() {
-        // In neither rustls's order nor the sorted one.
-        let config = rustls_tls(
-            &TLS_CIPHERS,
-            "ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA:ECDHE-RSA-AES128-GCM-SHA256",
-        )
-        .expect("a list BoringSSL takes");
-        assert_eq!(
-            config.alpn_protocols,
-            [b"h2".to_vec(), b"http/1.1".to_vec()]
-        );
-        let hello = rustls_hello(config);
-        // rustls's TLS 1.3 suites as they are, then those of the list it has, in the list's
-        // order, then the renegotiation SCSV it ends with; AES256-SHA it has not.
-        assert_eq!(
-            hello.suites,
-            [0x1302, 0x1301, 0x1303, 0xcca9, 0xc02f, 0x00ff]
-        );
-        assert_eq!(hello.versions(), [0x0304, 0x0303]);
-    }
-
-    #[test]
-    fn rustls_offers_tls13_alone_without_a_suite_of_the_list_it_has() {
-        let config = rustls_tls(&WARP_KEY_TLS_CIPHERS, "AES256-SHA:ECDHE-RSA-AES128-SHA")
-            .expect("a list BoringSSL takes");
-        let hello = rustls_hello(config);
-        // No renegotiation SCSV either: rustls lists it only with TLS 1.2.
-        assert_eq!(hello.suites, [0x1302, 0x1301, 0x1303]);
-        assert_eq!(hello.versions(), [0x0304]);
-    }
-
-    #[test]
-    fn rustls_builds_a_client_for_each_list() {
-        let first = "ECDHE-ECDSA-AES128-GCM-SHA256";
-        let second = "ECDHE-RSA-AES256-GCM-SHA384";
-        for _ in 0..2 {
-            let hello = rustls_hello(rustls_tls(&TLS_CIPHERS, first).expect("a list"));
-            assert_eq!(hello.suites[3..], [0xc02b, 0x00ff]);
-            let hello = rustls_hello(rustls_tls(&TLS_CIPHERS, second).expect("a list"));
-            assert_eq!(hello.suites[3..], [0xc030, 0x00ff]);
-        }
-    }
-
-    #[test]
-    fn rustls_takes_no_list_boringssl_does_not() {
-        assert!(rustls_tls(&TLS_CIPHERS, "ECDHE-RSA-AES128-GCM-SHA256:NO-SUCH-SUITE").is_err());
-    }
 }
 
 /// A ClientHello as a server reads it, and a server on this machine that reads one and hangs
@@ -1079,26 +898,22 @@ pub(crate) mod client_hello {
             self.extension(0xfe0d).is_some()
         }
 
-        /// The extensions sorted by type, with only the groups of key_share, whose keys are new
-        /// each time: rustls shuffles their order for each ClientHello.
-        pub fn comparable_extensions(&self) -> Vec<(u16, Vec<u8>)> {
-            let mut extensions: Vec<_> = self
-                .extensions
-                .iter()
-                .map(|(kind, data)| {
-                    if *kind != 51 {
-                        return (*kind, data.clone());
-                    }
-                    let (mut groups, mut at) = (Vec::new(), 2);
-                    while at + 4 <= data.len() {
-                        groups.extend_from_slice(&data[at..at + 2]);
-                        at += 4 + be16(data, at + 2);
-                    }
-                    (*kind, groups)
-                })
-                .collect();
-            extensions.sort();
-            extensions
+        /// The protocols of application_layer_protocol_negotiation, in order.
+        pub fn alpn(&self) -> Vec<Vec<u8>> {
+            let data = self.extension(16).expect("ALPN");
+            let mut protocols = Vec::new();
+            let mut at = 2;
+            while at < data.len() {
+                let len = data[at] as usize;
+                protocols.push(data[at + 1..at + 1 + len].to_vec());
+                at += 1 + len;
+            }
+            protocols
+        }
+
+        /// Whether a GREASE value leads its cipher suites.
+        pub fn has_grease(&self) -> bool {
+            self.suites.first().is_some_and(|suite| grease(*suite))
         }
     }
 

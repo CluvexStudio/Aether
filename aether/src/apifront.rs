@@ -71,7 +71,19 @@ impl Fingerprint {
         }
     }
 
+    /// The fingerprint's TLS, offering HTTP/1.1 alone, which is what the camouflaged and the
+    /// ECH route speak, with --get-warp-key-tls-ciphers.
     fn configure(self) -> Result<boring::ssl::ConnectConfiguration> {
+        self.configure_for(ALPN_HTTP1, &crate::tls::WARP_KEY_TLS_CIPHERS)
+    }
+
+    /// The fingerprint's TLS with `alpn` offered, and the TLS 1.2 suites of `ciphers` in place
+    /// of its own when the option is given and the fingerprint offers TLS 1.2.
+    pub(crate) fn configure_for(
+        self,
+        alpn: &[u8],
+        ciphers: &crate::tls::CipherOption,
+    ) -> Result<boring::ssl::ConnectConfiguration> {
         let mut builder =
             SslConnector::builder(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
 
@@ -91,7 +103,7 @@ impl Fingerprint {
                 builder.set_grease_enabled(false);
                 builder.set_cipher_list(LEGACY_CIPHERS).map_err(tls)?;
                 builder.set_curves_list(LEGACY_GROUPS).map_err(tls)?;
-                builder.set_alpn_protos(ALPN_HTTP1).map_err(tls)?;
+                builder.set_alpn_protos(alpn).map_err(tls)?;
             }
             Fingerprint::SplitModern => {
                 builder
@@ -102,7 +114,7 @@ impl Fingerprint {
                     .map_err(tls)?;
                 builder.set_grease_enabled(false);
                 builder.set_curves_list(MODERN_GROUPS).map_err(tls)?;
-                builder.set_alpn_protos(ALPN_HTTP1).map_err(tls)?;
+                builder.set_alpn_protos(alpn).map_err(tls)?;
             }
             Fingerprint::Modern => {
                 builder
@@ -113,7 +125,7 @@ impl Fingerprint {
                     .map_err(tls)?;
                 builder.set_grease_enabled(false);
                 builder.set_curves_list(MODERN_GROUPS).map_err(tls)?;
-                builder.set_alpn_protos(ALPN_HTTP1).map_err(tls)?;
+                builder.set_alpn_protos(alpn).map_err(tls)?;
             }
             Fingerprint::ChromeLike => {
                 builder
@@ -125,16 +137,15 @@ impl Fingerprint {
                 builder.set_grease_enabled(true);
                 builder.set_permute_extensions(true);
                 builder.set_curves_list(CHROME_GROUPS).map_err(tls)?;
-                builder.set_alpn_protos(ALPN_HTTP1).map_err(tls)?;
+                builder.set_alpn_protos(alpn).map_err(tls)?;
                 builder.enable_signed_cert_timestamps();
                 builder.enable_ocsp_stapling();
             }
         }
 
-        // --get-warp-key-tls-ciphers: the TLS 1.2 suites of a fingerprint that offers TLS 1.2,
-        // in place of its own.
+        // The TLS 1.2 suites of a fingerprint that offers TLS 1.2, in place of its own.
         if self.offers_tls12() {
-            if let Some(list) = crate::tls::WARP_KEY_TLS_CIPHERS.configured() {
+            if let Some(list) = ciphers.configured() {
                 crate::tls::set_tls12_ciphers(&mut builder, &list)?;
             }
         }
@@ -223,6 +234,13 @@ fn render_request(request: &ApiRequest) -> Vec<u8> {
 }
 
 fn parse_response(raw: &[u8]) -> Result<(u16, String)> {
+    let (status, _, body) = parse_http1(raw)?;
+    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+}
+
+/// The status, the header fields and the body of `raw`, an HTTP/1.1 response read to its end;
+/// a chunked body comes back joined.
+pub(crate) fn parse_http1(raw: &[u8]) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     let split = raw
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -241,16 +259,19 @@ fn parse_response(raw: &[u8]) -> Result<(u16, String)> {
         .and_then(|token| token.parse::<u16>().ok())
         .ok_or_else(|| AetherError::Api(format!("bad status line: {status_line}")))?;
 
-    let chunked = lines.any(|line| {
-        let lowered = line.to_lowercase();
-        lowered.starts_with("transfer-encoding:") && lowered.contains("chunked")
+    let fields: Vec<(String, String)> = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        .collect();
+    let chunked = fields.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("transfer-encoding") && value.to_lowercase().contains("chunked")
     });
 
     if chunked {
         body = dechunk(&body);
     }
 
-    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+    Ok((status, fields, body))
 }
 
 fn dechunk(body: &[u8]) -> Vec<u8> {
@@ -627,6 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_ech_route_offers_tls12_as_chrome_does_with_the_warp_key_ciphers() {
+        let _setting = crate::upstream::hold_setting().await;
         let own = ech_route_hello().await;
         assert!(own.offers_ech());
         assert_eq!(own.server_name().as_deref(), Some("cloudflare-ech.com"));

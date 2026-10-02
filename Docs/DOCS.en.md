@@ -204,7 +204,8 @@ Three extras apply to MASQUE only:
   carrier lists after the TLS 1.3 ones, which stay as they are: names separated by
   `:`, as BoringSSL reads a cipher string, a name it does not know being an error.
   HTTP/3 lists none, since QUIC offers TLS 1.3 alone. A DNS-over-HTTPS lookup of
-  `--ech-dns` lists them too, those rustls has (ECDHE with AES-GCM or ChaCha20).
+  `--ech-dns` lists them too: it sends Chrome's ClientHello, offering HTTP/2 then
+  HTTP/1.1, as the direct route to the WARP API does.
 
 ## Zero Trust
 
@@ -527,13 +528,13 @@ aether --register all --get-warp-key-ech auto
 ```
 
 `--get-warp-key-tls-ciphers` sets the TLS 1.2 cipher suites these calls list after
-the TLS 1.3 ones, wherever they offer TLS 1.2: on the direct route, which takes only
-the suites rustls has (ECDHE with AES-GCM or ChaCha20), on the fallback over
-Cloudflare edge addresses, and on the ECH route, which offers TLS 1.2 next to TLS 1.3
-as Chrome does. The API's name stays inside the encrypted ClientHello, which offers
-TLS 1.3 alone; a server that answers with TLS 1.2 turns ECH down, and the handshake
-ends there. A DNS-over-HTTPS lookup of `--get-warp-key-ech-dns` lists the suites
-too, those rustls has.
+the TLS 1.3 ones, wherever they offer TLS 1.2: on the direct route, which sends
+Chrome's ClientHello, offering HTTP/2 then HTTP/1.1, on the fallback over Cloudflare
+edge addresses, and on the ECH route, which offers TLS 1.2 next to TLS 1.3 as Chrome
+does. The API's name stays inside the encrypted ClientHello, which offers TLS 1.3
+alone; a server that answers with TLS 1.2 turns ECH down, and the handshake ends
+there. A DNS-over-HTTPS lookup of `--get-warp-key-ech-dns` lists the suites too, with
+the same ClientHello as the direct route.
 
 ## Using Aether as a library
 

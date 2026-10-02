@@ -252,46 +252,50 @@ async fn query_tcp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
     answer_ech(&msg, domain)
 }
 
-/// Asks `url`, a DoH endpoint, for the HTTPS record of `domain`; the ClientHello lists the
-/// TLS 1.2 cipher suites `ciphers` gives, if any.
+/// Asks `url`, a DoH endpoint, for the HTTPS record of `domain`, over BoringSSL with Chrome's
+/// ClientHello (see `https`), which lists the TLS 1.2 cipher suites `ciphers` gives, if any.
 async fn query_https(
     url: &str,
     domain: &str,
     ciphers: &crate::tls::CipherOption,
 ) -> Result<Vec<u8>> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(ECH_LOOKUP_TIMEOUT)
-        // TLS server-certificate verification disabled (unconditional).
-        .danger_accept_invalid_certs(true);
-    if let Some(list) = ciphers.configured() {
-        builder = builder.use_preconfigured_tls(crate::tls::rustls_tls(ciphers, &list)?);
-    }
-    if let Some(upstream) = crate::upstream::configured() {
-        builder = builder.proxy(upstream.as_reqwest_proxy()?);
-    }
-    let client = builder
-        .build()
-        .map_err(|e| AetherError::Ech(e.to_string()))?;
+    let endpoint = reqwest::Url::parse(url).map_err(|e| AetherError::Ech(format!("{url}: {e}")))?;
+    let host = endpoint
+        .host_str()
+        .ok_or_else(|| AetherError::Ech(format!("{url} names no host")))?
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let path = match endpoint.query() {
+        Some(query) => format!("{}?{query}", endpoint.path()),
+        None => endpoint.path().to_string(),
+    };
 
     // RFC 8484 asks for the ID 0, which keeps the answers cacheable.
     let (mut query, _) = build_query(domain, RR_HTTPS);
     query[0] = 0;
     query[1] = 0;
-    let response = client
-        .post(url)
-        .header(reqwest::header::CONTENT_TYPE, "application/dns-message")
-        .header(reqwest::header::ACCEPT, "application/dns-message")
-        .body(query)
-        .send()
+    let headers = [
+        (
+            "Content-Type".to_string(),
+            "application/dns-message".to_string(),
+        ),
+        ("Accept".to_string(), "application/dns-message".to_string()),
+    ];
+    let request = crate::https::Request {
+        method: "POST",
+        host,
+        port: endpoint.port_or_known_default().unwrap_or(443),
+        path: &path,
+        headers: &headers,
+        body: Some(&query),
+    };
+    let response = crate::https::send(&request, ciphers, ECH_LOOKUP_TIMEOUT)
         .await
         .map_err(|e| AetherError::Ech(e.to_string()))?;
-    if !response.status().is_success() {
-        return Err(AetherError::Ech(format!("answered {}", response.status())));
+    if !(200..300).contains(&response.status) {
+        return Err(AetherError::Ech(format!("answered {}", response.status)));
     }
-    let msg = response
-        .bytes()
-        .await
-        .map_err(|e| AetherError::Ech(e.to_string()))?;
+    let msg = response.body;
 
     if !response_matches(&msg, 0, domain, RR_HTTPS) {
         return Err(AetherError::Ech(
@@ -690,11 +694,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_doh_lookup_lists_the_tls12_suites_of_its_cipher_option() {
+        let _setting = crate::upstream::hold_setting().await;
         // A lookup and an option of the test's own, so that no other test sees their variables.
         const CIPHERS: crate::tls::CipherOption = crate::tls::CipherOption {
             flag: "--doh-test-ciphers",
             variable: "AETHER_DOH_TEST_CIPHERS",
-            rustls_handshakes: "the DoH lookup of the test",
         };
         const LOOKUP: EchLookup = EchLookup {
             dns_flag: "--doh-test-dns",
@@ -710,12 +714,146 @@ mod tests {
         );
         let listed = doh_hello(&LOOKUP).await;
         std::env::remove_var(CIPHERS.variable);
-        // reqwest's TLS 1.3 suites as they were, then those of the list rustls has, in the
-        // list's order, then the renegotiation SCSV; AES256-SHA rustls has not.
-        assert_eq!(listed.suites[..3], own.suites[..3]);
-        assert_eq!(listed.suites[3..], [0xc02f, 0xcca9, 0x00ff]);
-        assert!(own.suites.contains(&0xc02b), "{:04x?}", own.suites);
-        // Nothing else changes: the same extensions with the same contents.
-        assert_eq!(listed.comparable_extensions(), own.comparable_extensions());
+        // BoringSSL's ClientHello, Chrome's, offering HTTP/2 first.
+        assert!(own.has_grease());
+        assert_eq!(own.alpn(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
+        // Every suite of the list, in its order, AES256-SHA among them.
+        assert_eq!(listed.tls12_suites(), [0xc02f, 0xcca9, 0x0035]);
+        assert_ne!(own.tls12_suites(), listed.tls12_suites());
+    }
+
+    /// A reply to `query` that holds one HTTPS record for its name, with `ech` for its ech
+    /// parameter.
+    fn https_reply(query: &[u8], ech: &[u8]) -> Vec<u8> {
+        let mut rdata = vec![0x00, 0x01, 0x00];
+        rdata.extend_from_slice(&SVCPARAM_ECH.to_be_bytes());
+        rdata.extend_from_slice(&(ech.len() as u16).to_be_bytes());
+        rdata.extend_from_slice(ech);
+
+        let mut msg = query.to_vec();
+        msg[2] |= 0x80;
+        msg[6..8].copy_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&[0xc0, 0x0c]);
+        msg.extend_from_slice(&RR_HTTPS.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&300u32.to_be_bytes());
+        msg.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        msg.extend_from_slice(&rdata);
+        msg
+    }
+
+    /// A DoH server on this machine that speaks the protocol of `alpn` and answers one query
+    /// with `ech`; the task ends with the method, the path and the content type it was asked
+    /// with.
+    async fn doh_server(
+        alpn: &'static [u8],
+        ech: &'static [u8],
+    ) -> (
+        SocketAddr,
+        tokio::task::JoinHandle<(String, String, String)>,
+    ) {
+        let (address, listener, acceptor) = crate::https::test_server(alpn).await;
+        let served = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("a connection");
+            let mut tls = tokio_boring::accept(&acceptor, tcp)
+                .await
+                .expect("a handshake");
+            if alpn == b"\x02h2" {
+                let mut connection = h2::server::handshake(tls).await.expect("h2");
+                let (request, mut respond) = connection
+                    .accept()
+                    .await
+                    .expect("a request")
+                    .expect("a whole request");
+                let (parts, mut body) = request.into_parts();
+                let mut query = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    query.extend_from_slice(&chunk.expect("the query"));
+                }
+                let answer = http::Response::builder()
+                    .status(200)
+                    .header("content-type", "application/dns-message")
+                    .body(())
+                    .unwrap();
+                let mut stream = respond.send_response(answer, false).expect("an answer");
+                stream
+                    .send_data(bytes::Bytes::from(https_reply(&query, ech)), true)
+                    .expect("its body");
+                while let Some(Ok(_)) = connection.accept().await {}
+                let kind = parts.headers["content-type"].to_str().unwrap().to_string();
+                let path = parts.uri.path_and_query().map(|path| path.to_string());
+                (parts.method.to_string(), path.unwrap_or_default(), kind)
+            } else {
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let (head_end, length) = loop {
+                    let read = tls.read(&mut chunk).await.expect("the request");
+                    raw.extend_from_slice(&chunk[..read]);
+                    if let Some(end) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&raw[..end]).to_lowercase();
+                        let length = head
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                            .expect("a length");
+                        break (end + 4, length);
+                    }
+                };
+                while raw.len() < head_end + length {
+                    let read = tls.read(&mut chunk).await.expect("the query");
+                    raw.extend_from_slice(&chunk[..read]);
+                }
+                let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+                let reply = https_reply(&raw[head_end..head_end + length], ech);
+                let mut wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {}\r\n\r\n",
+                    reply.len()
+                )
+                .into_bytes();
+                wire.extend_from_slice(&reply);
+                tls.write_all(&wire).await.expect("the answer");
+                let mut words = head.split_whitespace();
+                let method = words.next().unwrap_or("").to_string();
+                let path = words.next().unwrap_or("").to_string();
+                let kind = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Type: "))
+                    .unwrap_or("")
+                    .to_string();
+                (method, path, kind)
+            }
+        });
+        (address, served)
+    }
+
+    #[tokio::test]
+    async fn a_doh_lookup_reads_the_key_over_http2_or_http1() {
+        let _setting = crate::upstream::hold_setting().await;
+        const CIPHERS: crate::tls::CipherOption = crate::tls::CipherOption {
+            flag: "--doh-server-test-ciphers",
+            variable: "AETHER_DOH_SERVER_TEST_CIPHERS",
+        };
+        const LOOKUP: EchLookup = EchLookup {
+            dns_flag: "--doh-server-test-dns",
+            dns_variable: "AETHER_DOH_SERVER_TEST_DNS",
+            domain_flag: "--doh-server-test-domain",
+            domain_variable: "AETHER_DOH_SERVER_TEST_DOMAIN",
+            ciphers: &CIPHERS,
+        };
+        const KEY: &[u8] = b"\x00\x05a key";
+        for alpn in [&b"\x02h2"[..], &b"\x08http/1.1"[..]] {
+            let (server, served) = doh_server(alpn, KEY).await;
+            std::env::set_var(
+                LOOKUP.dns_variable,
+                format!("https://{server}/dns-query?ct"),
+            );
+            let key = fetch_ech_config(&LOOKUP).await;
+            std::env::remove_var(LOOKUP.dns_variable);
+            assert_eq!(key.expect("the key").as_slice(), KEY, "{alpn:?}");
+            let (method, path, kind) = served.await.expect("the server");
+            assert_eq!(method, "POST");
+            assert_eq!(path, "/dns-query?ct");
+            assert_eq!(kind, "application/dns-message");
+        }
     }
 }

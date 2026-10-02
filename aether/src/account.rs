@@ -222,26 +222,8 @@ pub fn generate_masque_keypair() -> Result<MasqueKeyPair> {
     })
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .user_agent(consts::UA_REGISTER)
-        .timeout(std::time::Duration::from_secs(20))
-        // TLS server-certificate verification disabled (unconditional).
-        .danger_accept_invalid_certs(true);
-
-    if let Some(list) = crate::tls::WARP_KEY_TLS_CIPHERS.configured() {
-        builder = builder.use_preconfigured_tls(crate::tls::rustls_tls(
-            &crate::tls::WARP_KEY_TLS_CIPHERS,
-            &list,
-        )?);
-    }
-
-    if let Some(upstream) = crate::upstream::configured() {
-        builder = builder.proxy(upstream.as_reqwest_proxy()?);
-    }
-
-    builder.build().map_err(|e| AetherError::Api(e.to_string()))
-}
+/// How long a call to the WARP API by the direct route may take.
+const DIRECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 const API_ATTEMPTS: u32 = 5;
 const API_BACKOFF_BASE_MS: u64 = 900;
@@ -525,16 +507,34 @@ fn extract_api_error(body: &str) -> Option<String> {
     }
 }
 
-async fn send_with_retry<F>(label: &str, build: F) -> Result<AccountData>
-where
-    F: Fn() -> Result<reqwest::RequestBuilder>,
-{
-    if crate::egress::mark() != 0 {
+/// A call to the WARP API by the direct route: to the API's name, over BoringSSL with Chrome's
+/// ClientHello and --get-warp-key-tls-ciphers (see `https`), through the upstream proxy when there
+/// is one. Retried on a transient answer, after as long as the API asks to wait when it does.
+async fn direct_call(
+    label: &str,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    bearer: Option<&str>,
+    jwt: Option<&str>,
+) -> Result<AccountData> {
+    // The system resolver looks the API's name up outside the socket mark; through the upstream
+    // proxy, the proxy looks it up and only the marked connection to the proxy leaves.
+    if crate::egress::mark() != 0 && crate::upstream::configured().is_none() {
         return Err(AetherError::Api(format!(
-            "{label}: the direct route cannot carry the socket mark, so it would loop back into the tunnel"
+            "{label}: the direct route looks the API's name up outside the socket mark, so it would loop back into the tunnel"
         )));
     }
 
+    let headers = front_headers(bearer, jwt);
+    let request = crate::https::Request {
+        method,
+        host: api_host(),
+        port: 443,
+        path,
+        headers: &headers,
+        body,
+    };
     let mut last_error = AetherError::Api(format!("{label}: no attempt was made"));
 
     for attempt in 0..API_ATTEMPTS {
@@ -549,7 +549,9 @@ where
             tokio::time::sleep(wait).await;
         }
 
-        let response = match build()?.send().await {
+        let sent =
+            crate::https::send(&request, &crate::tls::WARP_KEY_TLS_CIPHERS, DIRECT_TIMEOUT).await;
+        let response = match sent {
             Ok(response) => response,
             Err(error) => {
                 last_error = AetherError::Api(format!("{label}: {error}"));
@@ -557,12 +559,10 @@ where
             }
         };
 
-        let status = response.status();
-        let cooldown = retry_after(response.headers());
-        let body = response
-            .text()
-            .await
-            .map_err(|e| AetherError::Api(format!("{label}: {e}")))?;
+        let status = reqwest::StatusCode::from_u16(response.status)
+            .map_err(|_| AetherError::Api(format!("{label}: status {}", response.status)))?;
+        let cooldown = retry_after(&response.headers);
+        let body = String::from_utf8_lossy(&response.body);
 
         if status.is_success() {
             return serde_json::from_str::<AccountData>(&body).map_err(|e| {
@@ -591,21 +591,6 @@ where
     }
 
     Err(last_error)
-}
-
-fn base_headers() -> reqwest::header::HeaderMap {
-    use reqwest::header::{HeaderMap, HeaderValue, CONNECTION, CONTENT_TYPE};
-    let mut h = HeaderMap::new();
-    h.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/json; charset=UTF-8"),
-    );
-    h.insert(CONNECTION, HeaderValue::from_static("Keep-Alive"));
-    h.insert(
-        "CF-Client-Version",
-        HeaderValue::from_static(consts::CF_CLIENT_VERSION),
-    );
-    h
 }
 
 fn generate_x25519_keypair() -> ([u8; 32], String) {
@@ -655,7 +640,6 @@ pub async fn register(
     };
 
     let path = format!("/{}/reg", consts::API_VERSION);
-    let url = format!("{}{}", consts::API_URL, path);
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
@@ -665,17 +649,7 @@ pub async fn register(
         return Ok((account, wg_private));
     }
 
-    let direct = send_with_retry("registration", || {
-        let mut req = http_client()?
-            .post(&url)
-            .headers(base_headers())
-            .json(&body);
-        if let Some(jwt) = jwt {
-            req = req.header("CF-Access-Jwt-Assertion", jwt);
-        }
-        Ok(req)
-    })
-    .await;
+    let direct = direct_call("registration", "POST", &path, Some(&encoded), None, jwt).await;
 
     let account = match direct {
         Ok(account) => account,
@@ -709,7 +683,6 @@ pub async fn enroll_key(
     };
 
     let path = format!("/{}/reg/{}", consts::API_VERSION, device_id);
-    let url = format!("{}{}", consts::API_URL, path);
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
@@ -726,13 +699,14 @@ pub async fn enroll_key(
         .await;
     }
 
-    let direct = send_with_retry("key enrollment", || {
-        Ok(http_client()?
-            .patch(&url)
-            .headers(base_headers())
-            .bearer_auth(token)
-            .json(&body))
-    })
+    let direct = direct_call(
+        "key enrollment",
+        "PATCH",
+        &path,
+        Some(&encoded),
+        Some(token),
+        None,
+    )
     .await;
 
     match direct {
@@ -782,7 +756,6 @@ pub async fn register_with_team(
     let body = team_registration_body(wg_public, model, locale);
 
     let path = format!("/{}/reg", consts::API_VERSION);
-    let url = format!("{}{}", consts::API_URL, path);
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
@@ -800,13 +773,14 @@ pub async fn register_with_team(
         return Ok((account, wg_private));
     }
 
-    let direct = send_with_retry("team registration", || {
-        Ok(http_client()?
-            .post(&url)
-            .headers(base_headers())
-            .header("CF-Access-Jwt-Assertion", token)
-            .json(&body))
-    })
+    let direct = direct_call(
+        "team registration",
+        "POST",
+        &path,
+        Some(&encoded),
+        None,
+        Some(token),
+    )
     .await;
 
     let account = match direct {
@@ -854,19 +828,12 @@ pub async fn provision_wg(model: &str, locale: &str, jwt: Option<&str>) -> Resul
 
 pub async fn fetch_device(device_id: &str, token: &str) -> Result<AccountData> {
     let path = format!("/{}/reg/{}", consts::API_VERSION, device_id);
-    let url = format!("{}{}", consts::API_URL, path);
 
     if let Some(ech) = api_ech().await? {
         return ech_call("device refresh", "GET", &path, None, Some(token), None, ech).await;
     }
 
-    let direct = send_with_retry("device refresh", || {
-        Ok(http_client()?
-            .get(&url)
-            .headers(base_headers())
-            .bearer_auth(token))
-    })
-    .await;
+    let direct = direct_call("device refresh", "GET", &path, None, Some(token), None).await;
 
     match direct {
         Ok(account) => Ok(account),

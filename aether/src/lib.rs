@@ -13,6 +13,7 @@ pub mod error;
 pub mod exitloc;
 pub mod ffi;
 pub mod fragment;
+pub mod https;
 pub mod lastconn;
 pub mod masque;
 pub mod masque_h2;

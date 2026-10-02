@@ -60,7 +60,6 @@ dependencies = [
  "regex",
  "reqwest",
  "ring",
- "rustls",
  "serde",
  "serde_json",
  "smoltcp",
