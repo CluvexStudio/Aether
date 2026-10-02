@@ -485,9 +485,12 @@ ip rule add fwmark 0xff lookup main priority 100
 
 The mark is a decimal or `0x` number and needs root or `CAP_NET_ADMIN`; Aether stops
 at startup if it cannot set it, rather than send unmarked traffic. It only works on
-Linux and Android. The registration calls are not marked, so let the first start
-finish before the tun rules are in place. The same setting is available as
-`AETHER_MARK`.
+Linux and Android. The calls to the WARP API and the DoH lookup of the ECH config
+are marked as well, but the system resolver looks a name up outside the mark:
+without `--upstream`, `--enroll-address` then takes an IP address only (see
+[Where the WARP API is asked](#where-the-warp-api-is-asked)), and a DoH URL of
+`--ech-dns` should name an IP address, or give one with `@address=`. The same
+setting is available as `AETHER_MARK`.
 
 ## Proxy limits and timeouts
 

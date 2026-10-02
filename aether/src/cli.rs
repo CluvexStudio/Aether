@@ -31,7 +31,9 @@ Connection:
                            opens to the internet, e.g. 0xff, so a tun front end on
                            the same Linux router can let them past instead of
                            looping them back in (Linux and Android, needs root or
-                           CAP_NET_ADMIN)
+                           CAP_NET_ADMIN); a name is looked up outside the mark, so
+                           without --upstream the calls to the WARP API take an IP
+                           address only, see --enroll-address
   --exit-loc <spec>        refuse a tunnel whose exit country is not wanted, checked
                            through the finished tunnel before socks5 opens and again
                            every minute after: !IR,AZ,RU blocks those, DE,SE allows
@@ -289,7 +291,8 @@ Config files:
                            address, an IPv6 one then in brackets, e.g.
                            188.114.97.6:443 or [2606:4700::1]:8443 (default
                            api.cloudflareclient.com); the server name and the
-                           HTTP host stay api.cloudflareclient.com
+                           HTTP host stay api.cloudflareclient.com. With --mark
+                           and no --upstream, an IP address only
 
 Advanced:
   --perf <low|medium|high> force a resource profile instead of auto-detecting from cpu/ram
