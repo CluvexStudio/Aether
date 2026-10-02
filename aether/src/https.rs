@@ -19,6 +19,12 @@ const ALPN_H2_HTTP1: &[u8] = b"\x02h2\x08http/1.1";
 /// The most of an answer that is read.
 const MAX_BODY: usize = 512 * 1024;
 
+/// The largest header list an HTTP/2 answer may have: Chrome's.
+const MAX_HEADER_LIST: u32 = 256 * 1024;
+
+/// The longest line of a chunked body, a chunk size or a field of its trailer, that is read.
+const MAX_LINE: usize = 8 * 1024;
+
 /// A request: `host` is the HTTP host, of Host or :authority, a name or an IP address, an IPv6
 /// one without brackets, on `port`, which Host and :authority leave out when it is 443, and
 /// `path` the path with its query. The connection goes to `host` on `port`, and the ClientHello
@@ -173,7 +179,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let failed = |what: &str, e: h2::Error| AetherError::Api(format!("h2 {what}: {e}"));
-    let (client, connection) = h2::client::handshake(tls)
+    // As Chrome: no server push, whose streams would cost memory MAX_BODY does not count.
+    let mut builder = h2::client::Builder::new();
+    builder
+        .enable_push(false)
+        .max_header_list_size(MAX_HEADER_LIST);
+    let (client, connection) = builder
+        .handshake(tls)
         .await
         .map_err(|e| failed("handshake", e))?;
     let driver = tokio::spawn(async move {
@@ -255,27 +267,23 @@ where
     tls.write_all(&wire).await.map_err(failed)?;
     tls.flush().await.map_err(failed)?;
 
-    let mut raw = Vec::new();
+    let mut answer = Http1Answer::default();
     let mut chunk = [0u8; 8192];
     loop {
         match tls.read(&mut chunk).await {
+            // The connection ended, with a close_notify or without one, which BoringSSL tells
+            // alike: whether the answer came whole is for `finish` to say.
             Ok(0) => break,
             Ok(read) => {
-                raw.extend_from_slice(&chunk[..read]);
-                if raw.len() > MAX_BODY {
-                    return Err(AetherError::Api("the answer is too large".into()));
-                }
-                if http1_complete(&raw) {
+                if answer.push(&chunk[..read])? {
                     break;
                 }
             }
-            // A server that hangs up without a close_notify once its answer is whole.
-            Err(_) if http1_complete(&raw) => break,
             Err(e) => return Err(failed(e)),
         }
     }
 
-    let (status, fields, body) = parse_http1(&raw)?;
+    let (status, fields, body) = answer.finish()?;
     let mut headers = http::HeaderMap::new();
     for (name, value) in fields {
         if let (Ok(name), Ok(value)) = (
@@ -293,134 +301,232 @@ where
     })
 }
 
-/// Whether `raw` holds a whole HTTP/1.1 answer, by its Content-Length or its last chunk; an
-/// answer with neither ends only with the connection.
-fn http1_complete(raw: &[u8]) -> bool {
-    let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&raw[..split]).to_lowercase();
-    let body = &raw[split + 4..];
-    for line in head.split("\r\n").skip(1) {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        match name.trim() {
-            "content-length" => {
-                return value
-                    .trim()
-                    .parse::<usize>()
-                    .is_ok_and(|length| body.len() >= length)
-            }
-            "transfer-encoding" if value.contains("chunked") => return chunks_complete(body),
-            _ => {}
-        }
-    }
-    false
+/// An HTTP/1.1 answer as it comes in, each byte looked at about once: its head, past any
+/// interim (1xx) answers before it, then its body, which ends as RFC 9112 (6.3) has it: at
+/// the head for a 204 or a 304, at the last chunk, after Content-Length bytes, or with the
+/// connection.
+#[derive(Default)]
+struct Http1Answer {
+    raw: Vec<u8>,
+    /// Where the head being read starts: past the interim answers.
+    head_start: usize,
+    /// How far the search for the end of that head has looked.
+    searched: usize,
+    head: Option<Http1Head>,
 }
 
-/// Whether `body`, chunked, has come to its last chunk and the end of its trailer.
-fn chunks_complete(body: &[u8]) -> bool {
-    let line_end = |from: usize| {
-        body.get(from..)?
-            .windows(2)
-            .position(|window| window == b"\r\n")
-            .map(|offset| from + offset)
-    };
-    let mut at = 0;
-    loop {
-        let Some(end) = line_end(at) else {
-            return false;
-        };
-        let size = String::from_utf8_lossy(&body[at..end]);
-        let Ok(size) = usize::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16)
-        else {
-            return false;
-        };
-        at = end + 2;
-        if size == 0 {
-            // The trailer: lines up to an empty one.
-            loop {
-                let Some(end) = line_end(at) else {
-                    return false;
-                };
-                if end == at {
-                    return true;
-                }
-                at = end + 2;
-            }
+struct Http1Head {
+    status: u16,
+    fields: Vec<(String, String)>,
+    /// Where the body starts in the answer.
+    body_start: usize,
+    framing: Framing,
+}
+
+/// Where the body of an answer ends.
+enum Framing {
+    /// After this many bytes.
+    Length(usize),
+    /// At its last chunk and the end of its trailer.
+    Chunked(Dechunker),
+    /// With the connection.
+    Close,
+}
+
+impl Http1Answer {
+    /// Takes `bytes`, the next of the answer, and says whether the answer is whole.
+    fn push(&mut self, bytes: &[u8]) -> Result<bool> {
+        self.raw.extend_from_slice(bytes);
+        if self.raw.len() > MAX_BODY {
+            return Err(AetherError::Api("the answer is too large".into()));
         }
-        at = match size.checked_add(2).and_then(|span| at.checked_add(span)) {
-            Some(next) if next <= body.len() => next,
-            _ => return false,
+        while self.head.is_none() {
+            let from = self.searched.saturating_sub(3).max(self.head_start);
+            let Some(offset) = self.raw[from..]
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+            else {
+                self.searched = self.raw.len();
+                return Ok(false);
+            };
+            let end = from + offset;
+            let (status, fields) = http1_head(&self.raw[self.head_start..end])?;
+            if (100..200).contains(&status) && status != 101 {
+                // An interim answer, before the answer itself.
+                self.head_start = end + 4;
+                self.searched = self.head_start;
+                continue;
+            }
+            let framing = framing(status, &fields)?;
+            self.head = Some(Http1Head {
+                status,
+                fields,
+                body_start: end + 4,
+                framing,
+            });
+        }
+        let head = self.head.as_mut().expect("the head");
+        let body = &self.raw[head.body_start..];
+        Ok(match &mut head.framing {
+            Framing::Length(length) => body.len() >= *length,
+            Framing::Chunked(dechunker) => dechunker.advance(body)?,
+            Framing::Close => false,
+        })
+    }
+
+    /// The status, the header fields and the body of the answer once the connection has
+    /// ended, the body joined when it was chunked; an error when the connection ended before
+    /// the answer did.
+    fn finish(self) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+        let Some(head) = self.head else {
+            return Err(AetherError::Api(if self.raw.is_empty() {
+                "empty response".into()
+            } else {
+                "truncated response head".into()
+            }));
         };
+        let body = &self.raw[head.body_start..];
+        let body = match head.framing {
+            Framing::Length(length) if body.len() < length => {
+                return Err(AetherError::Api(format!(
+                    "the answer ended after {} of its {length} bytes",
+                    body.len()
+                )))
+            }
+            Framing::Length(length) => body[..length].to_vec(),
+            Framing::Chunked(dechunker) => dechunker.finish()?,
+            Framing::Close => body.to_vec(),
+        };
+        Ok((head.status, head.fields, body))
     }
 }
 
-/// The status, the header fields and the body of `raw`, an HTTP/1.1 response read to its end;
-/// a chunked body comes back joined.
-fn parse_http1(raw: &[u8]) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
-    let split = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| AetherError::Api("truncated response head".into()))?;
-
-    let head = String::from_utf8_lossy(&raw[..split]);
-    let mut body = raw[split + 4..].to_vec();
-
+/// The status and the header fields of `head`, the head of an answer without its last CRLF.
+fn http1_head(head: &[u8]) -> Result<(u16, Vec<(String, String)>)> {
+    let head = String::from_utf8_lossy(head);
     let mut lines = head.split("\r\n");
-    let status_line = lines
-        .next()
-        .ok_or_else(|| AetherError::Api("empty response".into()))?;
+    let status_line = lines.next().unwrap_or("");
     let status = status_line
         .split_whitespace()
         .nth(1)
         .and_then(|token| token.parse::<u16>().ok())
         .ok_or_else(|| AetherError::Api(format!("bad status line: {status_line}")))?;
-
-    let fields: Vec<(String, String)> = lines
+    let fields = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
         .collect();
-    let chunked = fields.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("transfer-encoding") && value.to_lowercase().contains("chunked")
-    });
-
-    if chunked {
-        body = dechunk(&body);
-    }
-
-    Ok((status, fields, body))
+    Ok((status, fields))
 }
 
-fn dechunk(body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
+/// Where the body of an answer with `status` and header `fields` ends (RFC 9112, 6.3): chunked
+/// goes before any Content-Length.
+fn framing(status: u16, fields: &[(String, String)]) -> Result<Framing> {
+    if status == 204 || status == 304 {
+        return Ok(Framing::Length(0));
+    }
+    let field = |wanted: &str| {
+        fields
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+            .map(|(_, value)| value)
+    };
+    if field("transfer-encoding")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
+    {
+        return Ok(Framing::Chunked(Dechunker::default()));
+    }
+    match field("content-length") {
+        Some(value) => value
+            .parse::<usize>()
+            .map(Framing::Length)
+            .map_err(|_| AetherError::Api(format!("bad Content-Length: {value}"))),
+        None => Ok(Framing::Close),
+    }
+}
 
-    while cursor < body.len() {
-        let line_end = match body[cursor..]
-            .windows(2)
-            .position(|window| window == b"\r\n")
-        {
-            Some(offset) => cursor + offset,
-            None => break,
-        };
-        let line = String::from_utf8_lossy(&body[cursor..line_end]);
-        let token = line.split(';').next().unwrap_or("").trim();
-        let size = match usize::from_str_radix(token, 16) {
-            Ok(0) | Err(_) => break,
-            Ok(value) => value,
-        };
-        let start = line_end + 2;
-        let end = match start.checked_add(size) {
-            Some(end) if end <= body.len() => end,
-            _ => break,
-        };
-        out.extend_from_slice(&body[start..end]);
-        cursor = end + 2;
+/// A chunked body (RFC 9112, 7.1), joined as it comes in, each byte looked at about once.
+#[derive(Default)]
+struct Dechunker {
+    /// Where the next piece of the body starts: a chunk size, a chunk's data, or a field of
+    /// the trailer.
+    at: usize,
+    /// How far the search for the end of the line at `at` has looked.
+    searched: usize,
+    /// The size of the chunk whose data comes next, when it is data that comes next.
+    data: Option<usize>,
+    /// Whether the last chunk has come, so that the trailer comes next.
+    trailer: bool,
+    done: bool,
+    joined: Vec<u8>,
+}
+
+impl Dechunker {
+    /// Goes on with `body`, the whole body so far, and says whether its last chunk and its
+    /// trailer have come; an error for what is no chunked body.
+    fn advance(&mut self, body: &[u8]) -> Result<bool> {
+        let malformed = |what: &str| AetherError::Api(format!("a chunked answer with {what}"));
+        while !self.done {
+            if let Some(size) = self.data {
+                // The chunk's data, then CRLF.
+                let end = self
+                    .at
+                    .checked_add(size)
+                    .and_then(|end| end.checked_add(2))
+                    .ok_or_else(|| malformed("a chunk too large"))?;
+                if body.len() < end {
+                    return Ok(false);
+                }
+                if &body[end - 2..end] != b"\r\n" {
+                    return Err(malformed("no line end after a chunk"));
+                }
+                self.joined.extend_from_slice(&body[self.at..end - 2]);
+                self.at = end;
+                self.searched = end;
+                self.data = None;
+                continue;
+            }
+            // A line: a chunk size, or a field of the trailer.
+            let from = self.searched.saturating_sub(1).max(self.at);
+            let Some(offset) = body[from..].windows(2).position(|window| window == b"\r\n") else {
+                if body.len() - self.at > MAX_LINE {
+                    return Err(malformed("a line too long"));
+                }
+                self.searched = body.len();
+                return Ok(false);
+            };
+            let end = from + offset;
+            let line = &body[self.at..end];
+            self.at = end + 2;
+            self.searched = self.at;
+            if self.trailer {
+                self.done = line.is_empty();
+                continue;
+            }
+            let size = std::str::from_utf8(line)
+                .ok()
+                .and_then(|line| {
+                    let size = line.split(';').next().unwrap_or("").trim();
+                    usize::from_str_radix(size, 16).ok()
+                })
+                .ok_or_else(|| malformed("a bad chunk size"))?;
+            match size {
+                0 => self.trailer = true,
+                size => self.data = Some(size),
+            }
+        }
+        Ok(true)
     }
 
-    out
+    /// The body, joined; an error unless its last chunk and its trailer have come.
+    fn finish(self) -> Result<Vec<u8>> {
+        if self.done {
+            Ok(self.joined)
+        } else {
+            Err(AetherError::Api(
+                "the chunked answer ended before its last chunk".into(),
+            ))
+        }
+    }
 }
 
 /// A TLS server on this machine for the tests, which picks `alpn` when the client offers it.
@@ -483,6 +589,11 @@ mod tests {
             while let Some(chunk) = body.data().await {
                 sent.extend_from_slice(&chunk.expect("the body"));
             }
+            // The client turned server push off in its settings, as Chrome does.
+            let push = http::Request::get("https://127.0.0.1/pushed")
+                .body(())
+                .unwrap();
+            assert!(respond.push_request(push).is_err(), "a push went through");
             let answer = http::Response::builder()
                 .status(429)
                 .header("retry-after", "7")
@@ -787,43 +898,60 @@ mod tests {
         assert_eq!(authority, "api.example.test");
     }
 
+    /// Whether `raw` is a whole HTTP/1.1 answer, read at once. Read a byte at a time, it has
+    /// to turn whole on its last byte and not before.
+    fn whole(raw: &[u8]) -> bool {
+        let at_once = Http1Answer::default().push(raw).expect("an answer so far");
+        let mut answer = Http1Answer::default();
+        for (index, byte) in raw.iter().enumerate() {
+            let now = answer
+                .push(std::slice::from_ref(byte))
+                .expect("an answer so far");
+            assert_eq!(now, at_once && index + 1 == raw.len(), "byte {index}");
+        }
+        at_once
+    }
+
+    /// `raw` read as an HTTP/1.1 answer that the connection ends after.
+    fn read(raw: &[u8]) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+        let mut answer = Http1Answer::default();
+        answer.push(raw)?;
+        answer.finish()
+    }
+
     #[test]
     fn an_answer_is_whole_by_its_length_or_its_last_chunk() {
-        assert!(http1_complete(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
-        ));
-        assert!(!http1_complete(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok"
-        ));
-        assert!(!http1_complete(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"));
-        assert!(!http1_complete(b"HTTP/1.1 200 OK\r\nServer: x\r\n\r\nok"));
+        assert!(whole(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
+        assert!(!whole(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok"));
+        assert!(!whole(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"));
+        assert!(!whole(b"HTTP/1.1 200 OK\r\nServer: x\r\n\r\nok"));
+        // A 204 ends with its head.
+        assert!(whole(b"HTTP/1.1 204 No Content\r\nServer: x\r\n\r\n"));
 
-        let chunked = b"HTTP/1.1 200 OK\r\ntransfer-encoding: Chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n";
-        assert!(http1_complete(chunked));
-        for cut in 0..chunked.len() {
-            assert!(!http1_complete(&chunked[..cut]), "{cut}");
-        }
+        assert!(whole(
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: Chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n"
+        ));
         // The bytes of a last chunk at the end of a chunk's data end nothing.
-        assert!(!http1_complete(
+        assert!(!whole(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\nabcd0\r\n\r\n"
         ));
-        // A chunk size past what memory holds ends nothing, and overflows nothing.
-        assert!(!http1_complete(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\nabc"
-        ));
         // A trailer comes before the end.
-        assert!(!http1_complete(
+        assert!(!whole(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Sum: 1\r\n"
         ));
-        assert!(http1_complete(
+        assert!(whole(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Sum: 1\r\n\r\n"
+        ));
+        // Chunk sizes with leading zeros, in upper case, with an extension.
+        assert!(whole(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n00A;x=y\r\n0123456789\r\n0\r\n\r\n"
         ));
     }
 
     #[test]
     fn a_plain_answer_is_parsed() {
         let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"id\":\"x\"}";
-        let (status, fields, body) = parse_http1(raw).expect("parsed");
+        let (status, fields, body) = read(raw).expect("parsed");
         assert_eq!(status, 200);
         assert_eq!(
             fields,
@@ -835,7 +963,7 @@ mod tests {
     #[test]
     fn a_chunked_answer_is_joined() {
         let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"a\"\r\n4\r\n:1}\n\r\n0\r\n\r\n";
-        let (status, _, body) = parse_http1(raw).expect("parsed");
+        let (status, _, body) = read(raw).expect("parsed");
         assert_eq!(status, 200);
         assert_eq!(body, b"{\"a\":1}\n");
     }
@@ -843,7 +971,7 @@ mod tests {
     #[test]
     fn a_rejection_is_reported_rather_than_hidden() {
         let raw = b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\n\r\nslow down";
-        let (status, fields, body) = parse_http1(raw).expect("parsed");
+        let (status, fields, body) = read(raw).expect("parsed");
         assert_eq!(status, 429);
         assert!(fields.contains(&("Retry-After".to_string(), "30".to_string())));
         assert_eq!(body, b"slow down");
@@ -851,7 +979,9 @@ mod tests {
 
     #[test]
     fn a_headless_answer_is_an_error() {
-        assert!(parse_http1(b"garbage").is_err());
+        assert!(read(b"garbage").is_err());
+        assert!(read(b"").is_err());
+        assert!(read(b"\r\n\r\n").is_err());
     }
 
     #[test]
@@ -863,14 +993,89 @@ mod tests {
         raw.extend_from_slice(format!("\r\n{:x}\r\n", text.len() - 3).as_bytes());
         raw.extend_from_slice(&text[3..]);
         raw.extend_from_slice(b"\r\n0\r\n\r\n");
-        let (status, _, body) = parse_http1(&raw).expect("parsed");
+        assert!(whole(&raw));
+        let (status, _, body) = read(&raw).expect("parsed");
         assert_eq!(status, 200);
         assert_eq!(body, text);
+    }
 
-        let raw =
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\nabc\r\n";
-        let (_, _, body) = parse_http1(raw).expect("parsed");
-        assert!(body.is_empty());
+    #[test]
+    fn what_is_no_chunked_body_is_an_error() {
+        let chunked = |body: &[u8]| {
+            let mut raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+            raw.extend_from_slice(body);
+            Http1Answer::default().push(&raw)
+        };
+        // A chunk size past what memory holds overflows nothing.
+        assert!(chunked(b"ffffffffffffffff\r\nabc").is_err());
+        assert!(chunked(b"zz\r\nabc").is_err());
+        assert!(chunked(b"\r\nabc").is_err());
+        assert!(chunked(b"2\r\nokX\r\n0\r\n\r\n").is_err());
+        assert!(chunked(&vec![b'1'; MAX_LINE + 1]).is_err());
+    }
+
+    #[test]
+    fn an_answer_the_connection_cuts_short_is_an_error_not_a_body() {
+        let cut = read(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc").expect_err("cut");
+        assert!(cut.to_string().contains("3 of its 10 bytes"), "{cut}");
+        assert!(read(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n").is_err());
+        assert!(read(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n").is_err());
+        assert!(read(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n").is_err());
+        assert!(read(b"HTTP/1.1 200 OK\r\nContent-Length: two\r\n\r\nok").is_err());
+    }
+
+    #[test]
+    fn a_body_ends_where_its_head_says() {
+        // Past Content-Length, nothing belongs to the answer.
+        let (_, _, body) = read(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokEXTRA").unwrap();
+        assert_eq!(body, b"ok");
+        // Chunked goes before a Content-Length (RFC 9112, 6.3).
+        let both = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let mut raw = both.to_vec();
+        raw.extend_from_slice(b"5\r\nhe");
+        assert!(!Http1Answer::default().push(&raw).unwrap());
+        assert!(read(&raw).is_err());
+        raw.extend_from_slice(b"llo\r\n0\r\n\r\n");
+        assert!(whole(&raw));
+        assert_eq!(read(&raw).unwrap().2, b"hello");
+    }
+
+    #[test]
+    fn an_interim_answer_is_passed_over() {
+        let raw = b"HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\nHTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        assert!(whole(raw));
+        let (status, fields, body) = read(raw).expect("parsed");
+        assert_eq!(status, 200);
+        assert_eq!(fields, [("Content-Length".to_string(), "2".to_string())]);
+        assert_eq!(body, b"ok");
+    }
+
+    #[test]
+    fn an_answer_that_comes_a_byte_at_a_time_is_read_in_linear_time() {
+        // Chunks of one byte, the most lines an answer can have, then a head that never ends:
+        // each read looks at its own bytes, not at all that came before.
+        let mut chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        while chunked.len() < 200 * 1024 {
+            chunked.extend_from_slice(b"1\r\na\r\n");
+        }
+        chunked.extend_from_slice(b"0\r\n\r\n");
+        let endless_head = [b'x'; 200 * 1024];
+        let started = std::time::Instant::now();
+        for raw in [&chunked[..], &endless_head[..]] {
+            let mut answer = Http1Answer::default();
+            let mut ended = false;
+            for byte in raw {
+                ended = answer
+                    .push(std::slice::from_ref(byte))
+                    .expect("an answer so far");
+            }
+            assert_eq!(ended, raw.len() == chunked.len());
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
