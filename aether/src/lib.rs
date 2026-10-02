@@ -108,6 +108,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     // WARP API cannot use, stops the core here, with its option named.
     tls::check_tls_options()?;
     account::check_enroll_address()?;
+    // The key of the WARP API calls of an earlier run of the library is not this run's.
+    account::forget_api_ech();
 
     let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 

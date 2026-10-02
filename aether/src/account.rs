@@ -323,6 +323,14 @@ fn remember_api_ech(ech: Vec<u8>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ech);
 }
 
+/// Forgets the key the calls to the WARP API offered, as a run of the core starts: a run of
+/// the library after another looks up its own, by its own --ech, --ech-dns and --ech-domain.
+pub fn forget_api_ech() {
+    *API_ECH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
 /// The key the calls to the WARP API offered last in this run, if any: the MASQUE session
 /// starts with it rather than look one up again.
 pub fn api_ech_in_use() -> Option<Vec<u8>> {
@@ -1112,6 +1120,15 @@ mod tests {
         }
         std::env::remove_var("AETHER_ENROLL_ADDRESS");
         assert!(check_enroll_address().is_ok());
+    }
+
+    #[test]
+    fn a_run_starts_without_the_api_key_of_the_run_before() {
+        // No other test calls the WARP API, so none sees the key change here.
+        remember_api_ech(vec![1, 2, 3]);
+        assert_eq!(api_ech_in_use(), Some(vec![1, 2, 3]));
+        forget_api_ech();
+        assert_eq!(api_ech_in_use(), None);
     }
 
     #[tokio::test]

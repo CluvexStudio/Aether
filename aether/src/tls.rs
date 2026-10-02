@@ -73,6 +73,8 @@ pub fn set_tls12_ciphers(builder: &mut SslContextBuilder, list: &str) -> Result<
     let rc =
         unsafe { SSL_CTX_set_strict_cipher_list(builder.as_ptr() as *mut c_void, text.as_ptr()) };
     if rc != 1 {
+        // Taken off the thread's error queue, where it would show in a later error.
+        let _ = boring::error::ErrorStack::get();
         return Err(refused());
     }
     Ok(())
@@ -342,8 +344,12 @@ pub fn inject_ech(conn: &mut quiche::Connection, ech_config_list: &[u8]) -> Resu
 /// The ECHConfigList the MASQUE handshakes of the session offer, on either carrier: the
 /// one the session starts with, see `use_ech`, until a server that turns it down hands
 /// back the one it holds now, see `adopt_ech_retry`. With none, the server name goes out
-/// in the clear.
+/// in the clear. Cores of the library that run side by side in one process share it, see
+/// `EchSession`.
 static SESSION_ECH: std::sync::RwLock<Option<Vec<u8>>> = std::sync::RwLock::new(None);
+
+/// How many sessions run in the process, see `EchSession`.
+static SESSIONS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 
 /// Makes the MASQUE handshakes of the session from now on, on either carrier, offer `ech`,
 /// an ECHConfigList: the tunnel's, and those of the scan and of the gateway checks.
@@ -362,20 +368,34 @@ pub fn session_ech() -> Option<Vec<u8>> {
 }
 
 /// The ECH key of a session for as long as it runs: set as the session starts, see
-/// `use_ech`, and cleared as it ends, however it ends, so that nothing after it in the
-/// process offers that key.
+/// `use_ech`, and cleared as the last session of the process ends, however it ends, so that
+/// nothing after them offers that key. Sessions that run side by side, cores of the library,
+/// share one: a session that starts without a key leaves another's in place, and one that
+/// ends leaves it to those that run on, which would go on without ECH otherwise.
 pub struct EchSession(());
 
 impl EchSession {
     pub fn start(ech: Option<Vec<u8>>) -> Self {
-        use_ech(ech);
+        let mut sessions = SESSIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sessions += 1;
+        if ech.is_some() || *sessions == 1 {
+            use_ech(ech);
+        }
         EchSession(())
     }
 }
 
 impl Drop for EchSession {
     fn drop(&mut self) {
-        use_ech(None);
+        let mut sessions = SESSIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sessions -= 1;
+        if *sessions == 0 {
+            use_ech(None);
+        }
     }
 }
 
@@ -492,7 +512,7 @@ where
     F: std::future::Future<Output = Result<Vec<u8>>>,
 {
     let (key, origin) = match setting {
-        Some(v) if v.eq_ignore_ascii_case("auto") => (
+        Some(v) if v.trim().eq_ignore_ascii_case("auto") => (
             fetch().await,
             "fetched ECHConfigList automatically".to_string(),
         ),
@@ -681,8 +701,17 @@ impl<'a> Fields<'a> {
 mod tests {
     use super::*;
 
+    /// The hold of a test on the session key, which the whole process shares: the tests that
+    /// set it run one at a time.
+    fn hold_session_key() -> std::sync::MutexGuard<'static, ()> {
+        static KEY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        KEY.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn a_key_a_server_hands_back_replaces_the_sessions_only_while_it_offers_ech() {
+        let _key = hold_session_key();
         use_ech(None);
         adopt_ech_retry(&[1, 2]);
         assert_eq!(session_ech(), None);
@@ -698,12 +727,36 @@ mod tests {
 
     #[test]
     fn the_session_key_goes_with_the_session() {
+        let _key = hold_session_key();
         {
             let _session = EchSession::start(Some(vec![7]));
             assert_eq!(session_ech(), Some(vec![7]));
             adopt_ech_retry(&[8]);
             assert_eq!(session_ech(), Some(vec![8]));
         }
+        assert_eq!(session_ech(), None);
+    }
+
+    #[test]
+    fn a_session_that_ends_leaves_the_key_to_one_that_runs_on() {
+        let _key = hold_session_key();
+        // A second core of the library, started beside the first: with no key of its own, it
+        // takes the first one's away neither as it starts nor as the first one ends.
+        let first = EchSession::start(Some(vec![7]));
+        let second = EchSession::start(None);
+        assert_eq!(session_ech(), Some(vec![7]));
+        drop(first);
+        assert_eq!(session_ech(), Some(vec![7]));
+        drop(second);
+        assert_eq!(session_ech(), None);
+
+        // With a key of its own, it offers its own, which the first one goes on with.
+        let first = EchSession::start(Some(vec![7]));
+        let second = EchSession::start(Some(vec![8]));
+        assert_eq!(session_ech(), Some(vec![8]));
+        drop(second);
+        assert_eq!(session_ech(), Some(vec![8]));
+        drop(first);
         assert_eq!(session_ech(), None);
     }
 
@@ -749,6 +802,15 @@ mod tests {
                     .ok(),
                 Some(Some(key.clone()))
             );
+            // Spaces around auto are no key in base64; spaces alone still ask for a key.
+            let found = key.clone();
+            assert_eq!(
+                ech_key(option, Some(" auto "), || async { Ok(found) })
+                    .await
+                    .ok(),
+                Some(Some(key.clone()))
+            );
+            no_key_reason(option, ech_key(option, Some("  "), unused).await);
 
             let unanswered = no_key_reason(option, ech_key(option, Some("auto"), silent).await);
             assert!(unanswered.contains("did not answer"), "{unanswered}");
@@ -1055,6 +1117,71 @@ mod tests {
         ] {
             assert!(check_ech_config_list(&bad).is_err(), "{bad:02x?}");
             assert!(ensure_offerable(&bad).is_err());
+        }
+    }
+
+    /// Whether BoringSSL offers ECH from `list` in the ClientHello it sends to a server on this
+    /// machine: None when it takes no such list, or sends no ClientHello at all.
+    async fn boringssl_offers(list: &[u8]) -> Option<bool> {
+        let mut builder = boring::ssl::SslConnector::builder(SslMethod::tls()).expect("tls");
+        Fingerprint::default()
+            .apply(&mut builder, b"\x02h2")
+            .expect("the fingerprint");
+        let mut config = builder.build().configure().expect("a configuration");
+        config.set_ech_config_list(list).ok()?;
+        let (server, hello) = client_hello::catch().await;
+        let tcp = tokio::net::TcpStream::connect(server)
+            .await
+            .expect("a connection");
+        let _ = tokio_boring::connect(config, "a.example", tcp).await;
+        hello.await.ok().map(|hello| hello.offers_ech())
+    }
+
+    #[tokio::test]
+    async fn the_key_check_says_what_boringssl_does() {
+        // The fingerprint sends no GREASE ECH, so an ECH extension in the ClientHello means
+        // BoringSSL took a config from the list.
+        let older = config(0xfe0c, 0x0020, 32, &[(1, 1)], "x.example", &[]);
+        let short = config(0xfe0d, 0x0020, 31, &[(1, 1)], "a.example", &[]);
+        let lists = [
+            decode_ech_config_list(CLOUDFLARE_ECH).expect("base64"),
+            list(&[older.clone(), offered("a.example")]),
+            list(&[config(
+                0xfe0d,
+                0x0020,
+                32,
+                &[(2, 1), (1, 3)],
+                "a.example",
+                &[0, 1, 0, 1, 9],
+            )]),
+            list(&[offered("0x1f.example")]),
+            list(&[older]),
+            list(&[config(0xfe0d, 0x0010, 32, &[(1, 1)], "a.example", &[])]),
+            list(&[config(0xfe0d, 0x0020, 32, &[(2, 1)], "a.example", &[])]),
+            list(&[config(0xfe0d, 0x0020, 32, &[(1, 4)], "a.example", &[])]),
+            list(&[config(
+                0xfe0d,
+                0x0020,
+                32,
+                &[(1, 1)],
+                "a.example",
+                &[0x80, 1, 0, 0],
+            )]),
+            list(&[offered("192.0.2.1")]),
+            list(&[offered("example.0x1F")]),
+            list(&[offered("example.com.")]),
+            list(&[offered("exa_mple.com")]),
+            list(&[short, offered("a.example")]),
+            list(&[config(0xfe0d, 0x0020, 0, &[(1, 1)], "a.example", &[])]),
+            vec![0xfe, 0x0d, 0xff, 0xff, 0xff],
+        ];
+        for list in lists {
+            let sent = boringssl_offers(&list).await;
+            assert_eq!(
+                check_ech_config_list(&list).is_ok(),
+                sent == Some(true),
+                "{list:02x?}: BoringSSL {sent:?}"
+            );
         }
     }
 }
