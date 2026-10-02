@@ -179,6 +179,21 @@ pub fn host_address(value: &str) -> Option<String> {
     }
 }
 
+/// `value` as the address and port a connection goes to: `host_address`, on `default_port`,
+/// or followed by `:port`, an IPv6 address then in brackets; None when it is neither.
+pub fn host_and_port(value: &str, default_port: u16) -> Option<(String, u16)> {
+    if let Some(host) = host_address(value) {
+        return Some((host, default_port));
+    }
+    let (host, port) = value.rsplit_once(':')?;
+    // An IPv6 address takes brackets before a port.
+    if host.contains(':') && !host.starts_with('[') {
+        return None;
+    }
+    let port = port.parse::<u16>().ok().filter(|port| *port != 0)?;
+    host_address(host).map(|host| (host, port))
+}
+
 /// Whether `name` is a domain whose HTTPS record can be asked for: labels of letters,
 /// digits, '-' and '_', of 1 to 63 bytes each and 253 in all, a trailing dot allowed.
 pub fn valid_domain(name: &str) -> bool {
@@ -360,11 +375,12 @@ async fn query_https(
         ),
         ("Accept".to_string(), "application/dns-message".to_string()),
     ];
+    let port = parsed.port_or_known_default().unwrap_or(443);
     let request = crate::https::Request {
         method: "POST",
         host,
-        port: parsed.port_or_known_default().unwrap_or(443),
-        address: endpoint.address.as_deref(),
+        port,
+        address: endpoint.address.as_deref().map(|address| (address, port)),
         sni: endpoint.sni.as_deref(),
         path: &path,
         headers: &headers,
@@ -645,6 +661,48 @@ mod tests {
         // As it is read, and as the log shows it.
         let text = "https://doq.dns4all.eu/dns-query@address=2.2.2.2@sni=google.com";
         assert_eq!(EchDns::parse(text).unwrap().to_string(), text);
+    }
+
+    #[test]
+    fn an_address_may_name_a_port_an_ipv6_one_in_brackets() {
+        let at = |host: &str, port: u16| Some((host.to_string(), port));
+        assert_eq!(host_and_port("188.114.97.6", 443), at("188.114.97.6", 443));
+        assert_eq!(
+            host_and_port("188.114.97.6:2053", 443),
+            at("188.114.97.6", 2053)
+        );
+        assert_eq!(
+            host_and_port("edge.example.com", 8443),
+            at("edge.example.com", 8443)
+        );
+        assert_eq!(
+            host_and_port("edge.example.com:443", 8443),
+            at("edge.example.com", 443)
+        );
+        assert_eq!(host_and_port("2606:4700::1", 443), at("2606:4700::1", 443));
+        assert_eq!(
+            host_and_port("[2606:4700::1]", 443),
+            at("2606:4700::1", 443)
+        );
+        assert_eq!(
+            host_and_port("[2606:4700::1]:8443", 443),
+            at("2606:4700::1", 8443)
+        );
+        for refused in [
+            "188.114.97.6:0",
+            "188.114.97.6:65536",
+            "188.114.97.6:",
+            "edge.example.com:https",
+            ":443",
+            "1.2.3.4:443:5",
+            "[2606:4700::1:443",
+            // Eight groups and a port: without brackets it is no address at all.
+            "2606:4700:4700:0:0:0:0:1111:443",
+            "https://edge.example.com",
+            "edge example.com",
+        ] {
+            assert_eq!(host_and_port(refused, 443), None, "{refused}");
+        }
     }
 
     #[test]

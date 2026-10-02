@@ -541,12 +541,14 @@ not discard an identity.
 Registering a device, enrolling its MASQUE key and refreshing a profile are calls
 to the WARP API, `api.cloudflareclient.com`, made as described under TLS above.
 `--enroll-address` sends them to another address, an IP address or a domain name,
-on port 443; the API's name stays the server name of the ClientHello and the HTTP
-host. A name is looked up first, by the proxy with `--upstream` and by the system
-resolver otherwise; with `--mark` and no `--upstream` only an IP address is taken,
-since that lookup would leave outside the mark and loop back into the tunnel. With
-`--ech` the API's name goes only inside the encrypted ClientHello, and an IP address
-for `--enroll-address` keeps it out of the DNS lookup as well.
+on port 443 unless a port follows it, an IPv6 address then in brackets:
+`188.114.97.6`, `188.114.97.6:2053`, `[2606:4700::1]:8443`. Only the connection goes
+there: the API's name stays the server name of the ClientHello and the HTTP host,
+which carries no port. A name is looked up first, by the proxy with `--upstream`
+and by the system resolver otherwise; with `--mark` and no `--upstream` only an IP
+address is taken, since that lookup would leave outside the mark and loop back into
+the tunnel. With `--ech` the API's name goes only inside the encrypted ClientHello,
+and an IP address for `--enroll-address` keeps it out of the DNS lookup as well.
 
 ```sh
 aether --register all --ech auto --enroll-address 141.101.113.10

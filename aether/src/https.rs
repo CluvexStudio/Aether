@@ -20,15 +20,17 @@ const ALPN_H2_HTTP1: &[u8] = b"\x02h2\x08http/1.1";
 const MAX_BODY: usize = 512 * 1024;
 
 /// A request: `host` is the HTTP host, of Host or :authority, a name or an IP address, an IPv6
-/// one without brackets, and `path` the path with its query. The connection goes to `host` on
-/// `port`, and the ClientHello names `host`, unless `address` and `sni` name others; offering
-/// ECH, the name goes inside the encrypted ClientHello.
+/// one without brackets, on `port`, which Host and :authority leave out when it is 443, and
+/// `path` the path with its query. The connection goes to `host` on `port`, and the ClientHello
+/// names `host`, unless `address` and `sni` name others; offering ECH, the name goes inside the
+/// encrypted ClientHello.
 pub struct Request<'a> {
     pub method: &'a str,
     pub host: &'a str,
     pub port: u16,
-    /// Where the connection goes instead of `host`: a name or an IP address, on `port`.
-    pub address: Option<&'a str>,
+    /// Where the connection goes instead of `host` on `port`: a name or an IP address, and its
+    /// port.
+    pub address: Option<(&'a str, u16)>,
     /// The server name of the ClientHello instead of `host`.
     pub sni: Option<&'a str>,
     pub path: &'a str,
@@ -72,7 +74,7 @@ async fn exchange(
     fingerprint: &Fingerprint,
     mut ech: Option<&mut Vec<u8>>,
 ) -> Result<Response> {
-    let address = request.address.unwrap_or(request.host);
+    let (address, port) = request.address.unwrap_or((request.host, request.port));
     let mut retried = false;
     let tls = loop {
         let mut config = configuration(fingerprint)?;
@@ -83,7 +85,7 @@ async fn exchange(
                 .set_ech_config_list(list)
                 .map_err(|e| AetherError::Tls(e.to_string()))?;
         }
-        let tcp = dial(address, request.port).await?;
+        let tcp = dial(address, port).await?;
         let _ = tcp.set_nodelay(true);
         match tokio_boring::connect(config, request.sni.unwrap_or(request.host), tcp).await {
             Ok(tls) => break tls,
@@ -103,12 +105,12 @@ async fn exchange(
                 let Some((list, retry)) = retry else {
                     return Err(AetherError::Tls(format!(
                         "handshake with {}: {message}",
-                        authority(address, request.port)
+                        authority(address, port)
                     )));
                 };
                 log::debug!(
                     "[https] {} turned the ECH key down; offering the one it handed back ({} bytes)",
-                    authority(address, request.port),
+                    authority(address, port),
                     retry.len()
                 );
                 *list = retry;
@@ -601,7 +603,7 @@ mod tests {
             method: "GET",
             host,
             port: address.port(),
-            address: Some("127.0.0.1"),
+            address: Some(("127.0.0.1", address.port())),
             sni: None,
             path: "/",
             headers: &headers,
@@ -665,11 +667,12 @@ mod tests {
             .await
             .expect("a port");
         let headers = headers();
+        let port = listener.local_addr().expect("its address").port();
         let request = Request {
             method: "GET",
             host: "api.example.test",
-            port: listener.local_addr().expect("its address").port(),
-            address: Some("127.0.0.1"),
+            port,
+            address: Some(("127.0.0.1", port)),
             sni: None,
             path: "/",
             headers: &headers,
@@ -699,9 +702,11 @@ mod tests {
     }
 
     /// The server name of the ClientHello and the :authority of a request to `host` on this
-    /// machine, sent to `address` with `sni` when given.
+    /// machine, sent to `address` with `sni` when given. The host is on the port the server
+    /// listens on, or on `port` when given, as the address is on the server's port.
     async fn server_name_and_authority(
         host: &str,
+        port: Option<u16>,
         address: Option<&str>,
         sni: Option<&str>,
     ) -> (Option<String>, String) {
@@ -731,8 +736,8 @@ mod tests {
         let request = Request {
             method: "GET",
             host,
-            port: listening.port(),
-            address,
+            port: port.unwrap_or(listening.port()),
+            address: address.map(|address| (address, listening.port())),
             sni,
             path: "/",
             headers: &headers,
@@ -755,6 +760,7 @@ mod tests {
         let _setting = crate::upstream::hold_setting().await;
         let (name, authority) = server_name_and_authority(
             "doh.example.test",
+            None,
             Some("127.0.0.1"),
             Some("front.example.test"),
         )
@@ -763,9 +769,16 @@ mod tests {
         assert!(authority.starts_with("doh.example.test:"), "{authority}");
 
         // Without them the host is all three: the address, the server name and the HTTP host.
-        let (name, authority) = server_name_and_authority("localhost", None, None).await;
+        let (name, authority) = server_name_and_authority("localhost", None, None, None).await;
         assert_eq!(name.as_deref(), Some("localhost"));
         assert!(authority.starts_with("localhost:"), "{authority}");
+
+        // An address on a port of its own: the connection goes there, while the host keeps
+        // its port, 443, which the authority leaves out.
+        let (name, authority) =
+            server_name_and_authority("api.example.test", Some(443), Some("127.0.0.1"), None).await;
+        assert_eq!(name.as_deref(), Some("api.example.test"));
+        assert_eq!(authority, "api.example.test");
     }
 
     #[test]

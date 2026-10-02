@@ -282,9 +282,11 @@ Config files:
                            carrier whatever the protocol: they are https, which
                            tor and psiphon carry, so --wg and --gool are refused
                            there only for the tunnel
-  --enroll-address <ip|name>
+  --enroll-address <ip|name[:port]>
                            where the calls to the WARP API, which register and
-                           enroll the keys, go, on port 443 (default
+                           enroll the keys, go: port 443 unless one follows the
+                           address, an IPv6 one then in brackets, e.g.
+                           188.114.97.6:443 or [2606:4700::1]:8443 (default
                            api.cloudflareclient.com); the server name and the
                            HTTP host stay api.cloudflareclient.com
 
