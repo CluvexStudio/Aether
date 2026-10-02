@@ -753,6 +753,8 @@ mod tests {
     #[tokio::test]
     async fn the_check_of_a_job_offers_the_ech_key_of_the_job() {
         let _setting = crate::upstream::hold_setting().await;
+        // The check builds its TLS with the fingerprint the options give.
+        let _options = tls::hold_options().await;
         let identity = account::handshake_identity();
         let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let address = peer.local_addr().unwrap();

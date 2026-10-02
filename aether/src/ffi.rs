@@ -821,6 +821,10 @@ mod tests {
 
     #[test]
     fn a_job_that_asks_for_ech_does_not_start_without_a_key_it_can_offer() {
+        // The lookup would go through AETHER_UPSTREAM, and a check through the TLS options.
+        let runtime = runtime().expect("the runtime");
+        let _setting = runtime.block_on(crate::upstream::hold_setting());
+        let _options = runtime.block_on(crate::tls::hold_options());
         // The one test that names the resolver of the ECH lookup: an address that turns the
         // connection down, so that the lookup fails.
         let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
@@ -830,7 +834,6 @@ mod tests {
 
         // WireGuard has no TLS handshake to hide a name in, and a job that does not ask for
         // ECH looks no key up.
-        let runtime = runtime().expect("the runtime");
         assert_eq!(
             runtime.block_on(job_ech(true, api::Transport::WireGuard)),
             Ok(None)

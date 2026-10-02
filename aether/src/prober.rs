@@ -951,6 +951,8 @@ mod tests {
     #[tokio::test]
     async fn the_ironclad_check_offers_the_ech_key_of_its_scan() {
         let _setting = crate::upstream::hold_setting().await;
+        // The check builds its TLS with the fingerprint the options give.
+        let _options = crate::tls::hold_options().await;
         let identity = crate::account::handshake_identity();
         let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let address = peer.local_addr().unwrap();
