@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_int;
 use std::ptr;
 
 use boring::pkey::PKey;
@@ -22,8 +22,6 @@ extern "C" {
         out_retry_configs: *mut *const u8,
         out_retry_configs_len: *mut usize,
     );
-
-    fn SSL_CTX_set_strict_cipher_list(ctx: *mut c_void, str: *const c_char) -> c_int;
 }
 
 /// The groups of the fingerprint, in order, unless --tls-groups names others.
@@ -61,23 +59,15 @@ impl CipherOption {
 }
 
 /// Sets `list`, a BoringSSL cipher string, as the TLS 1.2 cipher suites of `builder`.
-/// Strictly: a name BoringSSL does not know is an error, which SSL_CTX_set_cipher_list
-/// would leave out without a word.
+/// Strictly, through boring's set_strict_cipher_list (SSL_CTX_set_strict_cipher_list): a name
+/// BoringSSL does not know is an error, which set_cipher_list would leave out without a word.
+/// boring takes the error off the thread's error queue, where it would show in a later error.
 pub fn set_tls12_ciphers(builder: &mut SslContextBuilder, list: &str) -> Result<()> {
-    let refused = || {
+    builder.set_strict_cipher_list(list).map_err(|_| {
         AetherError::Tls(format!(
             "{list:?} is no cipher list BoringSSL takes (cipher names separated by ':')"
         ))
-    };
-    let text = std::ffi::CString::new(list).map_err(|_| refused())?;
-    let rc =
-        unsafe { SSL_CTX_set_strict_cipher_list(builder.as_ptr() as *mut c_void, text.as_ptr()) };
-    if rc != 1 {
-        // Taken off the thread's error queue, where it would show in a later error.
-        let _ = boring::error::ErrorStack::get();
-        return Err(refused());
-    }
-    Ok(())
+    })
 }
 
 /// The TLS 1.2 cipher suites `list` names, in its order, as BoringSSL reads it: the number
