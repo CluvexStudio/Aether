@@ -598,6 +598,14 @@ pub async fn register(
     Ok((account, wg_private))
 }
 
+pub async fn enable_warp(device_id: &str, token: &str) -> Result<()> {
+    let path = format!("/{}/reg/{}", consts::API_VERSION, device_id);
+    let body = serde_json::to_vec(&serde_json::json!({ "warp_enabled": true }))
+        .map_err(|e| AetherError::Api(format!("encode: {e}")))?;
+    api_call("enabling warp", "PATCH", &path, Some(&body), Some(token), None).await?;
+    Ok(())
+}
+
 pub async fn enroll_key(
     device_id: &str,
     token: &str,

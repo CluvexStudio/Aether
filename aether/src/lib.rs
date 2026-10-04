@@ -51,14 +51,8 @@ fn parse_local_v4(s: &str) -> Ipv4Addr {
 const TUNNEL_MTU: usize = 1280;
 const INNER_MTU: usize = 1200;
 
-/// MASQUE over HTTP/2 carries its capsules on a TCP stream, where nothing has
-/// to fit inside a single UDP datagram. The 1280 that keeps a QUIC datagram
-/// whole only buys the netstack more segments to cut on that path, so it gets
-/// an ordinary ethernet MTU instead.
 const H2_TUNNEL_MTU: usize = 1500;
 
-/// The inner MTU for the MASQUE tunnel. `AETHER_MASQUE_MTU` overrides it, for a
-/// path where the edge turns out not to carry full-size packets.
 fn masque_tunnel_mtu() -> usize {
     if let Some(mtu) = std::env::var("AETHER_MASQUE_MTU")
         .ok()
@@ -142,13 +136,11 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         ));
     }
 
-    // A malformed address is worth reporting before an account is provisioned.
     let pinned_wiw = wiw_endpoints_from_env()?;
     let pinned_mim = mim_endpoints_from_env()?;
 
     let protocol = match std::env::var("AETHER_PROTOCOL") {
         Ok(v) => Protocol::parse(&v),
-        // Naming a warp-in-warp hop only makes sense for warp-in-warp.
         Err(_) if !pinned_wiw.is_empty() => Protocol::WarpInWarp,
         Err(_) if !pinned_mim.is_empty() => Protocol::MasqueInMasque,
         Err(_)
@@ -251,7 +243,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
             let _ech = tls::EchSession::start(resolve_ech().await?);
             let lastconn_path = lastconn_path(&config_path);
-            run_masque(identity, listen, lastconn_path).await
+            run_masque(identity, listen, lastconn_path, None).await
         }
         Protocol::WireGuard => {
             let config_path = warp_config_path(&base_config);
@@ -265,6 +257,19 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
             let lastconn_path = lastconn_path(&config_path);
             run_wireguard(identity, listen, lastconn_path).await
+        }
+        Protocol::WarpInWarp if !gool_classic() => {
+            select_masque_transport().await;
+            let config_path = masque_config_path(&base_config);
+            let identity = load_or_provision_masque(&config_path).await?;
+            let inner_path = derive_sibling_path(&config_path, "gool");
+            log::info!(
+                "[+] gool: masque device={} carries the wireguard identity in {inner_path}",
+                identity.device_id
+            );
+            let _ech = tls::EchSession::start(resolve_ech().await?);
+            let lastconn_path = lastconn_path(&config_path);
+            run_masque(identity, listen, lastconn_path, Some(inner_path)).await
         }
         Protocol::WarpInWarp => {
             let primary_path = warp_config_path(&base_config);
@@ -300,13 +305,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     }
 }
 
-/// The port Cloudflare's WireGuard edges usually answer on. It is only ever
-/// shown as an example: an endpoint has to carry its own port, because which
-/// port gets through is exactly what differs between one network and the next.
 const WG_EXAMPLE_PORT: u16 = 2408;
 
-/// The two hops of a warp-in-warp tunnel, as far as they were chosen by hand. A
-/// hop left as `None` is one the scan still has to find.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct WiwEndpoints {
     outer: Option<SocketAddr>,
@@ -318,9 +318,6 @@ impl WiwEndpoints {
         self.outer.is_none() && self.inner.is_none()
     }
 
-    /// The hops have to leave through different edges: sending the inner tunnel
-    /// back out of the address it already arrived on gains nothing, and
-    /// `run_warp_in_warp` refuses it.
     fn checked(self) -> Result<Self> {
         match (self.outer, self.inner) {
             (Some(outer), Some(inner)) if outer.ip() == inner.ip() => {
@@ -334,9 +331,6 @@ impl WiwEndpoints {
     }
 }
 
-/// Reads one endpoint. The port has to be written out: which port answers is
-/// the part that differs from network to network, so filling one in on
-/// somebody's behalf would only send them at an address nobody offered.
 fn parse_endpoint(raw: &str) -> Result<SocketAddr> {
     let text = raw.trim();
 
@@ -344,8 +338,6 @@ fn parse_endpoint(raw: &str) -> Result<SocketAddr> {
         return Ok(peer);
     }
 
-    // An address with the port left off is the likely slip, so name what is
-    // missing rather than calling the whole thing unreadable.
     let portless = text.parse::<IpAddr>().ok().or_else(|| {
         text.strip_prefix('[')
             .and_then(|rest| rest.strip_suffix(']'))
@@ -365,8 +357,6 @@ fn parse_endpoint(raw: &str) -> Result<SocketAddr> {
     )))
 }
 
-/// Reads the one or two endpoints of a warp-in-warp pair, separated by commas,
-/// semicolons or spaces.
 fn parse_endpoint_list(raw: &str) -> Result<Vec<SocketAddr>> {
     let mut peers = Vec::new();
 
@@ -395,8 +385,6 @@ fn env_value(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// True when the endpoints were deliberately left to the scan, so there is
-/// nothing left to ask about.
 fn wiw_scan_requested(lookup: &dyn Fn(&str) -> Option<String>) -> bool {
     match lookup("AETHER_WIW_PEERS") {
         Some(value) => matches!(
@@ -467,8 +455,6 @@ fn mim_endpoints_from_env() -> Result<WiwEndpoints> {
     mim_endpoints_of(&env_value)
 }
 
-/// `--peer` and `--wg-peer` are older than the warp-in-warp settings and the
-/// guides already pair them with `--gool`, so they still name the outer hop.
 fn wiw_endpoints_with_fallback(lookup: &dyn Fn(&str) -> Option<String>) -> Result<WiwEndpoints> {
     let mut chosen = wiw_endpoints_of(lookup)?;
 
@@ -495,7 +481,6 @@ async fn run_gool(
     secondary: account::Identity,
     listen: SocketAddr,
 ) -> Result<()> {
-    // Scanning is what happens unless somebody named an endpoint themselves.
     let pinned = wiw_endpoints_with_fallback(&env_value)?;
 
     match (pinned.outer, pinned.inner) {
@@ -519,8 +504,6 @@ async fn run_gool(
 
     loop {
         if consecutive_fails >= MAX_CONSECUTIVE_FAILS {
-            // A hop that was given by hand is kept: it was asked for on purpose,
-            // and replacing it behind the user's back is not ours to do.
             let mut rescanning = false;
 
             if pinned.outer.is_none() {
@@ -898,6 +881,20 @@ async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> 
 }
 
 async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity> {
+    let identity = load_or_enrol_masque(config_path).await?;
+    if identity.refused {
+        return Ok(identity);
+    }
+    match account::enable_warp(&identity.device_id, &identity.access_token).await {
+        Ok(()) => log::info!("[+] warp enabled for the masque device"),
+        Err(error) => log::warn!(
+            "[!] could not enable warp for the masque device, the edge may refuse it: {error}"
+        ),
+    }
+    Ok(identity)
+}
+
+async fn load_or_enrol_masque(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing masque identity from {config_path}");
         let refused = if identity.has_masque_credentials() {
@@ -1134,9 +1131,6 @@ async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result
     }
 }
 
-/// Hunts for `want` endpoints, leaving out the addresses in `avoid`. Warp-in-warp
-/// passes the hop it already has there, so the scan cannot hand back the same
-/// edge for both ends of the tunnel.
 async fn select_wg_peers(
     identity: &account::Identity,
     mode_str: &str,
@@ -1185,8 +1179,6 @@ async fn select_wg_peers(
 
     let found = wg_prober::hunt_wg_endpoints(&probe, mode, want).await?;
 
-    // The exclusion above already keeps these out of the sweep; this is the
-    // belt to its braces, since handing a hop its own address back is fatal.
     let picked: Vec<wg_prober::WgProbeResult> = found
         .into_iter()
         .filter(|pr| !avoid.contains(&pr.ip))
@@ -1364,6 +1356,7 @@ async fn run_masque(
     identity: account::Identity,
     listen: SocketAddr,
     lastconn_path: String,
+    gool_inner: Option<String>,
 ) -> Result<()> {
     let forced = std::env::var("AETHER_PEER").ok();
 
@@ -1473,8 +1466,11 @@ async fn run_masque(
 
         last_good_peer = Some(peer);
 
-        // The session's ECH key as it is now, which a server may have replaced.
-        match run_masque_tunnel(&identity, peer, tls::session_ech(), listen).await {
+        let ended = match &gool_inner {
+            Some(path) => run_gool_tunnel(&identity, peer, tls::session_ech(), listen, path).await,
+            None => run_masque_tunnel(&identity, peer, tls::session_ech(), listen).await,
+        };
+        match ended {
             Ok(()) => log::warn!("[-] MASQUE tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] MASQUE tunnel ended: {e}; reconnecting"),
         }
@@ -2802,9 +2798,6 @@ async fn run_warp_in_warp(
         task.abort();
     }
 
-    // Whichever handle already resolved inside the select! above must not be
-    // polled again: tokio panics with "JoinHandle polled after completion"
-    // if you .await a JoinHandle that has already yielded Ready.
     if winner != Winner::Outer {
         outer_exit.abort();
         let _ = outer_exit.await;
@@ -2819,6 +2812,182 @@ async fn run_warp_in_warp(
     }
 
     drop(outer_stack);
+
+    outcome
+}
+
+fn gool_classic() -> bool {
+    matches!(
+        std::env::var("AETHER_GOOL_MODE").as_deref(),
+        Ok("wiw") | Ok("wg") | Ok("classic")
+    ) || ["AETHER_WIW_OUTER_PEER", "AETHER_WIW_INNER_PEER", "AETHER_WIW_PEERS"]
+        .iter()
+        .any(|key| env_value(key).is_some())
+}
+
+fn gool_inner_peers(identity: &account::Identity) -> Result<Vec<SocketAddr>> {
+    if let Some(value) = env_value("AETHER_GOOL_INNER") {
+        return Ok(vec![parse_endpoint(&value)?]);
+    }
+    let mut peers: Vec<SocketAddr> = Vec::new();
+    let named = std::iter::once(identity.assigned_endpoint.trim())
+        .chain(wireguard::wg_seeds_v4());
+    for host in named {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            let peer = SocketAddr::new(ip, WG_EXAMPLE_PORT);
+            if !peers.contains(&peer) {
+                peers.push(peer);
+            }
+        }
+    }
+    Ok(peers)
+}
+
+async fn gool_inner_identity(
+    outer: &netstack::StackHandle,
+    inner_path: &str,
+) -> Result<account::Identity> {
+    if let Some(identity) = config::load(inner_path)? {
+        log::info!("[+] loaded the gool wireguard identity from {inner_path}");
+        return Ok(identity);
+    }
+
+    let listener = socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap()).await?;
+    let through = listener.local_addr()?;
+    let stack = outer.clone();
+    let socks_task = tokio::spawn(async move { socks::serve(listener, stack).await });
+    let _socks_guard = TaskGuard(vec![socks_task.abort_handle()]);
+
+    log::info!("[*] registering the gool wireguard identity through the masque tunnel");
+    let previous = std::env::var("AETHER_UPSTREAM").ok();
+    std::env::set_var("AETHER_UPSTREAM", format!("socks5h://{through}"));
+    let registered = account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await;
+    if let Ok(id) = &registered {
+        if let Err(e) = account::enable_warp(&id.device_id, &id.access_token).await {
+            log::warn!("[-] could not enable warp on the gool identity: {e}");
+        }
+    }
+    match previous {
+        Some(value) => std::env::set_var("AETHER_UPSTREAM", value),
+        None => std::env::remove_var("AETHER_UPSTREAM"),
+    }
+    let identity = registered?;
+    config::save(inner_path, &identity)?;
+    log::info!(
+        "[+] gool wireguard identity registered from inside warp and saved to {inner_path}: device={} ipv4={}",
+        identity.device_id,
+        identity.ipv4
+    );
+    Ok(identity)
+}
+
+const GOOL_INNER_ATTEMPTS: u32 = 2;
+
+async fn run_gool_tunnel(
+    identity: &account::Identity,
+    peer: SocketAddr,
+    ech: Option<Vec<u8>>,
+    listen: SocketAddr,
+    inner_path: &str,
+) -> Result<()> {
+    let h2 = masque_h2::enabled();
+    let dial = if h2 { masque_h2::h2_peer(peer) } else { peer };
+
+    let mut outer = establish_masque(
+        identity,
+        dial,
+        ech,
+        h2,
+        masque_tunnel_mtu(),
+        quic::MAX_DATAGRAM_SIZE,
+        true,
+        masque_startup_timeout(),
+        "outer",
+    )
+    .await?;
+
+    let inner_identity = gool_inner_identity(&outer.stack, inner_path).await?;
+    let candidates = gool_inner_peers(&inner_identity)?;
+
+    let mut established = None;
+    let mut last_error = AetherError::Other("no wireguard endpoint to try".into());
+    'peers: for inner_peer in candidates {
+        let (forwarder, forwarder_guard) = spawn_udp_forwarder(&outer.stack, inner_peer).await?;
+        log::info!("[*] wireguard to {inner_peer} rides inside the masque tunnel via {forwarder}");
+        for attempt in 1..=GOOL_INNER_ATTEMPTS {
+            match establish_wg(&inner_identity, forwarder, INNER_MTU, false, 25, "inner").await {
+                Ok(hop) => {
+                    established = Some((inner_peer, hop, forwarder_guard));
+                    break 'peers;
+                }
+                Err(e) => {
+                    log::warn!("[-] inner wireguard {inner_peer} attempt {attempt} failed: {e}");
+                    last_error = e;
+                }
+            }
+        }
+    }
+    let Some((inner_peer, (inner_stack, mut inner_exit), _forwarder_guard)) = established else {
+        return Err(last_error);
+    };
+    if inner_identity.assigned_endpoint != inner_peer.ip().to_string()
+        && env_value("AETHER_GOOL_INNER").is_none()
+    {
+        let remembered = account::Identity {
+            assigned_endpoint: inner_peer.ip().to_string(),
+            ..inner_identity.clone()
+        };
+        if config::save(inner_path, &remembered).is_ok() {
+            log::info!("[+] gool remembers {} as its wireguard endpoint", inner_peer.ip());
+        }
+    }
+
+    let policy = exitloc::Policy::from_env();
+    exitloc::settle(&inner_stack, &policy, "gool").await?;
+    let policy_stack = inner_stack.clone();
+
+    let socks_listener = socks::bind_listener("socks5", listen).await?;
+    let http_listener = bind_http_proxy().await?;
+
+    let mut tasks = TaskGuard::new();
+    let http_task = spawn_http_proxy(http_listener, &inner_stack);
+    if let Some(task) = &http_task {
+        tasks.push(task.abort_handle());
+    }
+    let socks_stack = inner_stack.clone();
+    let mut socks_task =
+        tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
+    tasks.push(socks_task.abort_handle());
+
+    log::info!("[+] gool ready: masque {peer} carries wireguard {inner_peer}");
+
+    #[derive(PartialEq)]
+    enum Winner {
+        Outer,
+        Inner,
+        Socks,
+        Policy,
+    }
+
+    let (outcome, winner) = tokio::select! {
+        result = &mut outer.exit => (join_outcome("outer masque tunnel", result), Winner::Outer),
+        result = &mut inner_exit => (join_outcome("inner wireguard tunnel", result), Winner::Inner),
+        result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
+        reason = exit_policy_guard(&policy_stack, &policy) => (Err(reason), Winner::Policy),
+    };
+
+    if winner != Winner::Outer {
+        outer.exit.abort();
+        let _ = (&mut outer.exit).await;
+    }
+    if winner != Winner::Inner {
+        inner_exit.abort();
+        let _ = (&mut inner_exit).await;
+    }
+    if winner != Winner::Socks {
+        socks_task.abort();
+        let _ = (&mut socks_task).await;
+    }
 
     outcome
 }
@@ -2857,8 +3026,6 @@ async fn prompt_line(prompt: &str) -> Option<String> {
 
 const SCAN_MODE_PROMPT: &str = "\nScan mode:\n  [1] turbo     (fast, first hit)\n  [2] balanced  (default)\n  [3] thorough  (deep, best ping)\n  [4] verified  (measured edges only, never a guessed neighbour; on gool and\n                 mim it keeps the two hops in different ranges, which is what\n                 moves the exit address)\n  [5] ironclad  (real tunnel + real HTTP check per candidate, guaranteed working)\nChoose [1-5] (default 2): ";
 
-/// Shown above the scan mode question on warp-in-warp, where the addresses can
-/// be handed over instead of hunted for.
 const MIM_MANUAL_TIP: &str = "\n(tip: you can skip this scan and give the two masque hops yourself:\n        aether --mim --mim-outer <ip:port> --mim-inner <ip:port>\n      the port is required, and naming just the outer one lets aether pick\n      the inner edge for you)\n";
 
 const WIW_MANUAL_TIP: &str = "\n(tip: you can skip this scan and give the two gool hops yourself:\n        aether --gool --wiw-outer <ip:port> --wiw-inner <ip:port>\n      the port is required, and naming just one of the two lets the scan\n      find the other)\n";
@@ -2879,8 +3046,6 @@ async fn select_scan_mode() -> prober::ScanMode {
     }
 }
 
-/// `tip` is printed above the question, for whatever the caller wants to point
-/// out about scanning in the mode it is about to run.
 async fn select_scan_mode_str(tip: &str) -> String {
     if let Ok(v) = std::env::var("AETHER_SCAN") {
         return v;
@@ -2959,7 +3124,7 @@ async fn select_protocol(base: &str) -> Protocol {
 
         match choice {
             "2" => return Protocol::WireGuard,
-            "3" => return Protocol::WarpInWarp,
+            "3" => return select_gool().await,
             "4" => return Protocol::MasqueInMasque,
             _ if choice == zero_trust_key => {
                 enrol_zero_trust(base).await;
@@ -2978,6 +3143,22 @@ async fn select_protocol(base: &str) -> Protocol {
             _ => return Protocol::Masque,
         }
     }
+}
+
+async fn select_gool() -> Protocol {
+    let answer = prompt_line(
+        "\nWhich gool?\n  \
+         [1] gool over masque: wireguard carried inside a masque tunnel, for a foreign exit \
+         address (default)\n  \
+         [2] classic gool: wireguard carried inside wireguard, a plain warp exit\n\
+         Choose [1-2] (default 1): ",
+    )
+    .await;
+
+    if matches!(answer.as_deref(), Some("2")) {
+        std::env::set_var("AETHER_GOOL_MODE", "classic");
+    }
+    Protocol::WarpInWarp
 }
 
 async fn select_psiphon_chain() -> Protocol {
@@ -3037,7 +3218,7 @@ async fn select_chain_carrier(what: &str) -> Protocol {
 
     match answer.as_deref() {
         Some("2") => Protocol::WireGuard,
-        Some("3") => Protocol::WarpInWarp,
+        Some("3") => select_gool().await,
         Some("4") => Protocol::MasqueInMasque,
         _ => Protocol::Masque,
     }
