@@ -303,6 +303,20 @@ jobs:
           sudo mkdir -p /opt/musl-cross
           sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
 
+      - name: Add kernel uapi headers to the musl sysroot
+        run: |
+          sudo apt-get update && sudo apt-get install -y linux-libc-dev
+          for cc in /opt/musl-cross/bin/*-gcc; do
+            sr="$("$cc" -print-sysroot 2>/dev/null || true)"
+            for inc in "$sr/include" "$sr/usr/include"; do
+              [ -n "$sr" ] && [ -d "$inc" ] && sudo mkdir -p "$inc/linux" && sudo cp -rn /usr/include/linux/. "$inc/linux/" 2>/dev/null || true
+            done
+          done
+          for inc in /opt/musl-cross/*/include; do
+            [ -d "$inc" ] && sudo mkdir -p "$inc/linux" && sudo cp -rn /usr/include/linux/. "$inc/linux/" 2>/dev/null || true
+          done
+          echo "random.h now at:"; find /opt/musl-cross -name random.h 2>/dev/null | head
+
       - name: Build pluggable transports
         run: bash ../pt-build.sh linux arm "$PWD/pt" 7
 
@@ -378,6 +392,20 @@ jobs:
           curl -fsSL https://github.com/AmanoTeam/musl-gcc-cross/releases/download/gcc-15/x86_64-unknown-linux-gnu.tar.xz -o /tmp/musl-cross.tar.xz
           sudo mkdir -p /opt/musl-cross
           sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
+
+      - name: Add kernel uapi headers to the musl sysroot
+        run: |
+          sudo apt-get update && sudo apt-get install -y linux-libc-dev
+          for cc in /opt/musl-cross/bin/*-gcc; do
+            sr="$("$cc" -print-sysroot 2>/dev/null || true)"
+            for inc in "$sr/include" "$sr/usr/include"; do
+              [ -n "$sr" ] && [ -d "$inc" ] && sudo mkdir -p "$inc/linux" && sudo cp -rn /usr/include/linux/. "$inc/linux/" 2>/dev/null || true
+            done
+          done
+          for inc in /opt/musl-cross/*/include; do
+            [ -d "$inc" ] && sudo mkdir -p "$inc/linux" && sudo cp -rn /usr/include/linux/. "$inc/linux/" 2>/dev/null || true
+          done
+          echo "random.h now at:"; find /opt/musl-cross -name random.h 2>/dev/null | head
 
       - name: Set up cross env vars
         run: |
