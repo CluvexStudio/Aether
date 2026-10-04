@@ -538,9 +538,15 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.1.0
+            Aether v2.2.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
+
+            WARP over MASQUE, and gool
+
+            - `--masque` tunnels WARP over MASQUE: CONNECT-IP on HTTP/3 (QUIC) by default, or HTTP/2 (TCP) with `AETHER_MASQUE_HTTP2`, for networks that block or throttle UDP. An edge scanner finds a working Cloudflare gateway and verifies it end to end before SOCKS5 opens.
+            - `--gool` carries a WireGuard WARP identity inside the MASQUE tunnel and registers it through that tunnel, so the exit address is foreign rather than local. The classic WireGuard-in-WireGuard gool stays on `--gool-classic`, and the menu asks which of the two to use.
+            - On the HTTP/2 carrier `--fragment` splits the ClientHello for networks that drop the WARP server name; it is off by default. ECH is opt-in with `AETHER_ECH`, fetched over DoH, for the WARP key API where that is not enough.
 
             Psiphon is built in
 
@@ -566,6 +572,7 @@ jobs:
 
             Fixes
 
+            - Psiphon finds a CA store on Android and Termux on its own, so its TLS no longer fails there without a manually exported SSL_CERT_FILE.
             - The HTTP/2 scan was slow to find anything. Its data-plane probe was sent once and never repeated, so a single lost packet cost the whole per-probe budget instead of 700ms. The first gateway now turns up in about a second.
             - `--noize firewall` and `--noize gfw` were advertised but never implemented and fell through to balanced. Since firewall is the default for MASQUE, the default profile did not exist. Both are real now, and the `<c>` counter tag emits a counter instead of repeating the timestamp.
             - `--mark` never reached the registration calls, which hung for twenty seconds on a router that routes unmarked traffic into a TUN. Registration now takes the route that carries the mark.
