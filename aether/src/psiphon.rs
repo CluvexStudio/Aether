@@ -156,6 +156,41 @@ fn client_arguments(config_path: &Path, state: &Path, entries: Option<&Path>) ->
     arguments
 }
 
+fn ca_store_env() -> Option<(&'static str, String)> {
+    if std::env::var_os("SSL_CERT_FILE").is_some() || std::env::var_os("SSL_CERT_DIR").is_some() {
+        return None;
+    }
+
+    let mut files = Vec::new();
+    if let Some(prefix) = std::env::var_os("PREFIX") {
+        files.push(PathBuf::from(prefix).join("etc/tls/cert.pem"));
+    }
+    for path in [
+        "/data/data/com.termux/files/usr/etc/tls/cert.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+    ] {
+        files.push(PathBuf::from(path));
+    }
+    if let Some(found) = files.into_iter().find(|p| p.is_file()) {
+        return Some(("SSL_CERT_FILE", found.to_string_lossy().into_owned()));
+    }
+
+    let dirs: Vec<&str> = [
+        "/system/etc/security/cacerts",
+        "/apex/com.android.conscrypt/cacerts",
+    ]
+    .into_iter()
+    .filter(|dir| Path::new(dir).is_dir())
+    .collect();
+    if dirs.is_empty() {
+        None
+    } else {
+        Some(("SSL_CERT_DIR", dirs.join(":")))
+    }
+}
+
 pub fn install_hint() -> String {
     let goos = match std::env::consts::OS {
         "android" => "linux",
@@ -711,12 +746,18 @@ pub async fn start(
         log::info!("[*] psiphon starts with the server entries in {}", path.display());
     }
 
-    let mut child = Command::new(&exe)
+    let mut command = Command::new(&exe);
+    command
         .args(client_arguments(&config_path, state, entries.as_deref()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    if let Some((key, value)) = ca_store_env() {
+        log::info!("[*] psiphon trusts the ca store at {value}");
+        command.env(key, value);
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| AetherError::Other(format!("psiphon would not start: {e}")))?;
 
@@ -1020,7 +1061,7 @@ mod tests {
         let text = r#"
         /* psiphon ships these with comments */
         {
-            "PropagationChannelId": "AAAA", // inline
+            "PropagationChannelId": "AAAA",
             "SponsorId": "BBBB"
         }
         "#;
