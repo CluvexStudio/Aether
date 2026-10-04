@@ -2,7 +2,6 @@
 pub mod account;
 pub mod aethernoize;
 pub mod api;
-pub mod apifront;
 pub mod bridges;
 pub mod cli;
 pub mod config;
@@ -13,6 +12,7 @@ pub mod error;
 pub mod exitloc;
 pub mod ffi;
 pub mod fragment;
+pub mod https;
 pub mod lastconn;
 pub mod masque;
 pub mod masque_h2;
@@ -104,6 +104,19 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     stats::spawn_reporter();
 
     install_netstack_panic_guard();
+    // A cipher string or a group list BoringSSL does not take, or an address the calls to the
+    // WARP API cannot use, stops the core here, with its option named.
+    tls::check_tls_options()?;
+    account::check_enroll_address()?;
+    // The key of the WARP API calls of an earlier run of the library is not this run's.
+    account::forget_api_ech();
+
+    let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
+
+    // A registration serves no proxy, so it needs none of the listeners checked below.
+    if let Some(wanted) = register_request()? {
+        return register_identities(wanted, &base_config).await;
+    }
 
     let listen: SocketAddr = std::env::var("AETHER_SOCKS")
         .ok()
@@ -112,8 +125,6 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
     drop(socks::bind_listener("socks5", listen).await?);
     drop(bind_http_proxy().await?);
-
-    let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 
     if tor::mode() == tor::Mode::Only {
         return tor::run_only(listen, tor::state_dir(&base_config)).await;
@@ -237,9 +248,10 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 identity.ipv4,
                 identity.ipv6
             );
-            let ech = resolve_ech().await;
+            // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
+            let _ech = tls::EchSession::start(resolve_ech().await?);
             let lastconn_path = lastconn_path(&config_path);
-            run_masque(identity, ech, listen, lastconn_path).await
+            run_masque(identity, listen, lastconn_path).await
         }
         Protocol::WireGuard => {
             let config_path = warp_config_path(&base_config);
@@ -281,8 +293,9 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 secondary.device_id,
                 secondary.ipv4
             );
-            let ech = resolve_ech().await;
-            run_mim(primary, secondary, ech, listen).await
+            // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
+            let _ech = tls::EchSession::start(resolve_ech().await?);
+            run_mim(primary, secondary, listen).await
         }
     }
 }
@@ -939,6 +952,134 @@ async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity
     Ok(identity)
 }
 
+/// The identities `--register` asks for: those of one protocol, both hops of a two-hop one, or
+/// all four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RegisterSet {
+    wireguard: bool,
+    wireguard_inner: bool,
+    masque: bool,
+    masque_inner: bool,
+}
+
+impl RegisterSet {
+    fn parse(value: &str) -> Result<Self> {
+        let none = RegisterSet {
+            wireguard: false,
+            wireguard_inner: false,
+            masque: false,
+            masque_inner: false,
+        };
+        match value.trim().to_lowercase().as_str() {
+            "all" => Ok(RegisterSet {
+                wireguard: true,
+                wireguard_inner: true,
+                masque: true,
+                masque_inner: true,
+            }),
+            "masque" => Ok(RegisterSet {
+                masque: true,
+                ..none
+            }),
+            "wg" | "wireguard" | "warp" => Ok(RegisterSet {
+                wireguard: true,
+                ..none
+            }),
+            "gool" | "wiw" | "warp-in-warp" => Ok(RegisterSet {
+                wireguard: true,
+                wireguard_inner: true,
+                ..none
+            }),
+            "mim" | "masque-in-masque" => Ok(RegisterSet {
+                masque: true,
+                masque_inner: true,
+                ..none
+            }),
+            other => Err(AetherError::Other(format!(
+                "--register takes masque, wg, gool, mim or all, not '{other}'"
+            ))),
+        }
+    }
+}
+
+fn register_request() -> Result<Option<RegisterSet>> {
+    env_value("AETHER_REGISTER")
+        .map(|value| RegisterSet::parse(&value))
+        .transpose()
+}
+
+/// `--register`: makes sure the identities `wanted` names exist, registering the missing ones,
+/// and returns without scanning or opening a tunnel. An identity file already there is kept,
+/// never replaced. With a carrier around the tunnel the registrations go through it, whatever
+/// the protocol: they are https requests, which tor and psiphon carry, so the refusal of
+/// wireguard behind them concerns the tunnel alone. A carrier inside the tunnel, or on its own,
+/// plays no part in a registration.
+async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<()> {
+    let carrier = match (tor::mode(), psiphon::mode()) {
+        (tor::Mode::Reverse, psiphon::Mode::Reverse) => {
+            return Err(AetherError::Other(
+                "--tor-reverse and --psiphon-reverse both want to carry the registration; \
+                 pick one"
+                    .into(),
+            ));
+        }
+        (tor::Mode::Reverse, _) => Some((
+            "tor",
+            tor::start_reverse(tor::state_dir(base_config)).await?,
+        )),
+        (_, psiphon::Mode::Reverse) => Some((
+            "psiphon",
+            psiphon::start_reverse(psiphon::state_dir(base_config)).await?,
+        )),
+        _ => None,
+    };
+    if let Some((name, socks)) = carrier {
+        std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+        log::info!("[+] the identities are registered through {name}");
+    }
+
+    let wireguard = warp_config_path(base_config);
+    let masque = masque_config_path(base_config);
+    let identities = [
+        (wanted.wireguard, "wireguard", wireguard.clone(), false),
+        (
+            wanted.wireguard_inner,
+            "wireguard inner",
+            derive_sibling_path(&wireguard, "secondary"),
+            false,
+        ),
+        (wanted.masque, "masque", masque.clone(), true),
+        (
+            wanted.masque_inner,
+            "masque inner",
+            derive_sibling_path(&masque, "secondary"),
+            true,
+        ),
+    ];
+
+    let mut ready = Vec::new();
+    for (asked, label, path, over_masque) in identities {
+        if !asked {
+            continue;
+        }
+        let identity = if over_masque {
+            load_or_provision_masque(&path).await?
+        } else {
+            load_or_provision_warp(&path).await?
+        };
+        log::info!(
+            "[+] {label} identity ready: device={} ipv4={} ipv6={}",
+            identity.device_id,
+            identity.ipv4,
+            identity.ipv6
+        );
+        ready.push(label);
+    }
+
+    log::info!("[+] identities ready: {}", ready.join(", "));
+    Ok(())
+}
+
 async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result<SocketAddr> {
     let force_peer = match protocol {
         Protocol::Masque | Protocol::MasqueInMasque => std::env::var("AETHER_PEER").ok(),
@@ -1071,36 +1212,30 @@ async fn select_wg_peers(
         .collect())
 }
 
-async fn resolve_ech() -> Option<Vec<u8>> {
-    match std::env::var("AETHER_ECH") {
-        Ok(v) if v.eq_ignore_ascii_case("auto") => match dns::fetch_ech_config().await {
-            Ok(raw) => {
-                log::info!(
-                    "[+] fetched ECHConfigList automatically ({} bytes)",
-                    raw.len()
-                );
-                Some(raw)
-            }
-            Err(e) => {
-                log::warn!("[-] ECH auto-fetch failed ({e}); continuing without ECH");
-                None
-            }
-        },
-        Ok(b64) if !b64.is_empty() => match tls::decode_ech_config_list(&b64) {
-            Ok(v) => {
-                log::info!("[+] using ECHConfigList from AETHER_ECH");
-                Some(v)
-            }
-            Err(e) => {
-                log::warn!("[-] bad AETHER_ECH: {e}; continuing without ECH");
-                None
-            }
-        },
-        _ => {
-            log::info!("[+] ECH disabled (warp masque endpoint does not accept ECH); SNI sent in cleartext");
-            None
+/// The ECH key of the session, by --ech (AETHER_ECH): none without it; with it, the key it
+/// gives in base64, or with auto, the key the lookup of --ech-dns and --ech-domain finds; a
+/// key the calls to the WARP API offered in this run serves without a second lookup. With
+/// ECH asked for and no key BoringSSL can offer, the session does not start, so that the
+/// server name never goes out in the clear.
+async fn resolve_ech() -> Result<Option<Vec<u8>>> {
+    let setting = std::env::var(tls::SESSION_ECH_OPTION.variable).ok();
+    if setting.as_deref().is_some_and(|value| !value.is_empty()) {
+        if let Some(key) = account::api_ech_in_use() {
+            log::info!(
+                "[+] offering the ECHConfigList the WARP API took ({} bytes)",
+                key.len()
+            );
+            return Ok(Some(key));
         }
     }
+    let key = tls::ech_key(&tls::SESSION_ECH_OPTION, setting.as_deref(), || {
+        dns::fetch_ech_config(&dns::SESSION_ECH)
+    })
+    .await?;
+    if key.is_none() {
+        log::info!("[+] ECH off; the server name goes out in cleartext");
+    }
+    Ok(key)
 }
 
 fn masque_reconnect_delay() -> std::time::Duration {
@@ -1138,7 +1273,7 @@ async fn hunt_masque_peer(
         path: quic::default_path().to_string(),
         cert_pem: std::sync::Arc::from(identity.cert_pem.clone()),
         key_pem: std::sync::Arc::from(identity.key_pem.clone()),
-        ech_config_list: None,
+        ech_config_list: tls::session_ech().map(std::sync::Arc::from),
         noize: noize_config(),
         ports: prober::MASQUE_PORTS.to_vec(),
         ip,
@@ -1167,7 +1302,13 @@ fn lastconn_path(config_path: &str) -> String {
     derive_sibling_path(config_path, "lastconn")
 }
 
-async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr) -> bool {
+/// Whether `peer` serves MASQUE, by a quick check on the carrier the session uses, which
+/// offers `ech`: the session's key, or that of a job of the library.
+async fn quick_verify_masque_peer(
+    identity: &account::Identity,
+    peer: SocketAddr,
+    ech: Option<Vec<u8>>,
+) -> bool {
     let vp = quic::VerifyParams {
         peer,
         sni: consts::CONNECT_SNI.to_string(),
@@ -1175,7 +1316,7 @@ async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr
         path: quic::default_path().to_string(),
         cert_pem: identity.cert_pem.clone(),
         key_pem: identity.key_pem.clone(),
-        ech_config_list: None,
+        ech_config_list: ech.clone(),
         noize: noize_config(),
         timeout: std::time::Duration::from_secs(5),
         local_ipv4: parse_local_v4(&identity.ipv4),
@@ -1193,6 +1334,7 @@ async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr
             quiet: true,
             pin_endpoint: true,
             expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
+            ech_config_list: ech,
         };
         return masque_h2::verify_h2(&cfg, std::time::Duration::from_secs(5))
             .await
@@ -1220,7 +1362,6 @@ async fn want_quick_reconnect(cached: &lastconn::LastConnection) -> bool {
 
 async fn run_masque(
     identity: account::Identity,
-    ech: Option<Vec<u8>>,
     listen: SocketAddr,
     lastconn_path: String,
 ) -> Result<()> {
@@ -1234,7 +1375,7 @@ async fn run_masque(
             .and_then(|value| value.parse::<SocketAddr>().ok())
         {
             log::info!("[*] verifying the endpoint the organization assigned: {assigned}");
-            if quick_verify_masque_peer(&identity, assigned).await {
+            if quick_verify_masque_peer(&identity, assigned, tls::session_ech()).await {
                 log::info!("[+] the assigned endpoint {assigned} works; skipping the scan");
                 quick_peer = Some(assigned);
             } else {
@@ -1251,7 +1392,7 @@ async fn run_masque(
             if !ring.is_empty() && want_quick_reconnect(&cached).await {
                 for peer in ring {
                     log::info!("[*] verifying cached gateway {peer} before reuse");
-                    if quick_verify_masque_peer(&identity, peer).await {
+                    if quick_verify_masque_peer(&identity, peer, tls::session_ech()).await {
                         log::info!("[+] cached gateway {peer} still works; skipping scan");
                         quick_peer = Some(peer);
                         break;
@@ -1282,7 +1423,7 @@ async fn run_masque(
             let retried = match last_good_peer {
                 Some(p) => {
                     log::info!("[*] retrying last known-good gateway {p} before rescanning");
-                    if quick_verify_masque_peer(&identity, p).await {
+                    if quick_verify_masque_peer(&identity, p, tls::session_ech()).await {
                         Some(p)
                     } else {
                         log::warn!(
@@ -1332,7 +1473,8 @@ async fn run_masque(
 
         last_good_peer = Some(peer);
 
-        match run_masque_tunnel(&identity, peer, ech.clone(), listen).await {
+        // The session's ECH key as it is now, which a server may have replaced.
+        match run_masque_tunnel(&identity, peer, tls::session_ech(), listen).await {
             Ok(()) => log::warn!("[-] MASQUE tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] MASQUE tunnel ended: {e}; reconnecting"),
         }
@@ -1400,6 +1542,7 @@ async fn establish_masque(
             quiet: false,
             pin_endpoint: true,
             expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
+            ech_config_list: ech,
         };
         log::info!("[+] [{label}] MASQUE transport: HTTP/2 (TCP) to {peer} (inner mtu {mtu})");
         tokio::spawn(masque_h2::run(
@@ -1866,7 +2009,6 @@ async fn run_masque_in_masque(
 async fn run_mim(
     primary: account::Identity,
     secondary: account::Identity,
-    ech: Option<Vec<u8>>,
     listen: SocketAddr,
 ) -> Result<()> {
     let pinned = mim_endpoints_from_env()?;
@@ -1954,7 +2096,7 @@ async fn run_mim(
             &secondary,
             outer,
             &candidates,
-            ech.clone(),
+            tls::session_ech(),
             listen,
         )
         .await
@@ -2980,6 +3122,30 @@ mod tests {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
         move |key: &str| values.get(key).cloned()
+    }
+
+    #[test]
+    fn register_names_the_identities_of_one_protocol_or_all_four() {
+        let all = RegisterSet::parse("all").expect("all");
+        assert!(all.wireguard && all.wireguard_inner && all.masque && all.masque_inner);
+
+        let masque = RegisterSet::parse(" MASQUE ").expect("masque");
+        assert!(masque.masque && !masque.masque_inner);
+        assert!(!masque.wireguard && !masque.wireguard_inner);
+
+        let wireguard = RegisterSet::parse("wg").expect("wg");
+        assert!(wireguard.wireguard && !wireguard.wireguard_inner);
+        assert!(!wireguard.masque && !wireguard.masque_inner);
+
+        let gool = RegisterSet::parse("gool").expect("gool");
+        assert!(gool.wireguard && gool.wireguard_inner);
+        assert!(!gool.masque && !gool.masque_inner);
+
+        let mim = RegisterSet::parse("mim").expect("mim");
+        assert!(mim.masque && mim.masque_inner);
+        assert!(!mim.wireguard && !mim.wireguard_inner);
+
+        assert!(RegisterSet::parse("everything").is_err());
     }
 
     #[test]

@@ -14,6 +14,7 @@ process: the tunnel, a user-space TCP/IP stack, and the proxy.
 - [Transports](#transports)
 - [Finding an endpoint](#finding-an-endpoint)
 - [Obfuscation](#obfuscation)
+- [TLS](#tls)
 - [Zero Trust](#zero-trust)
 - [Routing rules](#routing-rules)
 - [Upstream proxy](#upstream-proxy)
@@ -185,13 +186,53 @@ reshape them so the opening exchange does not match a known pattern.
 aether --noize aggressive
 ```
 
-Two extras apply to MASQUE only:
+One extra applies to MASQUE only: `--fragment` splits the TLS ClientHello on the
+HTTP/2 carrier, which defeats inspectors that read the SNI from a single packet.
+`--fragment-size` and `--fragment-delay` tune it.
 
-- `--fragment` splits the TLS ClientHello on the HTTP/2 carrier, which defeats
-  inspectors that read the SNI from a single packet. `--fragment-size` and
-  `--fragment-delay` tune it.
-- `--ech auto` fetches an Encrypted Client Hello config and hides the SNI
-  altogether, when the network permits it.
+## TLS
+
+Four kinds of TLS handshake carry the tunnel and its setup: MASQUE on HTTP/3 and on
+HTTP/2, the calls to the WARP API, and the DNS-over-HTTPS lookup of the ECH config.
+All four send Chrome's ClientHello as BoringSSL writes it: TLS 1.3 and 1.2, Chrome's
+cipher suites, GREASE values (RFC 8701), the extensions in a new order on every
+handshake, signed certificate timestamps and OCSP asked for. They offer `h2` then
+`http/1.1`, as Chrome does, but `h3` over QUIC, which carries TLS 1.3 alone; the
+HTTP/2 carrier speaks HTTP/2, which Cloudflare picks. Certificates are not checked.
+Zero Trust sign-in, the Tor bridge and relay lists and the exit-location lookup keep
+a TLS of their own. Three options change the fingerprint of all four:
+
+- `--tls-ciphers` sets the TLS 1.2 cipher suites, listed after the TLS 1.3 ones,
+  which stay as they are: names separated by `:`, as BoringSSL reads a cipher
+  string. HTTP/3 lists none. Without it they are Chrome's, from Chrome's own rule
+  `ALL:!aPSK:!ECDSA+SHA1:!3DES`, in Chrome's order: AES-GCM first on hardware with
+  AES instructions, ChaCha20 first elsewhere.
+- `--tls-groups` sets the groups, in order, the first one getting a key share
+  (default `P-256:X25519:P-384`).
+- `--disable-grease` leaves out the GREASE values, which all four otherwise put in
+  the cipher suites, the extensions, the groups, the key shares and the versions.
+
+A cipher or group name BoringSSL does not know stops the core as it starts, with
+the option named.
+
+`--ech auto` fetches an Encrypted Client Hello config and hides the server name
+altogether, when the network permits it, on the MASQUE handshakes, on both
+carriers, and on the calls to the WARP API. It asks `udp://1.1.1.1` for the HTTPS
+record of `cloudflare-ech.com`; `--ech-dns` names another resolver
+(`udp://ip[:port]` or `tcp://ip[:port]`, on port 53 unless one is given, or a
+DNS-over-HTTPS `https://` URL, on port 443 unless it names one) and `--ech-domain`
+another domain. After a DNS-over-HTTPS URL, `@address=` sends the connection to
+another IP address or domain, on the URL's port, and `@sni=` puts another name in
+the ClientHello, while the URL's host stays the HTTP host:
+`https://doq.dns4all.eu/dns-query@address=2.2.2.2@sni=google.com` connects to
+2.2.2.2, names google.com in the ClientHello and asks doq.dns4all.eu over HTTP.
+That lookup goes without ECH, as the config it fetches is the one ECH needs.
+`--ech <base64>` takes the config itself instead, as the `ech` value of such a
+record shows it. One config serves both: a session that starts after calls to the
+WARP API offers the one they used. Without a config it can offer, because the
+lookup failed or the config is not one the TLS library can use, no name goes out
+in the clear: the WARP API is not asked, the MASQUE session does not start, and the
+core says why.
 
 ## Zero Trust
 
@@ -444,9 +485,12 @@ ip rule add fwmark 0xff lookup main priority 100
 
 The mark is a decimal or `0x` number and needs root or `CAP_NET_ADMIN`; Aether stops
 at startup if it cannot set it, rather than send unmarked traffic. It only works on
-Linux and Android. The registration calls are not marked, so let the first start
-finish before the tun rules are in place. The same setting is available as
-`AETHER_MARK`.
+Linux and Android. The calls to the WARP API and the DoH lookup of the ECH config
+are marked as well, but the system resolver looks a name up outside the mark:
+without `--upstream`, `--enroll-address` then takes an IP address only (see
+[Where the WARP API is asked](#where-the-warp-api-is-asked)), and a DoH URL of
+`--ech-dns` should name an IP address, or give one with `@address=`. The same
+setting is available as `AETHER_MARK`.
 
 ## Proxy limits and timeouts
 
@@ -496,6 +540,24 @@ to be told without anything being replaced.
 
 Only the account API refusing the device counts. Being offline or rate limited does
 not discard an identity.
+
+### Where the WARP API is asked
+
+Registering a device, enrolling its MASQUE key and refreshing a profile are calls
+to the WARP API, `api.cloudflareclient.com`, made as described under TLS above.
+`--enroll-address` sends them to another address, an IP address or a domain name,
+on port 443 unless a port follows it, an IPv6 address then in brackets:
+`188.114.97.6`, `188.114.97.6:2053`, `[2606:4700::1]:8443`. Only the connection goes
+there: the API's name stays the server name of the ClientHello and the HTTP host,
+which carries no port. A name is looked up first, by the proxy with `--upstream`
+and by the system resolver otherwise; with `--mark` and no `--upstream` only an IP
+address is taken, since that lookup would leave outside the mark and loop back into
+the tunnel. With `--ech` the API's name goes only inside the encrypted ClientHello,
+and an IP address for `--enroll-address` keeps it out of the DNS lookup as well.
+
+```sh
+aether --register all --ech auto --enroll-address 141.101.113.10
+```
 
 ## Using Aether as a library
 
@@ -548,7 +610,9 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_QUICK_RECONNECT` | reuse the saved endpoint |
 | `AETHER_MASQUE_HTTP2`, `AETHER_MASQUE_H2_PEER` | HTTP/2 carrier; `--h3` sets it to `0` |
 | `AETHER_QUIC_V2` | `0` turns off the QUIC v2 opener (on by default) |
-| `AETHER_ECH` | `auto` or a base64 config |
+| `AETHER_ECH` | `auto` or a base64 config, for MASQUE and the WARP API |
+| `AETHER_ECH_DNS` | resolver `--ech auto` asks (`udp://`, `tcp://` or `https://`) |
+| `AETHER_ECH_DOMAIN` | domain whose ECH config `--ech auto` takes |
 | `AETHER_MASQUE_H2_FRAGMENT`, `_SIZE`, `_DELAY` | ClientHello fragmenting |
 | `AETHER_MASQUE_STARTUP_SECS` | startup deadline |
 | `AETHER_MASQUE_VALIDATE_SECS`, `AETHER_WG_VALIDATE_SECS` | data-check timeout |
@@ -571,6 +635,9 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_TCP_KEEPALIVE_SECS`, `AETHER_TCP_CONNECT_SECS` | keep-alive and connect timeout inside the tunnel |
 | `AETHER_REPROVISION` | replace an identity Cloudflare refuses |
 | `AETHER_CONFIG`, `AETHER_WG_CONFIG`, `AETHER_MASQUE_CONFIG` | identity paths |
-| `AETHER_TLS_GROUPS` | TLS key share groups |
+| `AETHER_ENROLL_ADDRESS` | where the calls to the WARP API go |
+| `AETHER_TLS_GROUPS` | TLS groups (see TLS) |
+| `AETHER_TLS_CIPHERS` | TLS 1.2 cipher suites (see TLS) |
+| `AETHER_DISABLE_GREASE` | `1` leaves GREASE out (see TLS) |
 | `AETHER_PERF_PROFILE` | `low`, `medium`, `high` |
 | `AETHER_LOG_LEVEL` | `error` to `trace` |

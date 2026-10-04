@@ -131,6 +131,31 @@ pub fn binary() -> Option<PathBuf> {
     None
 }
 
+/// The file of server entries the client starts with, named by AETHER_PSIPHON_SERVER_ENTRIES:
+/// a list carried along, in the form the remote list unpacks to, so the first connection does not
+/// depend on downloading that list. A fetched list is merged on top of it, as the client does.
+pub fn server_entries() -> Option<PathBuf> {
+    std::env::var("AETHER_PSIPHON_SERVER_ENTRIES")
+        .ok()
+        .map(|v| PathBuf::from(v.trim()))
+        .filter(|p| !p.as_os_str().is_empty() && p.is_file())
+}
+
+/// The arguments the client is started with: its config, its data root, and the entries file when there is one.
+fn client_arguments(config_path: &Path, state: &Path, entries: Option<&Path>) -> Vec<std::ffi::OsString> {
+    let mut arguments: Vec<std::ffi::OsString> = vec![
+        "-config".into(),
+        config_path.as_os_str().to_owned(),
+        "-dataRootDirectory".into(),
+        state.as_os_str().to_owned(),
+    ];
+    if let Some(path) = entries {
+        arguments.push("-serverList".into());
+        arguments.push(path.as_os_str().to_owned());
+    }
+    arguments
+}
+
 pub fn install_hint() -> String {
     let goos = match std::env::consts::OS {
         "android" => "linux",
@@ -283,24 +308,35 @@ fn cdn_candidates(raw: &str) -> Vec<String> {
 fn put_cdn_fronting(map: &mut serde_json::Map<String, serde_json::Value>) {
     let addresses = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_IPS").unwrap_or_default());
     let names = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_SNI").unwrap_or_default());
+    let sets = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_SETS").unwrap_or_default());
 
-    if addresses.is_empty() {
+    if !addresses.is_empty() {
+        let mut spec = serde_json::Map::new();
+        spec.insert("IPCandidates".into(), serde_json::json!(addresses));
+        if !names.is_empty() {
+            spec.insert("SNIServerNames".into(), serde_json::json!(names));
+        }
+        map.insert(
+            "FrontedMeekCDNScanSpec".into(),
+            serde_json::Value::Object(spec),
+        );
+    }
+
+    // The edge lists built into psiphon are scanned when there are no addresses of one's own,
+    // and whenever some of them are named, then after those addresses; psiphon tries one's own
+    // first. Named, only the named lists are scanned.
+    if addresses.is_empty() || !sets.is_empty() {
         map.insert(
             "FrontedMeekCDNScanUseBuiltInSpec".into(),
             serde_json::Value::from(true),
         );
-        return;
     }
-
-    let mut spec = serde_json::Map::new();
-    spec.insert("IPCandidates".into(), serde_json::json!(addresses));
-    if !names.is_empty() {
-        spec.insert("SNIServerNames".into(), serde_json::json!(names));
+    if !sets.is_empty() {
+        map.insert(
+            "FrontedMeekCDNScanBuiltInSets".into(),
+            serde_json::json!(sets),
+        );
     }
-    map.insert(
-        "FrontedMeekCDNScanSpec".into(),
-        serde_json::Value::Object(spec),
-    );
 }
 
 fn read_base_config() -> Result<Option<serde_json::Value>> {
@@ -416,7 +452,7 @@ fn build_config(
     state: &Path,
     socks: SocketAddr,
     http: Option<SocketAddr>,
-    upstream: Option<SocketAddr>,
+    upstream: Option<String>,
 ) -> Result<String> {
     let mut map = serde_json::Map::new();
 
@@ -547,17 +583,15 @@ fn build_config(
         map.insert("EgressRegion".into(), serde_json::Value::from(code));
     }
 
-    if let Some(through) = upstream {
-        map.insert(
-            "UpstreamProxyURL".into(),
-            serde_json::Value::from(format!("socks5://{through}")),
-        );
+    let through_proxy = upstream.is_some();
+    if let Some(url) = upstream {
+        map.insert("UpstreamProxyURL".into(), serde_json::Value::from(url));
     }
 
     log::info!(
         "[*] psiphon shape: {chosen:?}{}",
-        if upstream.is_some() {
-            ", carried by the tunnel so only tcp protocols are offered"
+        if through_proxy {
+            ", dialled through a proxy so only tcp protocols are offered"
         } else {
             ""
         }
@@ -653,7 +687,7 @@ pub async fn start(
     state: &Path,
     socks: SocketAddr,
     http: Option<SocketAddr>,
-    upstream: Option<SocketAddr>,
+    upstream: Option<String>,
 ) -> Result<Running> {
     let exe = binary().ok_or_else(|| AetherError::Other(install_hint()))?;
 
@@ -664,14 +698,21 @@ pub async fn start(
     let config_path = state.join("aether-psiphon.json");
     std::fs::write(&config_path, config)
         .map_err(|e| AetherError::Other(format!("psiphon config could not be saved: {e}")))?;
+    // The config can carry the password of the upstream proxy.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600));
+    }
 
     log::info!("[*] starting psiphon from {}", exe.display());
+    let entries = server_entries();
+    if let Some(path) = &entries {
+        log::info!("[*] psiphon starts with the server entries in {}", path.display());
+    }
 
     let mut child = Command::new(&exe)
-        .arg("-config")
-        .arg(&config_path)
-        .arg("-dataRootDirectory")
-        .arg(state)
+        .args(client_arguments(&config_path, state, entries.as_deref()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -782,11 +823,22 @@ fn announce(proxy: SocketAddr, what: &'static str) {
     });
 }
 
+/// The proxy psiphon dials through when no tunnel of aether's carries it: the one --upstream names,
+/// so that what psiphon sends leaves where the rest of aether's traffic leaves.
+fn upstream_url() -> Option<String> {
+    let proxy = crate::upstream::configured()?;
+    log::info!(
+        "[*] psiphon dials out through the upstream proxy at {}",
+        proxy.endpoint()
+    );
+    Some(proxy.psiphon_url())
+}
+
 pub async fn run_only(listen: SocketAddr, state: PathBuf) -> Result<()> {
     let http = http_listen_address();
     log::info!("[*] starting psiphon with no tunnel underneath it");
 
-    let mut running = start(&state, listen, http, None).await?;
+    let mut running = start(&state, listen, http, upstream_url()).await?;
     log::info!(
         "[+] psiphon is ready; {} leaves through psiphon",
         running.socks
@@ -806,7 +858,7 @@ pub async fn run_chain(through: SocketAddr, state: PathBuf) -> Result<()> {
     wait_for_proxy(through).await;
     log::info!("[*] starting psiphon through the tunnel at {through}");
 
-    let mut running = start(&state, listen, http, Some(through)).await?;
+    let mut running = start(&state, listen, http, Some(format!("socks5://{through}"))).await?;
     log::info!(
         "[+] psiphon is ready; {} leaves through psiphon, carried by the tunnel",
         running.socks
@@ -824,7 +876,8 @@ pub async fn start_reverse(state: PathBuf) -> Result<SocketAddr> {
     let http = http_listen_address();
     log::info!("[*] starting psiphon; the tunnel will be dialled through it");
 
-    let mut running = start(&state, listen, http, None).await?;
+    // The upstream is still the proxy aether was given: the caller points it at psiphon once psiphon is up.
+    let mut running = start(&state, listen, http, upstream_url()).await?;
     let socks = running.socks;
     log::info!("[+] psiphon is ready; the tunnel goes out through {socks}");
     announce(socks, "psiphon");
@@ -873,9 +926,40 @@ mod tests {
             "AETHER_PSIPHON_MODE",
             "AETHER_PSIPHON_CDN_IPS",
             "AETHER_PSIPHON_CDN_SNI",
+            "AETHER_PSIPHON_CDN_SETS",
+            "AETHER_PSIPHON_SERVER_ENTRIES",
         ] {
             std::env::remove_var(name);
         }
+    }
+
+    #[test]
+    fn a_server_entry_file_is_handed_to_the_client_when_one_is_named() {
+        let _held = hold();
+
+        clear();
+        assert!(server_entries().is_none());
+        std::env::set_var("AETHER_PSIPHON_SERVER_ENTRIES", "/nowhere/entries.txt");
+        assert!(server_entries().is_none(), "a file that is not there is no file");
+
+        let path = std::env::temp_dir().join(format!("aether-psi-entries-{}.txt", std::process::id()));
+        std::fs::write(&path, "0 0 0 0 {}\n").expect("write");
+        std::env::set_var("AETHER_PSIPHON_SERVER_ENTRIES", &path);
+        assert_eq!(server_entries(), Some(path.clone()));
+
+        let with = client_arguments(std::path::Path::new("cfg.json"), std::path::Path::new("state"), Some(&path));
+        assert_eq!(with.len(), 6);
+        assert_eq!(with[0], "-config");
+        assert_eq!(with[2], "-dataRootDirectory");
+        assert_eq!(with[4], "-serverList");
+        assert_eq!(with[5], path.clone().into_os_string());
+
+        let without = client_arguments(std::path::Path::new("cfg.json"), std::path::Path::new("state"), None);
+        assert_eq!(without.len(), 4);
+        assert!(!without.iter().any(|a| a == "-serverList"));
+
+        let _ = std::fs::remove_file(&path);
+        clear();
     }
 
     #[test]
@@ -1012,7 +1096,7 @@ mod tests {
             &dir,
             "127.0.0.1:1821".parse().expect("an address"),
             None,
-            Some("127.0.0.1:1819".parse().expect("an address")),
+            Some("socks5://127.0.0.1:1819".to_string()),
         )
         .expect("a config");
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
@@ -1072,6 +1156,54 @@ mod tests {
             assert!(!name.contains("QUIC"));
         }
         std::env::remove_var("AETHER_PSIPHON_MODE");
+
+        clear();
+    }
+
+    #[test]
+    fn the_cdn_sets_choose_among_the_edge_lists_built_into_psiphon() {
+        let _held = hold();
+
+        clear();
+        // Nothing named: the built-in lists, all of them, as before.
+        let mut map = serde_json::Map::new();
+        put_cdn_fronting(&mut map);
+        assert_eq!(map["FrontedMeekCDNScanUseBuiltInSpec"], true);
+        assert!(!map.contains_key("FrontedMeekCDNScanBuiltInSets"));
+        assert!(!map.contains_key("FrontedMeekCDNScanSpec"));
+
+        // Sets named: those lists alone.
+        std::env::set_var("AETHER_PSIPHON_CDN_SETS", "cloudflare, fastly");
+        let mut map = serde_json::Map::new();
+        put_cdn_fronting(&mut map);
+        assert_eq!(map["FrontedMeekCDNScanUseBuiltInSpec"], true);
+        assert_eq!(
+            map["FrontedMeekCDNScanBuiltInSets"],
+            serde_json::json!(["cloudflare", "fastly"])
+        );
+        assert!(!map.contains_key("FrontedMeekCDNScanSpec"));
+
+        // Addresses of one's own beside the named sets: both are scanned, one's own first.
+        std::env::set_var("AETHER_PSIPHON_CDN_IPS", "203.0.113.7");
+        let mut map = serde_json::Map::new();
+        put_cdn_fronting(&mut map);
+        assert_eq!(
+            map["FrontedMeekCDNScanSpec"]["IPCandidates"],
+            serde_json::json!(["203.0.113.7"])
+        );
+        assert_eq!(map["FrontedMeekCDNScanUseBuiltInSpec"], true);
+        assert_eq!(
+            map["FrontedMeekCDNScanBuiltInSets"],
+            serde_json::json!(["cloudflare", "fastly"])
+        );
+
+        // Addresses alone: no built-in list at all, as before.
+        std::env::remove_var("AETHER_PSIPHON_CDN_SETS");
+        let mut map = serde_json::Map::new();
+        put_cdn_fronting(&mut map);
+        assert!(map.contains_key("FrontedMeekCDNScanSpec"));
+        assert!(!map.contains_key("FrontedMeekCDNScanUseBuiltInSpec"));
+        assert!(!map.contains_key("FrontedMeekCDNScanBuiltInSets"));
 
         clear();
     }

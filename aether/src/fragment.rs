@@ -83,7 +83,7 @@ impl FragmentConfig {
     }
 }
 
-fn is_truthy(v: &str) -> bool {
+pub(crate) fn is_truthy(v: &str) -> bool {
     matches!(
         v.trim().to_lowercase().as_str(),
         "1" | "true" | "yes" | "on"

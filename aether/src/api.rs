@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::account::{self, Identity};
 use crate::error::{AetherError, Result};
 use crate::{
-    aethernoize, config, consts, dns, noize, prober, quic, wg_prober, wireguard, zerotrust,
+    aethernoize, config, consts, dns, noize, prober, quic, tls, wg_prober, wireguard, zerotrust,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -450,6 +450,8 @@ pub struct TunnelSpec {
     pub transport: Transport,
     pub socks: SocketAddr,
     pub http: Option<SocketAddr>,
+    /// The ECHConfigList the MASQUE handshakes of the job offer, the tunnel's and the check's;
+    /// with none, the server name goes out in the clear.
     pub ech: Option<Vec<u8>>,
     pub aethernoize: aethernoize::AetherNoizeConfig,
     pub keepalive: u16,
@@ -485,17 +487,21 @@ impl TunnelSpec {
     }
 }
 
-pub async fn fetch_ech_config() -> Option<Vec<u8>> {
-    match dns::fetch_ech_config().await {
-        Ok(raw) => {
-            log::info!("[+] fetched an ECHConfigList ({} bytes)", raw.len());
-            Some(raw)
-        }
-        Err(e) => {
-            log::warn!("[-] could not fetch an ECHConfigList ({e}); continuing without ECH");
-            None
-        }
-    }
+/// The ECH key of a job that asks for ECH: the one the lookup of --ech-dns and --ech-domain
+/// finds. With no key BoringSSL can offer, an error that says NO_ECH_KEY and why, and the job
+/// goes no further: going on without ECH would send the server name in the clear.
+pub async fn fetch_ech_config() -> Result<Vec<u8>> {
+    job_ech_key(|| dns::fetch_ech_config(&dns::SESSION_ECH)).await
+}
+
+/// `fetch_ech_config` with `fetch` for the lookup.
+async fn job_ech_key<F>(fetch: impl FnOnce() -> F) -> Result<Vec<u8>>
+where
+    F: std::future::Future<Output = Result<Vec<u8>>>,
+{
+    tls::ech_key(&tls::SESSION_ECH_OPTION, Some("auto"), fetch)
+        .await?
+        .ok_or_else(|| AetherError::Ech(tls::NO_ECH_KEY.to_string()))
 }
 
 pub async fn verify_endpoint(
@@ -506,7 +512,9 @@ pub async fn verify_endpoint(
 ) -> Result<bool> {
     match spec.transport {
         Transport::Masque => {
-            let attempt = async { Ok(crate::quick_verify_masque_peer(identity, peer).await) };
+            // The check offers the job's ECH key, as its tunnel would.
+            let ech = spec.ech.clone();
+            let attempt = async { Ok(crate::quick_verify_masque_peer(identity, peer, ech).await) };
             guard(cancel, attempt).await
         }
         Transport::WireGuard => {
@@ -705,5 +713,65 @@ mod tests {
         .await;
 
         assert!(matches!(outcome, Err(AetherError::Cancelled)));
+    }
+
+    /// Cloudflare's key of cloudflare-ech.com on 2026-10-01.
+    const CLOUDFLARE_ECH: &str =
+        "AEX+DQBBrwAgACCbK1mYDYFz/BAn6S5t+Q/v+Oej3eFNxtPWgz50fNnFPAAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=";
+
+    /// An ECHConfigList BoringSSL takes and offers nothing from: its one config is of another
+    /// version.
+    const UNUSABLE_ECH: [u8; 8] = [0, 6, 0xfe, 0x0c, 0, 2, 0, 0];
+
+    #[tokio::test]
+    async fn a_job_that_asks_for_ech_gets_a_key_it_can_offer_or_goes_no_further() {
+        let key = tls::decode_ech_config_list(CLOUDFLARE_ECH).expect("base64");
+        let found = key.clone();
+        assert_eq!(job_ech_key(|| async { Ok(found) }).await.ok(), Some(key));
+
+        let unanswered = job_ech_key(|| async {
+            Err(AetherError::Ech(
+                "udp://1.1.1.1:53 did not answer for cloudflare-ech.com".into(),
+            ))
+        })
+        .await;
+        let unusable = job_ech_key(|| async { Ok(UNUSABLE_ECH.to_vec()) }).await;
+        for (outcome, why) in [
+            (unanswered, "did not answer"),
+            (unusable, "cannot be offered"),
+        ] {
+            match outcome {
+                Err(AetherError::Ech(message)) => {
+                    assert!(message.starts_with(tls::NO_ECH_KEY), "{message}");
+                    assert!(message.contains(why), "{message}");
+                }
+                other => panic!("the job went on: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_check_of_a_job_offers_the_ech_key_of_the_job() {
+        let _setting = crate::upstream::hold_setting().await;
+        // The check builds its TLS with the fingerprint the options give.
+        let _options = tls::hold_options().await;
+        let identity = account::handshake_identity();
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = peer.local_addr().unwrap();
+
+        // Given a key it cannot offer, the check sends no ClientHello at all.
+        let mut spec = TunnelSpec::for_transport(Transport::Masque);
+        spec.ech = Some(UNUSABLE_ECH.to_vec());
+        let verified = verify_endpoint(&identity, address, &spec, &Cancel::new()).await;
+        assert!(matches!(verified, Ok(false)), "{verified:?}");
+        assert!(!quic::hears_a_client_hello(&peer, Duration::from_millis(300)).await);
+
+        // Without a key, the same check does send one, with the server name in the clear.
+        spec.ech = None;
+        let check = tokio::spawn(async move {
+            verify_endpoint(&identity, address, &spec, &Cancel::new()).await
+        });
+        assert!(quic::hears_a_client_hello(&peer, Duration::from_secs(4)).await);
+        check.abort();
     }
 }

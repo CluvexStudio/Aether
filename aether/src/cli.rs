@@ -24,12 +24,16 @@ Connection:
   --http-proxy <addr>      also expose an HTTP CONNECT proxy on this address
                            (off by default, e.g. 127.0.0.1:1820)
   --upstream <url>         dial out through a proxy already running here, e.g.
-                           socks5://127.0.0.1:1080 or http://user:pass@host:8080
+                           socks5://127.0.0.1:1080 or http://user:pass@host:8080;
+                           tor and psiphon dial through it as well when no tunnel
+                           carries them (tor takes a socks5 address only)
   --mark <n>               put this firewall mark (SO_MARK) on every socket aether
                            opens to the internet, e.g. 0xff, so a tun front end on
                            the same Linux router can let them past instead of
                            looping them back in (Linux and Android, needs root or
-                           CAP_NET_ADMIN)
+                           CAP_NET_ADMIN); a name is looked up outside the mark, so
+                           without --upstream the calls to the WARP API take an IP
+                           address only, see --enroll-address
   --exit-loc <spec>        refuse a tunnel whose exit country is not wanted, checked
                            through the finished tunnel before socks5 opens and again
                            every minute after: !IR,AZ,RU blocks those, DE,SE allows
@@ -109,7 +113,6 @@ MASQUE transport:
                            (it is on by default; it opens a path for HTTP/3 on
                            networks that block QUIC v1 but let QUIC v2 through)
   --h2-peer <ip:port>      override the peer used for the HTTP/2 transport
-  --ech <auto|base64>      enable Encrypted Client Hello
   --no-data-check          skip the end-to-end data-plane validation
   --validate-secs <n>      seconds to wait for data-plane validation (default 10)
   --startup-secs <n>       total MASQUE startup deadline (default 30)
@@ -118,6 +121,37 @@ MASQUE transport:
   --fragment               fragment the TLS ClientHello on the HTTP/2 transport
   --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
   --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
+
+TLS:
+  the TLS handshakes of the tunnel and its setup, MASQUE over HTTP/2 and HTTP/3,
+  the calls to the WARP API and the DoH lookup of --ech-dns, have Chrome's
+  fingerprint as BoringSSL writes it, with what these change; certificates go
+  unchecked
+  --ech <auto|base64>      enable Encrypted Client Hello on the MASQUE handshakes
+                           and the calls to the WARP API, with the key looked up
+                           (auto) or given in base64; without a key it can
+                           offer, neither goes ahead rather than send a name in
+                           the clear. The DoH lookup of the key goes without it
+  --ech-dns <url>          the resolver --ech auto asks for the key:
+                           udp://ip[:port] or tcp://ip[:port], port 53 unless
+                           given, or a DNS-over-HTTPS https:// URL, port 443
+                           unless given (default udp://1.1.1.1). After the URL,
+                           @address=<ip|name> sends the connection there and
+                           @sni=<name> puts that name in the ClientHello; the
+                           URL's host stays the HTTP host, e.g.
+                           https://doq.dns4all.eu/dns-query@address=2.2.2.2@sni=google.com
+  --ech-domain <name>      the domain whose key --ech auto takes
+                           (default cloudflare-ech.com)
+  --tls-ciphers <list>     TLS 1.2 cipher suites, listed after the TLS 1.3 ones,
+                           which stay as they are; names separated by ':', e.g.
+                           \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256\"
+                           (default Chrome's, \"ALL:!aPSK:!ECDSA+SHA1:!3DES\").
+                           HTTP/3 lists none: QUIC offers TLS 1.3 alone
+  --tls-groups <list>      TLS groups, in order, the first with a key share
+                           (default \"P-256:X25519:P-384\")
+  --disable-grease         leave out the GREASE values (RFC 8701) the cipher
+                           suites, extensions, groups, key shares and versions
+                           carry by default, as Chrome's do
 
 WireGuard:
   --keepalive <n>          persistent keepalive interval in seconds (default 5)
@@ -173,6 +207,13 @@ Tor:
                            space separated. left empty, the list built into
                            psiphon is used
   --psiphon-cdn-sni <list> server names to present to those edges
+  --psiphon-cdn-sets <list>
+                           which of the edge lists built into psiphon the
+                           fronting scan tries: cloudflare, fastly, cloudfront,
+                           psiphon-akamai, psiphon-bunny, vercel, github,
+                           curated-fronting, legacy-android-overrides. left
+                           empty, all of them; named beside --psiphon-cdn-ips,
+                           they are tried after those addresses
   --psiphon-bind <addr>    where the psiphon proxy listens with --psiphon and
                            --psiphon-reverse (default 127.0.0.1:1821)
   --psiphon-http <addr>    also serve psiphon as an http/connect proxy here
@@ -182,6 +223,11 @@ Tor:
                            <config>-psiphon beside the identity file)
   --psiphon-bin <path>     the psiphon-tunnel-core binary to run, when it is not
                            next to aether, in ./pt, or on PATH
+  --psiphon-server-entries <path>
+                           a file of server entries psiphon starts with, in the
+                           form the remote list unpacks to, so that the first
+                           connection does not depend on downloading that list;
+                           a fetched list is merged on top of it
 
   On a network that blocks tor, aether fetches its own bridges from bridgedb and
   finds the pluggable transports already on this machine, tor browser's included.
@@ -230,9 +276,25 @@ Config files:
   --masque-config <path>   identity config path for MASQUE
                            warp-in-warp adds a second identity of its own beside
                            the wireguard one, named <config>-secondary.toml
+  --register <which>       register identities and exit, with no scan and no
+                           tunnel: masque, wg, gool (both wireguard hops), mim
+                           (both masque hops) or all. An identity file already
+                           there is kept, never replaced; point the config paths
+                           at new files to get new keys. With --tor-reverse or
+                           --psiphon-reverse the registrations go through that
+                           carrier whatever the protocol: they are https, which
+                           tor and psiphon carry, so --wg and --gool are refused
+                           there only for the tunnel
+  --enroll-address <ip|name[:port]>
+                           where the calls to the WARP API, which register and
+                           enroll the keys, go: port 443 unless one follows the
+                           address, an IPv6 one then in brackets, e.g.
+                           188.114.97.6:443 or [2606:4700::1]:8443 (default
+                           api.cloudflareclient.com); the server name and the
+                           HTTP host stay api.cloudflareclient.com. With --mark
+                           and no --upstream, an IP address only
 
 Advanced:
-  --tls-groups <list>      TLS key share groups, e.g. \"P-256:X25519:P-384\"
   --perf <low|medium|high> force a resource profile instead of auto-detecting from cpu/ram
                            (low: routers/small boards, medium: typical desktop, high: servers)
   --log-level <level>      error | warn | info | debug | trace (default info)
@@ -272,11 +334,13 @@ Environment variables:
   AETHER_PSIPHON_MODE              --psiphon-mode
   AETHER_PSIPHON_CDN_IPS           --psiphon-cdn-ips
   AETHER_PSIPHON_CDN_SNI           --psiphon-cdn-sni
+  AETHER_PSIPHON_CDN_SETS          --psiphon-cdn-sets
   AETHER_PSIPHON_BIND              --psiphon-bind
   AETHER_PSIPHON_HTTP              --psiphon-http
   AETHER_PSIPHON_REGION            --psiphon-region
   AETHER_PSIPHON_DIR               --psiphon-dir
   AETHER_PSIPHON_BIN               --psiphon-bin
+  AETHER_PSIPHON_SERVER_ENTRIES    --psiphon-server-entries
   AETHER_PSIPHON_READY_SECS        how long to wait for psiphon to tunnel (180)
   AETHER_TOR_DIR                   --tor-dir
   AETHER_TOR_DIRECT_SECS           how long to try tor plainly before bridges (75)
@@ -303,7 +367,6 @@ Environment variables:
   AETHER_MASQUE_HTTP2              --h2 (1), or --h3 (0)
   AETHER_QUIC_V2                   0 for --no-quic-v2 (the opener is on by default)
   AETHER_MASQUE_H2_PEER            --h2-peer
-  AETHER_ECH                       --ech
   AETHER_MASQUE_NO_DATA_CHECK      --no-data-check, MASQUE side
   AETHER_WG_NO_DATA_CHECK          --no-data-check, WireGuard side
   AETHER_MASQUE_VALIDATE_SECS      --validate-secs, MASQUE side
@@ -315,6 +378,12 @@ Environment variables:
   AETHER_MASQUE_H2_FRAGMENT        --fragment
   AETHER_MASQUE_H2_FRAGMENT_SIZE   --fragment-size
   AETHER_MASQUE_H2_FRAGMENT_DELAY  --fragment-delay
+  AETHER_ECH                       --ech
+  AETHER_ECH_DNS                   --ech-dns
+  AETHER_ECH_DOMAIN                --ech-domain
+  AETHER_TLS_CIPHERS               --tls-ciphers
+  AETHER_TLS_GROUPS                --tls-groups
+  AETHER_DISABLE_GREASE            --disable-grease
   AETHER_WG_KEEPALIVE              --keepalive
   AETHER_WG_NO_PROFILE_RETRY       --no-profile-retry
   AETHER_TEAM                      --team
@@ -329,7 +398,8 @@ Environment variables:
   AETHER_CONFIG                    --config
   AETHER_WG_CONFIG                 --wg-config
   AETHER_MASQUE_CONFIG             --masque-config
-  AETHER_TLS_GROUPS                --tls-groups
+  AETHER_REGISTER                  --register
+  AETHER_ENROLL_ADDRESS            --enroll-address
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
 
@@ -435,8 +505,10 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--psiphon-mode" => set("AETHER_PSIPHON_MODE", next_value!()),
             "--psiphon-cdn-ips" => set("AETHER_PSIPHON_CDN_IPS", next_value!()),
             "--psiphon-cdn-sni" => set("AETHER_PSIPHON_CDN_SNI", next_value!()),
+            "--psiphon-cdn-sets" => set("AETHER_PSIPHON_CDN_SETS", next_value!()),
             "--psiphon-dir" => set("AETHER_PSIPHON_DIR", next_value!()),
             "--psiphon-bin" => set("AETHER_PSIPHON_BIN", next_value!()),
+            "--psiphon-server-entries" => set("AETHER_PSIPHON_SERVER_ENTRIES", next_value!()),
             "--mark" => set("AETHER_MARK", next_value!()),
             "--exit-loc" => set("AETHER_EXIT_LOC", next_value!()),
             "--exit-loc-secs" => set("AETHER_EXIT_LOC_SECS", next_value!()),
@@ -486,6 +558,8 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--no-quic-v2" => set("AETHER_QUIC_V2", "0"),
             "--h2-peer" => set("AETHER_MASQUE_H2_PEER", next_value!()),
             "--ech" => set("AETHER_ECH", next_value!()),
+            "--ech-dns" => set("AETHER_ECH_DNS", next_value!()),
+            "--ech-domain" => set("AETHER_ECH_DOMAIN", next_value!()),
             "--no-data-check" => {
                 set("AETHER_MASQUE_NO_DATA_CHECK", "1");
                 set("AETHER_WG_NO_DATA_CHECK", "1");
@@ -512,6 +586,8 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--config" => set("AETHER_CONFIG", next_value!()),
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
+            "--register" => set("AETHER_REGISTER", next_value!()),
+            "--enroll-address" => set("AETHER_ENROLL_ADDRESS", next_value!()),
 
             "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
             "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),
@@ -525,6 +601,8 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--routes" => set("AETHER_ROUTES_FILE", next_value!()),
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
+            "--tls-ciphers" => set("AETHER_TLS_CIPHERS", next_value!()),
+            "--disable-grease" => set("AETHER_DISABLE_GREASE", "1"),
             "--perf" => set("AETHER_PERF_PROFILE", next_value!()),
             "--log-level" => set("AETHER_LOG_LEVEL", next_value!()),
             "--verbose" => set("AETHER_LOG_LEVEL", "debug"),

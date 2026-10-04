@@ -97,6 +97,8 @@ pub struct MasquePingParams {
     pub path: String,
     pub cert_pem: Vec<u8>,
     pub key_pem: Vec<u8>,
+    /// The ECHConfigList the handshake offers, that of the scan the check is part of.
+    pub ech_config_list: Option<Vec<u8>>,
     pub noize: NoizeConfig,
     pub local_ipv4: Ipv4Addr,
     pub local_ipv4_str: String,
@@ -137,6 +139,7 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
                     .iter()
                     .map(|p| p.to_vec())
                     .collect(),
+                ech_config_list: p.ech_config_list.clone(),
             };
             AbortGuard(tokio::spawn(masque_h2::run(
                 h2cfg,
@@ -152,7 +155,7 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
                 path: p.path.clone(),
                 cert_pem: p.cert_pem.clone(),
                 key_pem: p.key_pem.clone(),
-                ech_config_list: None,
+                ech_config_list: p.ech_config_list.clone(),
                 noize: p.noize.clone(),
                 local_ipv4: p.local_ipv4,
                 quiet: true,
