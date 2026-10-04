@@ -3,8 +3,9 @@ use std::os::raw::c_int;
 use std::ptr;
 
 use boring::pkey::PKey;
-use boring::ssl::{SslContextBuilder, SslMethod, SslVerifyMode, SslVersion};
+use boring::ssl::{SslContextBuilder, SslMethod, SslVerifyError, SslVerifyMode, SslVersion};
 use boring::x509::X509;
+use ring::digest;
 use foreign_types_shared::ForeignTypeRef;
 
 use crate::consts;
@@ -237,17 +238,63 @@ pub struct TlsParams<'a> {
 
 /// Install TLS verification on an `SslContextBuilder`.
 ///
-/// NOTE: server-certificate verification is unconditionally disabled
-/// (`SslVerifyMode::NONE`): any certificate presented by the server is
-/// accepted. This is insecure against man-in-the-middle attacks — use only
-/// for testing against your own servers.
+fn verify_enabled() -> bool {
+    std::env::var("AETHER_TLS_VERIFY")
+        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn spki_sha256(cert: &boring::x509::X509Ref) -> Option<[u8; 32]> {
+    let pubkey = cert.public_key().ok()?;
+    let der = pubkey.public_key_to_der().ok()?;
+    let hash = digest::digest(&digest::SHA256, &der);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hash.as_ref());
+    Some(out)
+}
+
 pub fn install_verification(
     builder: &mut SslContextBuilder,
-    _pin_endpoint: bool,
-    _expected_pins: &[&[u8]],
+    pin_endpoint: bool,
+    expected_pins: &[&[u8]],
 ) -> Result<()> {
-    builder.set_verify(SslVerifyMode::NONE);
-    announce_once("tls verification: disabled (unconditional)".to_string());
+    if !verify_enabled() {
+        builder.set_verify(SslVerifyMode::NONE);
+        announce_once(
+            "tls verification: disabled (default; --tls-verify enables pinning)".to_string(),
+        );
+        return Ok(());
+    }
+
+    if pin_endpoint && !expected_pins.is_empty() {
+        let pins: Vec<Vec<u8>> = expected_pins.iter().map(|p| p.to_vec()).collect();
+        builder.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
+            let leaf_cert = ssl.peer_certificate().ok_or_else(|| {
+                log::warn!("tls pin: no peer certificate presented");
+                SslVerifyError::Invalid(boring::ssl::SslAlert::BAD_CERTIFICATE)
+            })?;
+            let hash = spki_sha256(&leaf_cert).ok_or_else(|| {
+                log::warn!("tls pin: failed to compute SPKI hash");
+                SslVerifyError::Invalid(boring::ssl::SslAlert::INTERNAL_ERROR)
+            })?;
+            if pins.iter().any(|pin| pin.as_slice() == hash.as_slice()) {
+                Ok(())
+            } else {
+                Err(SslVerifyError::Invalid(
+                    boring::ssl::SslAlert::CERTIFICATE_UNKNOWN,
+                ))
+            }
+        });
+        announce_once(format!(
+            "tls verification: pin-based ({} pins loaded)",
+            expected_pins.len()
+        ));
+    } else {
+        builder.set_verify(SslVerifyMode::NONE);
+        announce_once(
+            "tls verification: none (--tls-verify set but no pins configured)".to_string(),
+        );
+    }
     Ok(())
 }
 
