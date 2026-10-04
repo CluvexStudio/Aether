@@ -303,19 +303,25 @@ jobs:
           sudo mkdir -p /opt/musl-cross
           sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
 
-      - name: Add kernel uapi headers to the musl sysroot
+      - name: Install kernel uapi headers into the musl sysroots
         run: |
-          sudo apt-get update && sudo apt-get install -y linux-libc-dev
-          for cc in /opt/musl-cross/bin/*-gcc; do
-            sr="$("$cc" -print-sysroot 2>/dev/null || true)"
-            for inc in "$sr/include" "$sr/usr/include"; do
-              [ -n "$sr" ] && [ -d "$inc" ] && sudo mkdir -p "$inc/linux" && sudo cp -rn /usr/include/linux/. "$inc/linux/" 2>/dev/null || true
-            done
-          done
+          sudo apt-get update && sudo apt-get install -y rsync
+          curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz -o /tmp/linux.tar.xz
+          mkdir -p /tmp/ksrc && tar -C /tmp/ksrc --strip-components=1 -xf /tmp/linux.tar.xz
           for inc in /opt/musl-cross/*/include; do
-            [ -d "$inc" ] && sudo mkdir -p "$inc/linux" && sudo cp -rn /usr/include/linux/. "$inc/linux/" 2>/dev/null || true
+            [ -d "$inc" ] || continue
+            case "$inc" in
+              *aarch64*) karch=arm64 ;;
+              *armv7*|*armhf*|*arm-linux*) karch=arm ;;
+              *x86_64*) karch=x86 ;;
+              *) karch= ;;
+            esac
+            [ -z "$karch" ] && continue
+            rm -rf /tmp/hdr-$karch
+            make -s -C /tmp/ksrc ARCH=$karch INSTALL_HDR_PATH=/tmp/hdr-$karch headers_install
+            sudo cp -rn /tmp/hdr-$karch/include/. "$inc/"
           done
-          echo "random.h now at:"; find /opt/musl-cross -name random.h 2>/dev/null | head
+          echo "=== uapi check ==="; for inc in /opt/musl-cross/*/include; do echo "$inc:"; ls "$inc/linux/random.h" "$inc/asm/types.h" 2>&1 | sed 's/^/    /'; done
 
       - name: Build pluggable transports
         run: bash ../pt-build.sh linux arm "$PWD/pt" 7
@@ -393,19 +399,25 @@ jobs:
           sudo mkdir -p /opt/musl-cross
           sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
 
-      - name: Add kernel uapi headers to the musl sysroot
+      - name: Install kernel uapi headers into the musl sysroots
         run: |
-          sudo apt-get update && sudo apt-get install -y linux-libc-dev
-          for cc in /opt/musl-cross/bin/*-gcc; do
-            sr="$("$cc" -print-sysroot 2>/dev/null || true)"
-            for inc in "$sr/include" "$sr/usr/include"; do
-              [ -n "$sr" ] && [ -d "$inc" ] && sudo mkdir -p "$inc/linux" && sudo cp -rn /usr/include/linux/. "$inc/linux/" 2>/dev/null || true
-            done
-          done
+          sudo apt-get update && sudo apt-get install -y rsync
+          curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz -o /tmp/linux.tar.xz
+          mkdir -p /tmp/ksrc && tar -C /tmp/ksrc --strip-components=1 -xf /tmp/linux.tar.xz
           for inc in /opt/musl-cross/*/include; do
-            [ -d "$inc" ] && sudo mkdir -p "$inc/linux" && sudo cp -rn /usr/include/linux/. "$inc/linux/" 2>/dev/null || true
+            [ -d "$inc" ] || continue
+            case "$inc" in
+              *aarch64*) karch=arm64 ;;
+              *armv7*|*armhf*|*arm-linux*) karch=arm ;;
+              *x86_64*) karch=x86 ;;
+              *) karch= ;;
+            esac
+            [ -z "$karch" ] && continue
+            rm -rf /tmp/hdr-$karch
+            make -s -C /tmp/ksrc ARCH=$karch INSTALL_HDR_PATH=/tmp/hdr-$karch headers_install
+            sudo cp -rn /tmp/hdr-$karch/include/. "$inc/"
           done
-          echo "random.h now at:"; find /opt/musl-cross -name random.h 2>/dev/null | head
+          echo "=== uapi check ==="; for inc in /opt/musl-cross/*/include; do echo "$inc:"; ls "$inc/linux/random.h" "$inc/asm/types.h" 2>&1 | sed 's/^/    /'; done
 
       - name: Set up cross env vars
         run: |
