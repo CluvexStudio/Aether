@@ -56,7 +56,14 @@ Protocol:
   --masque                 use MASQUE over QUIC/HTTP-3 (default)
   --wg, --wireguard, --warp
                            use classic WireGuard
-  --gool, --wiw            use WARP-in-WARP (wireguard tunneled in wireguard)
+  --gool, --wiw            use gool: a wireguard warp tunnel carried inside a
+                           masque one, with its own identity registered from
+                           inside warp, so it leaves from a foreign address
+  --gool-peer <ip:port>    the wireguard endpoint gool dials inside the tunnel
+                           (default: the one its registration names, port 2408)
+  --gool-classic           the older gool: wireguard tunneled in wireguard
+  --api-fragment           reach the warp api only over the fragmented route,
+                           for networks that filter the key domain
   --mim, --masque-in-masque
                            use MASQUE-in-MASQUE: a masque tunnel carried inside
                            another one, which changes the address you come out
@@ -64,8 +71,9 @@ Protocol:
                            hops (HTTP/3 in HTTP/3, or --h2 for HTTP/2 in HTTP/2)
   --protocol <name>        masque | wg | gool | mim
 
-WARP-in-WARP endpoints:
-  Both hops are found by the scan unless you name them here. The port is
+Classic gool (WARP-in-WARP) endpoints:
+  Naming any of these selects the classic gool. Both hops are found by the
+  scan unless you name them here. The port is
   required: which port gets through is exactly what differs between networks,
   so none is assumed for you. Name one hop and the scan finds the other,
   keeping your address out of the sweep. The two hops must be different
@@ -119,6 +127,9 @@ MASQUE transport:
   --reconnect-secs <n>     delay before reconnecting after a tunnel drop (default 2)
   --dns <list>             resolvers used inside the tunnel (default 1.1.1.1,1.0.0.1)
   --fragment               fragment the TLS ClientHello on the HTTP/2 transport
+                           (on by default; Iran's firewall resets a whole
+                           ClientHello whose SNI ends in cloudflareclient.com)
+  --no-fragment            send the ClientHello in one piece on HTTP/2
   --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
   --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
 
@@ -356,6 +367,9 @@ Environment variables:
   AETHER_PEER                      --peer
   AETHER_WG_PEER                   --wg-peer
   AETHER_PROTOCOL                  --protocol: masque, wg, gool or mim
+  AETHER_GOOL_INNER                --gool-peer
+  AETHER_GOOL_MODE                 classic for --gool-classic
+  AETHER_API_FRAGMENT              --api-fragment
   AETHER_WIW_OUTER_PEER            --wiw-outer
   AETHER_WIW_INNER_PEER            --wiw-inner
   AETHER_WIW_PEERS                 --wiw-peers, or auto for --wiw-scan
@@ -375,7 +389,7 @@ Environment variables:
   AETHER_MASQUE_RECONNECT_SECS     --reconnect-secs, MASQUE side
   AETHER_WG_RECONNECT_SECS         --reconnect-secs, WireGuard side
   AETHER_DNS                       --dns
-  AETHER_MASQUE_H2_FRAGMENT        --fragment
+  AETHER_MASQUE_H2_FRAGMENT        --fragment / --no-fragment (default on)
   AETHER_MASQUE_H2_FRAGMENT_SIZE   --fragment-size
   AETHER_MASQUE_H2_FRAGMENT_DELAY  --fragment-delay
   AETHER_ECH                       --ech
@@ -537,6 +551,15 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--masque" => set("AETHER_PROTOCOL", "masque"),
             "--wg" | "--wireguard" | "--warp" => set("AETHER_PROTOCOL", "wg"),
             "--gool" | "--wiw" => set("AETHER_PROTOCOL", "gool"),
+            "--gool-peer" => {
+                set("AETHER_PROTOCOL", "gool");
+                set("AETHER_GOOL_INNER", next_value!())
+            }
+            "--api-fragment" => set("AETHER_API_FRAGMENT", "1"),
+            "--gool-classic" => {
+                set("AETHER_PROTOCOL", "gool");
+                set("AETHER_GOOL_MODE", "classic")
+            }
             "--mim" | "--masque-in-masque" => set("AETHER_PROTOCOL", "mim"),
             "--mim-outer" => set("AETHER_MIM_OUTER_PEER", next_value!()),
             "--mim-inner" => set("AETHER_MIM_INNER_PEER", next_value!()),
@@ -577,6 +600,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             }
             "--dns" => set("AETHER_DNS", next_value!()),
             "--fragment" => set("AETHER_MASQUE_H2_FRAGMENT", "1"),
+            "--no-fragment" => set("AETHER_MASQUE_H2_FRAGMENT", "0"),
             "--fragment-size" => set("AETHER_MASQUE_H2_FRAGMENT_SIZE", next_value!()),
             "--fragment-delay" => set("AETHER_MASQUE_H2_FRAGMENT_DELAY", next_value!()),
 
@@ -603,6 +627,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
             "--tls-ciphers" => set("AETHER_TLS_CIPHERS", next_value!()),
             "--disable-grease" => set("AETHER_DISABLE_GREASE", "1"),
+            "--tls-verify" => set("AETHER_TLS_VERIFY", "1"),
             "--perf" => set("AETHER_PERF_PROFILE", next_value!()),
             "--log-level" => set("AETHER_LOG_LEVEL", next_value!()),
             "--verbose" => set("AETHER_LOG_LEVEL", "debug"),
