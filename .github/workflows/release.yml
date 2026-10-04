@@ -523,7 +523,16 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
-        run: cargo ndk -t ${{ matrix.abi }}  --platform 24 build --release --features tor
+        run: |
+          under=$(echo "${{ matrix.target }}" | tr '-' '_')
+          export "BORING_BSSL_RUST_CPPLIB_${under}=static:-bundle=c++"
+          cargo ndk -t ${{ matrix.abi }} --platform 24 build --release --features tor
+          bin="target/${{ matrix.target }}/release/aether"
+          needed=$(readelf -d "$bin" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+          echo "[android ${{ matrix.abi }}] aether NEEDED: $needed"
+          if grep -qx 'libc++_shared.so' <<<"$needed"; then
+            echo "ERROR: aether still needs libc++_shared.so (static libc++ link failed)"; exit 1
+          fi
 
       - name: Package archive
         run: |
