@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +23,7 @@ const REP_GENERAL: u8 = 0x01;
 const REP_NOT_ALLOWED: u8 = 0x02;
 const REP_NOT_SUPPORTED: u8 = 0x07;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Target {
     Ip(IpAddr),
     Domain(String),
@@ -421,9 +421,32 @@ async fn resolve(stack: &StackHandle, target: Target) -> Result<IpAddr> {
 pub(crate) async fn dns_resolve(stack: &StackHandle, name: &str) -> Result<IpAddr> {
     let udp = stack.open_udp().await?;
     let (sender, mut from_stack) = udp.into_split();
-    let outcome = dns_exchange(&sender, &mut from_stack, name).await;
+    let outcome = resolve_preferring_v4(&sender, &mut from_stack, name).await;
     sender.close().await;
     outcome
+}
+
+async fn resolve_preferring_v4(
+    sender: &UdpSender,
+    from_stack: &mut mpsc::Receiver<(SocketAddr, Vec<u8>)>,
+    name: &str,
+) -> Result<IpAddr> {
+    match dns_exchange(sender, from_stack, name, QTYPE_A).await? {
+        DnsAnswer::Found(ip) => Ok(ip),
+        DnsAnswer::NoSuchName => Err(AetherError::Other(format!("{name} does not exist"))),
+        DnsAnswer::NoRecord => match dns_exchange(sender, from_stack, name, QTYPE_AAAA).await? {
+            DnsAnswer::Found(ip) => Ok(ip),
+            _ => Err(AetherError::Other(format!(
+                "no A or AAAA record for {name}"
+            ))),
+        },
+    }
+}
+
+enum DnsAnswer {
+    Found(IpAddr),
+    NoRecord,
+    NoSuchName,
 }
 
 pub(crate) fn resolver_addresses() -> Vec<SocketAddr> {
@@ -459,11 +482,12 @@ async fn dns_exchange(
     sender: &UdpSender,
     from_stack: &mut mpsc::Receiver<(SocketAddr, Vec<u8>)>,
     name: &str,
-) -> Result<IpAddr> {
+    qtype: u16,
+) -> Result<DnsAnswer> {
     let mut last = AetherError::Other("dns timeout".into());
 
     for server in resolver_addresses() {
-        let (query, id) = build_dns_query(name, QTYPE_A);
+        let (query, id) = build_dns_query(name, qtype);
         if let Err(error) = sender.send_to(server, query).await {
             last = error;
             continue;
@@ -481,13 +505,16 @@ async fn dns_exchange(
                 }
             };
 
-            if !dns_response_matches(&resp.1, id, name, QTYPE_A) {
+            if !dns_response_matches(&resp.1, id, name, qtype) {
                 continue;
             }
-            if let Some(ip) = parse_dns_a(&resp.1) {
-                return Ok(ip);
+            if let Some(ip) = parse_dns_answer(&resp.1, qtype) {
+                return Ok(DnsAnswer::Found(ip));
             }
-            return Err(AetherError::Other(format!("no A record for {name}")));
+            if dns_rcode(&resp.1) == Some(RCODE_NXDOMAIN) {
+                return Ok(DnsAnswer::NoSuchName);
+            }
+            return Ok(DnsAnswer::NoRecord);
         }
     }
 
@@ -495,6 +522,12 @@ async fn dns_exchange(
 }
 
 const QTYPE_A: u16 = 1;
+const QTYPE_AAAA: u16 = 28;
+const RCODE_NXDOMAIN: u8 = 3;
+
+fn dns_rcode(resp: &[u8]) -> Option<u8> {
+    resp.get(3).map(|flags| flags & 0x0f)
+}
 
 fn build_dns_query(name: &str, qtype: u16) -> (Vec<u8>, u16) {
     let mut q = Vec::with_capacity(32 + name.len());
@@ -566,7 +599,7 @@ pub(crate) fn dns_response_matches(
     u16::from_be_bytes([resp[pos], resp[pos + 1]]) == expected_qtype
 }
 
-fn parse_dns_a(resp: &[u8]) -> Option<IpAddr> {
+fn parse_dns_answer(resp: &[u8], qtype: u16) -> Option<IpAddr> {
     if resp.len() < 12 {
         return None;
     }
@@ -590,13 +623,18 @@ fn parse_dns_a(resp: &[u8]) -> Option<IpAddr> {
         if pos + rdlen > resp.len() {
             return None;
         }
-        if rtype == 1 && rdlen == 4 {
+        if rtype == qtype && qtype == QTYPE_A && rdlen == 4 {
             return Some(IpAddr::V4(Ipv4Addr::new(
                 resp[pos],
                 resp[pos + 1],
                 resp[pos + 2],
                 resp[pos + 3],
             )));
+        }
+        if rtype == qtype && qtype == QTYPE_AAAA && rdlen == 16 {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&resp[pos..pos + 16]);
+            return Some(IpAddr::V6(Ipv6Addr::from(octets)));
         }
         pos += rdlen;
     }
@@ -1972,6 +2010,202 @@ mod tests {
                 QTYPE_A
             ));
         }
+    }
+
+    const V6_ONLY: &str = "2001:470:1:18::125";
+
+    fn answer(id: u16, name: &str, qtype: u16, rcode: u8, records: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&id.to_be_bytes());
+        msg.push(0x81);
+        msg.push(0x80 | rcode);
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&(records.len() as u16).to_be_bytes());
+        msg.extend_from_slice(&[0, 0, 0, 0]);
+        for label in name.split('.') {
+            msg.push(label.len() as u8);
+            msg.extend_from_slice(label.as_bytes());
+        }
+        msg.push(0);
+        msg.extend_from_slice(&qtype.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        for (rtype, data) in records {
+            msg.extend_from_slice(&[0xc0, 0x0c]);
+            msg.extend_from_slice(&rtype.to_be_bytes());
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            msg.extend_from_slice(&300u32.to_be_bytes());
+            msg.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            msg.extend_from_slice(data);
+        }
+        msg
+    }
+
+    #[test]
+    fn an_aaaa_answer_is_read_for_an_aaaa_question() {
+        let v6: Ipv6Addr = V6_ONLY.parse().unwrap();
+        let msg = answer(
+            1,
+            "ip6only.me",
+            QTYPE_AAAA,
+            0,
+            &[(QTYPE_AAAA, v6.octets().to_vec())],
+        );
+        assert_eq!(parse_dns_answer(&msg, QTYPE_AAAA), Some(IpAddr::V6(v6)));
+        assert_eq!(parse_dns_answer(&msg, QTYPE_A), None);
+    }
+
+    #[test]
+    fn an_alias_ahead_of_the_address_is_skipped() {
+        let v6: Ipv6Addr = V6_ONLY.parse().unwrap();
+        let alias = vec![3, b'w', b'w', b'w', 0xc0, 0x0c];
+        let msg = answer(
+            1,
+            "ip6only.me",
+            QTYPE_AAAA,
+            0,
+            &[(5, alias), (QTYPE_AAAA, v6.octets().to_vec())],
+        );
+        assert_eq!(parse_dns_answer(&msg, QTYPE_AAAA), Some(IpAddr::V6(v6)));
+    }
+
+    #[test]
+    fn a_name_that_does_not_exist_is_told_apart_from_a_missing_record() {
+        let gone = answer(1, "nothing.example", QTYPE_A, RCODE_NXDOMAIN, &[]);
+        let empty = answer(1, "ip6only.me", QTYPE_A, 0, &[]);
+        assert_eq!(dns_rcode(&gone), Some(RCODE_NXDOMAIN));
+        assert_eq!(dns_rcode(&empty), Some(0));
+        assert_eq!(parse_dns_answer(&empty, QTYPE_A), None);
+    }
+
+    async fn fake_resolver(
+        mut from_stack: mpsc::Receiver<Vec<u8>>,
+        to_stack: mpsc::Sender<Vec<u8>>,
+        asked: std::sync::Arc<std::sync::Mutex<Vec<(String, u16)>>>,
+    ) {
+        use smoltcp::phy::ChecksumCapabilities;
+        use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, Ipv4Repr, UdpPacket, UdpRepr};
+
+        let caps = ChecksumCapabilities::default();
+        while let Some(pkt) = from_stack.recv().await {
+            let Ok(ip) = Ipv4Packet::new_checked(&pkt[..]) else {
+                continue;
+            };
+            let Ok(ip_repr) = Ipv4Repr::parse(&ip, &caps) else {
+                continue;
+            };
+            if ip_repr.next_header != IpProtocol::Udp {
+                continue;
+            }
+            let src = IpAddress::Ipv4(ip_repr.src_addr);
+            let dst = IpAddress::Ipv4(ip_repr.dst_addr);
+            let Ok(udp) = UdpPacket::new_checked(ip.payload()) else {
+                continue;
+            };
+            let Ok(udp_repr) = UdpRepr::parse(&udp, &src, &dst, &caps) else {
+                continue;
+            };
+
+            let query = udp.payload();
+            let mut pos = 12;
+            let mut labels = Vec::new();
+            while pos < query.len() && query[pos] != 0 {
+                let n = query[pos] as usize;
+                labels.push(String::from_utf8_lossy(&query[pos + 1..pos + 1 + n]).to_string());
+                pos += 1 + n;
+            }
+            let name = labels.join(".");
+            let qtype = u16::from_be_bytes([query[pos + 1], query[pos + 2]]);
+            let id = u16::from_be_bytes([query[0], query[1]]);
+            asked.lock().unwrap().push((name.clone(), qtype));
+
+            let v6: Ipv6Addr = V6_ONLY.parse().unwrap();
+            let dual_v6: Ipv6Addr = "2606:2800:220:1::1".parse().unwrap();
+            let reply = match (name.as_str(), qtype) {
+                ("dualstack.example", QTYPE_A) => {
+                    answer(id, &name, qtype, 0, &[(QTYPE_A, vec![93, 184, 216, 34])])
+                }
+                ("dualstack.example", QTYPE_AAAA) => answer(
+                    id,
+                    &name,
+                    qtype,
+                    0,
+                    &[(QTYPE_AAAA, dual_v6.octets().to_vec())],
+                ),
+                ("ip6only.me", QTYPE_AAAA) => {
+                    answer(id, &name, qtype, 0, &[(QTYPE_AAAA, v6.octets().to_vec())])
+                }
+                ("ip6only.me", _) => answer(id, &name, qtype, 0, &[]),
+                _ => answer(id, &name, qtype, RCODE_NXDOMAIN, &[]),
+            };
+
+            let out_udp = UdpRepr {
+                src_port: 53,
+                dst_port: udp_repr.src_port,
+            };
+            let out_ip = Ipv4Repr {
+                src_addr: ip_repr.dst_addr,
+                dst_addr: ip_repr.src_addr,
+                next_header: IpProtocol::Udp,
+                payload_len: 8 + reply.len(),
+                hop_limit: 64,
+            };
+            let mut buf = vec![0u8; out_ip.buffer_len() + out_ip.payload_len];
+            let mut packet = Ipv4Packet::new_unchecked(&mut buf[..]);
+            out_ip.emit(&mut packet, &caps);
+            let mut datagram = UdpPacket::new_unchecked(packet.payload_mut());
+            out_udp.emit(
+                &mut datagram,
+                &dst,
+                &src,
+                reply.len(),
+                |b| b.copy_from_slice(&reply),
+                &caps,
+            );
+            let _ = to_stack.send(buf).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_name_with_only_an_ipv6_address_resolves_through_the_tunnel() {
+        let (to_stack, stack_in) = mpsc::channel(64);
+        let (stack_out, from_stack) = mpsc::channel(64);
+        let stack = crate::netstack::spawn(
+            "172.16.0.2",
+            "2606:4700:110:8a36::1",
+            1280,
+            stack_in,
+            stack_out,
+        )
+        .unwrap();
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        tokio::spawn(fake_resolver(from_stack, to_stack, asked.clone()));
+
+        assert_eq!(
+            dns_resolve(&stack, "dualstack.example").await.unwrap(),
+            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))
+        );
+        assert_eq!(
+            resolve(&stack, Target::Domain("ip6only.me".into()))
+                .await
+                .unwrap(),
+            IpAddr::V6(V6_ONLY.parse().unwrap())
+        );
+        let missing = dns_resolve(&stack, "nothing.example")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("does not exist"), "{missing}");
+
+        let asked = asked.lock().unwrap().clone();
+        assert_eq!(
+            asked,
+            vec![
+                ("dualstack.example".to_string(), QTYPE_A),
+                ("ip6only.me".to_string(), QTYPE_A),
+                ("ip6only.me".to_string(), QTYPE_AAAA),
+                ("nothing.example".to_string(), QTYPE_A),
+            ]
+        );
     }
 }
 
