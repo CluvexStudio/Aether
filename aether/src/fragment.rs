@@ -36,7 +36,7 @@ impl FragmentConfig {
 
         let (size_min, size_max) = parse_range(
             &std::env::var("AETHER_MASQUE_H2_FRAGMENT_SIZE").unwrap_or_default(),
-            (16, 32),
+            (8, 16),
         );
         let (delay_min_ms, delay_max_ms) = parse_range(
             &std::env::var("AETHER_MASQUE_H2_FRAGMENT_DELAY").unwrap_or_default(),
@@ -48,7 +48,7 @@ impl FragmentConfig {
 
         let sni_split = std::env::var("AETHER_MASQUE_H2_FRAGMENT_SNI")
             .map(|v| is_truthy(&v))
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         Self {
             enabled,
