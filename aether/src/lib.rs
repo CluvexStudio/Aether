@@ -590,6 +590,7 @@ async fn run_gool(
         outer_peer = Some(peer);
         inner_peer = Some(inner_peer_now);
 
+        let started = Instant::now();
         match run_warp_in_warp(
             primary.clone(),
             secondary.clone(),
@@ -602,7 +603,7 @@ async fn run_gool(
             Ok(()) => log::warn!("[-] gool tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] gool tunnel ended: {e}; reconnecting"),
         }
-        consecutive_fails += 1;
+        consecutive_fails = count_tunnel_end(consecutive_fails, started.elapsed());
 
         tokio::time::sleep(wg_reconnect_delay()).await;
     }
@@ -1537,10 +1538,11 @@ async fn run_masque(
     }
 }
 
-/// How long a tunnel has to stay up for its end not to count against its MASQUE gateway or
-/// WireGuard endpoint: one that carried the traffic this long proves the gateway good, so its end,
-/// a network change say, clears the ends counted before it. Only tunnels that end sooner, one
-/// after another, make a run leave a gateway or an endpoint.
+/// How long a tunnel has to stay up for its end not to count against the MASQUE gateways or
+/// WireGuard endpoints it went through: one that carried the traffic this long proves them good,
+/// so its end, a network change say, clears the ends counted before it. Only tunnels that end
+/// sooner, one after another, make a run leave a gateway or an endpoint: the MASQUE run (gool over
+/// masque too), the WireGuard run, the classic gool run and the masque-in-masque run alike.
 const TUNNEL_STAYED_UP: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The ends in a row of the tunnels through one gateway or endpoint, `in_a_row` before, after one
@@ -2215,6 +2217,7 @@ async fn run_mim(
 
         outer_peer = Some(outer);
 
+        let started = Instant::now();
         match run_masque_in_masque(
             &primary,
             &secondary,
@@ -2228,7 +2231,7 @@ async fn run_mim(
             Ok(()) => log::warn!("[-] masque-in-masque tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] masque-in-masque tunnel ended: {e}; reconnecting"),
         }
-        consecutive_fails += 1;
+        consecutive_fails = count_tunnel_end(consecutive_fails, started.elapsed());
 
         tokio::time::sleep(masque_reconnect_delay()).await;
     }
@@ -3571,7 +3574,7 @@ mod tests {
 
     #[test]
     fn only_a_tunnel_that_ended_soon_counts_against_its_gateway_or_endpoint() {
-        // The WireGuard run counts its endpoint's ends with it too.
+        // The WireGuard, classic gool and masque-in-masque runs count their ends with it too.
         let almost = TUNNEL_STAYED_UP - std::time::Duration::from_secs(1);
         assert_eq!(count_tunnel_end(0, std::time::Duration::ZERO), 1);
         assert_eq!(count_tunnel_end(1, almost), 2);
