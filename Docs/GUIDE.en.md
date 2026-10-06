@@ -201,7 +201,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_MASQUE_HTTP2` (`--h2`, `--http2`) — if it is `1`/`true`/`h2`/`yes`/`on`, it uses h2. Otherwise h3.
 - `AETHER_MASQUE_H2_PEER` (`--h2-peer`) — manual override of the destination address for h2 mode.
 - `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — fragment the TLS ClientHello on h2. Off by default.
-- `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — fragment chunk size in bytes, `n` or `a-b`. Default `16-32`.
+- `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — fragment chunk size in bytes, `n` or `a-b`. Default `8-16`.
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — delay between fragments in ms, `n` or `a-b`. Default `2-10`.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — if set, a `:status 200` alone is enough; the end-to-end data-plane probe is skipped.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — seconds to wait for the data-plane probe to succeed before giving up on a gateway. Default `10`.

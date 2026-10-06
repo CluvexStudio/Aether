@@ -127,10 +127,11 @@ MASQUE transport:
   --reconnect-secs <n>     delay before reconnecting after a tunnel drop (default 2)
   --dns <list>             resolvers used inside the tunnel (default 1.1.1.1,1.0.0.1)
   --fragment               fragment the TLS ClientHello on the HTTP/2 transport
-                           (on by default; Iran's firewall resets a whole
-                           ClientHello whose SNI ends in cloudflareclient.com)
+                           (off by default; it helps where a firewall resets
+                           a whole ClientHello whose SNI ends in
+                           cloudflareclient.com, as Iran's does)
   --no-fragment            send the ClientHello in one piece on HTTP/2
-  --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
+  --fragment-size <n|a-b>  fragment chunk size in bytes (default 8-16)
   --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
 
 TLS:
@@ -389,7 +390,7 @@ Environment variables:
   AETHER_MASQUE_RECONNECT_SECS     --reconnect-secs, MASQUE side
   AETHER_WG_RECONNECT_SECS         --reconnect-secs, WireGuard side
   AETHER_DNS                       --dns
-  AETHER_MASQUE_H2_FRAGMENT        --fragment / --no-fragment (default on)
+  AETHER_MASQUE_H2_FRAGMENT        --fragment / --no-fragment (default off)
   AETHER_MASQUE_H2_FRAGMENT_SIZE   --fragment-size
   AETHER_MASQUE_H2_FRAGMENT_DELAY  --fragment-delay
   AETHER_ECH                       --ech

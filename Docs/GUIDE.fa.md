@@ -203,7 +203,7 @@ Reconnect to it now without rescanning? [Y/n]:
 - `AETHER_MASQUE_HTTP2` (`--h2`, `--http2`) — اگه `1`/`true`/`h2`/`yes`/`on` باشه، از h2 استفاده می‌کنه. وگرنه h3.
 - `AETHER_MASQUE_H2_PEER` (`--h2-peer`) — بازنویسی دستیِ آدرس مقصد برای حالت h2 (برای کاربرهای پیشرفته).
 - `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — فرگمنت کردن TLS ClientHello روی h2. پیش‌فرض خاموشه.
-- `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — اندازهٔ هر تکه به بایت، `n` یا `a-b`. پیش‌فرض `16-32`.
+- `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — اندازهٔ هر تکه به بایت، `n` یا `a-b`. پیش‌فرض `8-16`.
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — تأخیر بین تکه‌ها به میلی‌ثانیه، `n` یا `a-b`. پیش‌فرض `2-10`.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — اگه این رو بذاری، فقط `:status 200` کافیه؛ پروب end-to-end دیتاپلین انجام نمی‌شه.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — چند ثانیه صبر کنه تا پروب دیتاپلین موفق بشه قبل از اینکه از یه گیت‌وی صرف‌نظر کنه. پیش‌فرض `10`.
