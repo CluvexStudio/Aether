@@ -233,7 +233,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         Protocol::Masque => {
             select_masque_transport().await;
             let config_path = masque_config_path(&base_config);
-            let identity = load_or_provision_masque(&config_path, EnableWarp::Beside).await?;
+            let identity = load_or_provision_masque(&config_path).await?;
             log::info!(
                 "[+] identity ready: device={} ipv4={} ipv6={}",
                 identity.device_id,
@@ -261,7 +261,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         Protocol::WarpInWarp if !gool_classic() => {
             select_masque_transport().await;
             let config_path = masque_config_path(&base_config);
-            let identity = load_or_provision_masque(&config_path, EnableWarp::Beside).await?;
+            let identity = load_or_provision_masque(&config_path).await?;
             let inner_path = gool_identity_path(&config_path);
             log::info!(
                 "[+] gool: masque device={} carries the wireguard identity in {inner_path}",
@@ -289,8 +289,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             select_masque_transport().await;
             let primary_path = masque_config_path(&base_config);
             let secondary_path = derive_sibling_path(&primary_path, "secondary");
-            let primary = load_or_provision_masque(&primary_path, EnableWarp::Beside).await?;
-            let secondary = load_or_provision_masque(&secondary_path, EnableWarp::Beside).await?;
+            let primary = load_or_provision_masque(&primary_path).await?;
+            let secondary = load_or_provision_masque(&secondary_path).await?;
             log::info!(
                 "[+] outer device={} ipv4={} | inner device={} ipv4={}",
                 primary.device_id,
@@ -881,65 +881,24 @@ async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> 
     log::info!("[+] no warp identity found; provisioning dedicated wireguard account");
     let identity = provision_account().await?;
     let identity = adopt_team_profile(identity).await;
+    enable_warp_on(&identity).await?;
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new warp identity to {config_path}");
     Ok(identity)
 }
 
-/// When WARP is enabled on a MASQUE identity that does not have it yet: before the run goes on, as
-/// a registration has it, or beside the tunnel, which does not wait for an API that may be
-/// filtered where the tunnel gets through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EnableWarp {
-    Wait,
-    Beside,
+/// Enables WARP on a device just registered, as the WARP toggle of the app does. A new identity is
+/// saved only once this is done, and an identity file already there is never asked about again;
+/// a failure here fails the registration, and nothing is saved.
+async fn enable_warp_on(identity: &account::Identity) -> Result<()> {
+    account::enable_warp(&identity.device_id, &identity.access_token).await?;
+    log::info!("[+] warp enabled for device {}", identity.device_id);
+    Ok(())
 }
 
-async fn load_or_provision_masque(
-    config_path: &str,
-    enable: EnableWarp,
-) -> Result<account::Identity> {
-    let identity = load_or_enrol_masque(config_path).await?;
-    if !warp_still_to_enable(&identity) {
-        return Ok(identity);
-    }
-    let enabling = enable_masque_warp(
-        config_path.to_string(),
-        identity.device_id.clone(),
-        identity.access_token.clone(),
-    );
-    match enable {
-        EnableWarp::Wait => enabling.await,
-        EnableWarp::Beside => {
-            tokio::spawn(enabling);
-        }
-    }
-    Ok(identity)
-}
-
-/// Whether WARP is still to be enabled on a MASQUE identity: one the API refused is left alone, and
-/// one whose file records it enabled needs it no more.
-fn warp_still_to_enable(identity: &account::Identity) -> bool {
-    !identity.refused && !identity.warp_enabled
-}
-
-/// Enables WARP on the MASQUE device and, once the API has taken it, records that in its identity
-/// file at `path`, so the call is made once per identity rather than at every start.
-async fn enable_masque_warp(path: String, device_id: String, token: String) {
-    match account::enable_warp(&device_id, &token).await {
-        Ok(()) => {
-            log::info!("[+] warp enabled for the masque device");
-            if let Err(error) = config::save_warp_enabled(&path, &device_id) {
-                log::warn!("[!] warp is enabled for the masque device, but {path} does not say so: {error}");
-            }
-        }
-        Err(error) => log::warn!(
-            "[!] could not enable warp for the masque device, the edge may refuse it: {error}"
-        ),
-    }
-}
-
-async fn load_or_enrol_masque(config_path: &str) -> Result<account::Identity> {
+/// The MASQUE identity saved at `config_path`, used as it is, or a new one registered now and given
+/// its MASQUE key, saved once WARP is enabled on it, see [`enable_warp_on`].
+async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing masque identity from {config_path}");
         let refused = if identity.has_masque_credentials() {
@@ -989,6 +948,7 @@ async fn load_or_enrol_masque(config_path: &str) -> Result<account::Identity> {
         ..identity
     };
     let identity = adopt_team_profile(identity).await;
+    enable_warp_on(&identity).await?;
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new masque identity to {config_path}");
     Ok(identity)
@@ -1136,7 +1096,7 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
         }
         let identity = match provision {
             Provision::Warp => load_or_provision_warp(&path).await?,
-            Provision::Masque => load_or_provision_masque(&path, EnableWarp::Wait).await?,
+            Provision::Masque => load_or_provision_masque(&path).await?,
             Provision::Gool => load_or_provision_gool(&path).await?,
         };
         log::info!(
@@ -3053,24 +3013,35 @@ async fn load_or_provision_gool(path: &str) -> Result<account::Identity> {
 }
 
 /// Registers the wireguard identity gool carries inside its masque tunnel, enables WARP on it and
-/// saves it at `path`, recording whether WARP was enabled; a failure to enable it is a warning.
+/// saves it at `path` once both are done, see [`enable_warp_on`]. The tunnel tries again at each
+/// reconnect, so a device registered here whose enabling failed is kept for the next try of this
+/// run, which enables it rather than registering yet another, unless the API refused it.
 async fn provision_gool(path: &str) -> Result<account::Identity> {
-    let registered =
-        account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await?;
-    let warp_enabled =
-        match account::enable_warp(&registered.device_id, &registered.access_token).await {
-            Ok(()) => true,
-            Err(e) => {
-                log::warn!("[-] could not enable warp on the gool identity: {e}");
-                false
-            }
-        };
-    let identity = account::Identity {
-        warp_enabled,
-        ..registered
+    let kept = GOOL_NOT_ENABLED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let registered = match kept {
+        Some(identity) => identity,
+        None => account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await?,
     };
-    config::save(path, &identity)?;
-    Ok(identity)
+    if let Err(error) = enable_warp_on(&registered).await {
+        if worth_enabling_again(&error) {
+            *GOOL_NOT_ENABLED.lock().unwrap_or_else(|e| e.into_inner()) = Some(registered);
+        }
+        return Err(error);
+    }
+    config::save(path, &registered)?;
+    Ok(registered)
+}
+
+/// The gool device of this run that is registered but not enabled yet, see [`provision_gool`].
+static GOOL_NOT_ENABLED: std::sync::Mutex<Option<account::Identity>> = std::sync::Mutex::new(None);
+
+/// Whether a device whose WARP enabling ended in `error` is worth enabling again rather than
+/// registering anew: not when the API refused the device itself.
+fn worth_enabling_again(error: &AetherError) -> bool {
+    !matches!(error, AetherError::IdentityRefused(_))
 }
 
 const GOOL_INNER_ATTEMPTS: u32 = 2;
@@ -3508,19 +3479,13 @@ mod tests {
     }
 
     #[test]
-    fn warp_is_enabled_once_on_an_identity_and_never_on_a_refused_one() {
-        let fresh = account::handshake_identity();
-        assert!(warp_still_to_enable(&fresh));
-        let enabled = account::Identity {
-            warp_enabled: true,
-            ..account::handshake_identity()
-        };
-        assert!(!warp_still_to_enable(&enabled));
-        let refused = account::Identity {
-            refused: true,
-            ..account::handshake_identity()
-        };
-        assert!(!warp_still_to_enable(&refused));
+    fn a_gool_device_is_enabled_again_unless_the_api_refused_it() {
+        assert!(worth_enabling_again(&AetherError::Api(
+            "enabling warp: timed out".into()
+        )));
+        assert!(!worth_enabling_again(&AetherError::IdentityRefused(
+            "enabling warp: 401".into()
+        )));
     }
 
     #[test]

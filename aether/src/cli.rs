@@ -297,7 +297,8 @@ Config files:
                            identity gool carries inside it, registered from
                            here rather than from inside warp), gool-classic
                            (both wireguard hops), mim (both masque hops) or all
-                           five. An identity file already
+                           five. Each new identity is saved only once WARP is
+                           enabled on it. An identity file already
                            there is kept, never replaced; point the config paths
                            at new files to get new keys. With --tor-reverse or
                            --psiphon-reverse the registrations go through that

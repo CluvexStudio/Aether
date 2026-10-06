@@ -28,8 +28,6 @@ pub struct PersistedIdentity {
     pub gateway_proxy: String,
     #[serde(default)]
     pub assigned_endpoint: String,
-    #[serde(default)]
-    pub warp_enabled: bool,
 }
 
 impl From<&Identity> for PersistedIdentity {
@@ -49,7 +47,6 @@ impl From<&Identity> for PersistedIdentity {
             organization: id.organization.clone(),
             gateway_proxy: id.gateway_proxy.clone(),
             assigned_endpoint: id.assigned_endpoint.clone(),
-            warp_enabled: id.warp_enabled,
         }
     }
 }
@@ -101,7 +98,6 @@ impl TryFrom<PersistedIdentity> for Identity {
             gateway_proxy: p.gateway_proxy,
             assigned_endpoint: p.assigned_endpoint,
             refused: false,
-            warp_enabled: p.warp_enabled,
         })
     }
 }
@@ -240,29 +236,6 @@ pub fn save_masque_creds(
     write_private(path, &updated)
 }
 
-/// Records in the identity file at `path` that WARP is enabled on `device_id`, leaving the rest of
-/// the file as it is. A file that holds another device by now, or none at all, is left alone; true
-/// when the record is there.
-pub fn save_warp_enabled(path: &str, device_id: &str) -> Result<bool> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e.into()),
-    };
-    let mut persisted: PersistedIdentity =
-        toml::from_str(&text).map_err(|e| AetherError::Other(format!("config parse: {e}")))?;
-    if persisted.device_id != device_id {
-        return Ok(false);
-    }
-    if !persisted.warp_enabled {
-        persisted.warp_enabled = true;
-        let updated = toml::to_string_pretty(&persisted)
-            .map_err(|e| AetherError::Other(format!("config encode: {e}")))?;
-        write_private(path, &updated)?;
-    }
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,7 +268,6 @@ mod tests {
             gateway_proxy: "172.16.0.1:2480".to_string(),
             assigned_endpoint: "162.159.197.2".to_string(),
             refused: false,
-            warp_enabled: true,
         }
     }
 
@@ -316,59 +288,23 @@ mod tests {
         assert_eq!(loaded.wg_private_key, [7u8; 32]);
         assert_eq!(loaded.wg_peer_public_key, [9u8; 32]);
         assert_eq!(loaded.client_id, [1, 2, 3]);
-        assert!(loaded.warp_enabled);
-    }
-
-    fn warp_recorded(path: &str) -> bool {
-        load(path).expect("load").expect("identity").warp_enabled
     }
 
     #[test]
-    fn a_file_from_before_the_warp_record_reads_as_not_enabled() {
-        let dir = scratch("nowarprecord");
+    fn a_file_that_records_warp_as_an_earlier_build_did_still_loads() {
+        let dir = scratch("warprecord");
         let path = dir.join("aether.toml");
         let path_str = path.to_str().unwrap();
 
         let zeros = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         let body = format!(
             "device_id = \"d\"\naccess_token = \"t\"\nipv4 = \"172.16.0.2\"\nipv6 = \"::1\"\n\
-             wg_private_key = \"{zeros}\"\nwg_peer_public_key = \"{zeros}\"\n"
+             wg_private_key = \"{zeros}\"\nwg_peer_public_key = \"{zeros}\"\nwarp_enabled = true\n"
         );
         std::fs::write(&path, body).expect("write");
 
-        assert!(!warp_recorded(path_str));
-    }
-
-    #[test]
-    fn the_warp_record_is_added_to_the_file_of_its_device_alone() {
-        let dir = scratch("warprecord");
-        let path = dir.join("aether.toml");
-        let path_str = path.to_str().unwrap();
-        let unmarked = Identity {
-            warp_enabled: false,
-            ..sample()
-        };
-        save(path_str, &unmarked).expect("save");
-        assert!(!warp_recorded(path_str));
-
-        // A file holding another device by now is left as it is.
-        assert!(!save_warp_enabled(path_str, "device-2").expect("record"));
-        assert!(!warp_recorded(path_str));
-
-        assert!(save_warp_enabled(path_str, "device-1").expect("record"));
         let loaded = load(path_str).expect("load").expect("identity");
-        assert!(loaded.warp_enabled);
-        // The rest of the file is what it was.
-        assert_eq!(loaded.access_token, "token-1");
-        assert_eq!(loaded.cert_pem, sample().cert_pem);
-        assert_eq!(loaded.wg_private_key, [7u8; 32]);
-        // Once there, it stays, and asking again is no error.
-        assert!(save_warp_enabled(path_str, "device-1").expect("record"));
-
-        // And no file is made where there is none.
-        let absent = dir.join("absent.toml");
-        assert!(!save_warp_enabled(absent.to_str().unwrap(), "device-1").expect("record"));
-        assert!(!absent.exists());
+        assert_eq!(loaded.device_id, "d");
     }
 
     #[cfg(unix)]
