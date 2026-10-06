@@ -239,7 +239,7 @@ Reconnect to it now without rescanning? [Y/n]:
 - `AETHER_WIW_PEERS` (`--wiw-peers`) — هر دو هاپ gool کلاسیک توی یه مقدار، به شکل `بیرونی,داخلی`. بذارش `auto` (یا `--wiw-scan` بده) تا همیشه اسکن کنه و چیزی نپرسه.
 - `AETHER_CONFIG` (`--config`) — مسیر فایل کانفیگ پایه. پیش‌فرض `aether.toml`.
 - `AETHER_WG_CONFIG` و `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — مسیر فایل کانفیگ مخصوص هر پروتکل.
-- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — مدت حذف موقت نقطه‌ای که دو بار پشت‌سرهم شکست خورده از اسکن‌ها. پیش‌فرض `300`.
+- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — مدت حذف موقت نقطه‌ای از اسکن‌ها که تونلش دو بار پشت‌سرهم، هر بار کمتر از پنج دقیقه بعد از وصل شدن، قطع شده؛ تونلی که بیشتر سرپا مونده حساب نمی‌شه. پیش‌فرض `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — بازنویسی گروه‌های TLS key-share که توی دست‌دادن اعلام می‌شن. پیش‌فرض شبیه کروم هست (`P-256:X25519:P-384`).
 
 ## مثال‌های عملی

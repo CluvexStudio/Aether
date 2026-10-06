@@ -237,7 +237,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_WIW_PEERS` (`--wiw-peers`) — both hops of the classic gool in one value, `outer,inner`. Set it to `auto` (or pass `--wiw-scan`) to always scan and never be asked.
 - `AETHER_CONFIG` (`--config`) — the path of the base config file. Default `aether.toml`.
 - `AETHER_WG_CONFIG` and `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — the config path specific to each protocol.
-- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — how long an endpoint that fails twice is excluded from rescans. Default `300`.
+- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — how long an endpoint is excluded from rescans once its tunnel ended twice in a row, each time within five minutes of starting; a tunnel that stayed up longer does not count. Default `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — override the TLS key-share groups advertised in the handshake. Default mimics Chrome (`P-256:X25519:P-384`).
 
 ## Practical examples

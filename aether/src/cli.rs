@@ -430,8 +430,9 @@ Environment variables:
                                    which is what makes routing rules work behind
                                    a tun front end)
   AETHER_ROUTE_SNIFF_MS            how long to wait for those bytes (default 400)
-  AETHER_WG_ENDPOINT_COOLDOWN_SECS how long an endpoint that failed twice is left
-                                   out of rescans (default 300)
+  AETHER_WG_ENDPOINT_COOLDOWN_SECS how long an endpoint is left out of rescans once
+                                   its tunnel ended twice in a row, each time within
+                                   five minutes of starting (default 300)
   AETHER_WG_STALE_SECS             silence on a wireguard tunnel before it counts
                                    as dead (default 10)
   AETHER_MASQUE_H2_KEEPALIVE_SECS  HTTP/2 keepalive interval (default 15)

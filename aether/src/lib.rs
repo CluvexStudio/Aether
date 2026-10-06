@@ -1522,11 +1522,12 @@ async fn run_masque(
         last_good_peer = Some(peer);
         strikes.using(peer);
 
+        let started = Instant::now();
         let ended = match &gool_inner {
             Some(path) => run_gool_tunnel(&identity, peer, tls::session_ech(), listen, path).await,
             None => run_masque_tunnel(&identity, peer, tls::session_ech(), listen).await,
         };
-        strikes.ended();
+        strikes.ended(started.elapsed());
         match ended {
             Ok(()) => log::warn!("[-] MASQUE tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] MASQUE tunnel ended: {e}; reconnecting"),
@@ -1536,8 +1537,24 @@ async fn run_masque(
     }
 }
 
-/// How many times in a row the tunnel through a MASQUE gateway may end before the run leaves the
-/// gateway, as the WireGuard run leaves an endpoint.
+/// How long a tunnel has to stay up for its end not to count against its MASQUE gateway or
+/// WireGuard endpoint: one that carried the traffic this long proves the gateway good, so its end,
+/// a network change say, clears the ends counted before it. Only tunnels that end sooner, one
+/// after another, make a run leave a gateway or an endpoint.
+const TUNNEL_STAYED_UP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The ends in a row of the tunnels through one gateway or endpoint, `in_a_row` before, after one
+/// more that `lasted` this long: one more, or none once that tunnel stayed up [`TUNNEL_STAYED_UP`].
+fn count_tunnel_end(in_a_row: u32, lasted: std::time::Duration) -> u32 {
+    if lasted >= TUNNEL_STAYED_UP {
+        0
+    } else {
+        in_a_row.saturating_add(1)
+    }
+}
+
+/// How many times in a row the tunnel through a MASQUE gateway may end, each time sooner than
+/// [`TUNNEL_STAYED_UP`], before the run leaves the gateway, as the WireGuard run leaves an endpoint.
 const MASQUE_GATEWAY_STRIKES: u32 = 2;
 
 /// How long a MASQUE gateway the run left stays out of its scans: as long as a WireGuard endpoint
@@ -1545,9 +1562,10 @@ const MASQUE_GATEWAY_STRIKES: u32 = 2;
 const MASQUE_GATEWAY_REST: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The gateways that failed a MASQUE run: the one in use, how many times in a row its tunnel
-/// ended, and those left out of the scans until a while has passed. The check before a reconnect
-/// only proves that a gateway answers, so a tunnel that ends every time, as it does on an exit the
-/// exit rule refuses, would otherwise hold the run on one gateway for good.
+/// ended soon after it started, and those left out of the scans until a while has passed. The
+/// check before a reconnect only proves that a gateway answers, so a tunnel that ends every time,
+/// as it does on an exit the exit rule refuses, would otherwise hold the run on one gateway for
+/// good.
 #[derive(Debug, Default)]
 struct GatewayStrikes {
     current: Option<SocketAddr>,
@@ -1564,9 +1582,10 @@ impl GatewayStrikes {
         }
     }
 
-    /// The tunnel through the gateway in use ended, for whatever reason.
-    fn ended(&mut self) {
-        self.in_a_row = self.in_a_row.saturating_add(1);
+    /// The tunnel through the gateway in use ended, for whatever reason, after it `lasted` this
+    /// long, see [`count_tunnel_end`].
+    fn ended(&mut self, lasted: std::time::Duration) {
+        self.in_a_row = count_tunnel_end(self.in_a_row, lasted);
     }
 
     /// The gateway in use, once its tunnel ended `MASQUE_GATEWAY_STRIKES` times in a row: its
@@ -2568,16 +2587,12 @@ async fn run_wireguard(
         }
         last_good = Some((peer, profile.clone(), profile_name));
 
+        let started = Instant::now();
         match run_wireguard_tunnel(identity.clone(), peer, profile, listen).await {
-            Ok(()) => {
-                log::warn!("[-] WireGuard tunnel closed; reconnecting");
-                consecutive_fails_on_peer += 1;
-            }
-            Err(e) => {
-                log::warn!("[-] WireGuard tunnel ended: {e}; reconnecting");
-                consecutive_fails_on_peer += 1;
-            }
+            Ok(()) => log::warn!("[-] WireGuard tunnel closed; reconnecting"),
+            Err(e) => log::warn!("[-] WireGuard tunnel ended: {e}; reconnecting"),
         }
+        consecutive_fails_on_peer = count_tunnel_end(consecutive_fails_on_peer, started.elapsed());
 
         tokio::time::sleep(wg_reconnect_delay()).await;
     }
@@ -3484,6 +3499,9 @@ mod tests {
         )));
     }
 
+    /// How long a tunnel lasted that ended soon after it started.
+    const SOON: std::time::Duration = std::time::Duration::from_secs(10);
+
     #[test]
     fn a_masque_gateway_is_left_once_its_tunnel_ended_twice_in_a_row() {
         let gateway: SocketAddr = "162.159.198.1:443".parse().unwrap();
@@ -3492,11 +3510,11 @@ mod tests {
         let mut strikes = GatewayStrikes::default();
 
         strikes.using(gateway);
-        strikes.ended();
+        strikes.ended(SOON);
         assert_eq!(strikes.give_up(now, rest), None);
         // The reconnect goes back to it, and it ends again.
         strikes.using(gateway);
-        strikes.ended();
+        strikes.ended(SOON);
         assert_eq!(strikes.give_up(now, rest), Some(gateway));
         // Out of the scans on any port until it has rested; the count starts over.
         assert!(strikes.left_out(now).contains(&gateway.ip()));
@@ -3513,14 +3531,53 @@ mod tests {
         let mut strikes = GatewayStrikes::default();
 
         strikes.using(first);
-        strikes.ended();
+        strikes.ended(SOON);
         strikes.using(second);
-        strikes.ended();
+        strikes.ended(SOON);
         assert_eq!(strikes.give_up(now, rest), None);
         assert!(strikes.left_out(now).is_empty());
         // A tunnel that has not ended yet counts for nothing either.
         strikes.using(second);
         assert_eq!(strikes.give_up(now, rest), None);
+    }
+
+    #[test]
+    fn a_tunnel_that_stayed_up_clears_the_ends_before_it() {
+        let gateway: SocketAddr = "162.159.198.1:443".parse().unwrap();
+        let now = Instant::now();
+        let rest = std::time::Duration::from_secs(300);
+        let mut strikes = GatewayStrikes::default();
+
+        // Hours on the gateway, a network change, hours again, another one: it is not left.
+        strikes.using(gateway);
+        strikes.ended(TUNNEL_STAYED_UP * 36);
+        strikes.using(gateway);
+        strikes.ended(TUNNEL_STAYED_UP * 24);
+        assert_eq!(strikes.give_up(now, rest), None);
+        // One that ends soon, then one that stays up: still not.
+        strikes.using(gateway);
+        strikes.ended(SOON);
+        strikes.using(gateway);
+        strikes.ended(TUNNEL_STAYED_UP);
+        assert_eq!(strikes.give_up(now, rest), None);
+        // Two that end soon, one after the other, are what leaves it.
+        strikes.using(gateway);
+        strikes.ended(SOON);
+        assert_eq!(strikes.give_up(now, rest), None);
+        strikes.using(gateway);
+        strikes.ended(SOON);
+        assert_eq!(strikes.give_up(now, rest), Some(gateway));
+    }
+
+    #[test]
+    fn only_a_tunnel_that_ended_soon_counts_against_its_gateway_or_endpoint() {
+        // The WireGuard run counts its endpoint's ends with it too.
+        let almost = TUNNEL_STAYED_UP - std::time::Duration::from_secs(1);
+        assert_eq!(count_tunnel_end(0, std::time::Duration::ZERO), 1);
+        assert_eq!(count_tunnel_end(1, almost), 2);
+        assert_eq!(count_tunnel_end(1, TUNNEL_STAYED_UP), 0);
+        assert_eq!(count_tunnel_end(7, TUNNEL_STAYED_UP * 2), 0);
+        assert_eq!(count_tunnel_end(u32::MAX, SOON), u32::MAX);
     }
 
     #[test]
