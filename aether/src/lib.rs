@@ -1293,6 +1293,7 @@ async fn hunt_masque_peer(
     identity: &account::Identity,
     mode_str: &str,
     ip: prober::IpScan,
+    avoid: &HashSet<IpAddr>,
 ) -> Result<SocketAddr> {
     log::info!(
         "[*] hunting for a working MASQUE gateway (deep connect-ip + data-plane verification)"
@@ -1311,7 +1312,7 @@ async fn hunt_masque_peer(
         local_ipv4: parse_local_v4(&identity.ipv4),
     };
 
-    let best = prober::hunt_best_gateway(&probe, mode).await?;
+    let best = prober::hunt_best_gateway_avoiding(&probe, mode, avoid).await?;
     log::info!(
         "[+] selected MASQUE gateway {}:{} (rtt {:?})",
         best.ip,
@@ -1447,8 +1448,20 @@ async fn run_masque(
     };
 
     let mut last_good_peer: Option<SocketAddr> = None;
+    let mut strikes = GatewayStrikes::default();
 
     loop {
+        // A gateway named by hand stays, whatever happens to it: it was asked for on purpose.
+        if forced.is_none() {
+            if let Some(peer) = strikes.give_up(Instant::now(), MASQUE_GATEWAY_REST) {
+                log::warn!(
+                    "[-] gateway {peer} failed {MASQUE_GATEWAY_STRIKES} times in a row; leaving it out of the scans for {:?}",
+                    MASQUE_GATEWAY_REST
+                );
+                last_good_peer = None;
+            }
+        }
+
         let peer = if let Some(p) = quick_peer.take() {
             p
         } else {
@@ -1477,7 +1490,14 @@ async fn run_masque(
                         }
                         Err(_) => return Err(AetherError::Other(format!("bad peer address {p}"))),
                     },
-                    None => match hunt_masque_peer(&identity, &mode_str, ip).await {
+                    None => match hunt_masque_peer(
+                        &identity,
+                        &mode_str,
+                        ip,
+                        &strikes.left_out(Instant::now()),
+                    )
+                    .await
+                    {
                         Ok(peer) => peer,
                         Err(e) => {
                             log::warn!(
@@ -1504,17 +1524,71 @@ async fn run_masque(
         }
 
         last_good_peer = Some(peer);
+        strikes.using(peer);
 
         let ended = match &gool_inner {
             Some(path) => run_gool_tunnel(&identity, peer, tls::session_ech(), listen, path).await,
             None => run_masque_tunnel(&identity, peer, tls::session_ech(), listen).await,
         };
+        strikes.ended();
         match ended {
             Ok(()) => log::warn!("[-] MASQUE tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] MASQUE tunnel ended: {e}; reconnecting"),
         }
 
         tokio::time::sleep(masque_reconnect_delay()).await;
+    }
+}
+
+/// How many times in a row the tunnel through a MASQUE gateway may end before the run leaves the
+/// gateway, as the WireGuard run leaves an endpoint.
+const MASQUE_GATEWAY_STRIKES: u32 = 2;
+
+/// How long a MASQUE gateway the run left stays out of its scans: as long as a WireGuard endpoint
+/// by default (`wg_endpoint_cooldown`).
+const MASQUE_GATEWAY_REST: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The gateways that failed a MASQUE run: the one in use, how many times in a row its tunnel
+/// ended, and those left out of the scans until a while has passed. The check before a reconnect
+/// only proves that a gateway answers, so a tunnel that ends every time, as it does on an exit the
+/// exit rule refuses, would otherwise hold the run on one gateway for good.
+#[derive(Debug, Default)]
+struct GatewayStrikes {
+    current: Option<SocketAddr>,
+    in_a_row: u32,
+    resting: HashMap<IpAddr, Instant>,
+}
+
+impl GatewayStrikes {
+    /// The tunnel goes through `peer` now; another gateway than the last starts with none.
+    fn using(&mut self, peer: SocketAddr) {
+        if self.current != Some(peer) {
+            self.current = Some(peer);
+            self.in_a_row = 0;
+        }
+    }
+
+    /// The tunnel through the gateway in use ended, for whatever reason.
+    fn ended(&mut self) {
+        self.in_a_row = self.in_a_row.saturating_add(1);
+    }
+
+    /// The gateway in use, once its tunnel ended `MASQUE_GATEWAY_STRIKES` times in a row: its
+    /// address rests until `rest` after `now`, out of the scans, and the count starts over.
+    fn give_up(&mut self, now: Instant, rest: std::time::Duration) -> Option<SocketAddr> {
+        if self.in_a_row < MASQUE_GATEWAY_STRIKES {
+            return None;
+        }
+        self.in_a_row = 0;
+        let peer = self.current.take()?;
+        self.resting.insert(peer.ip(), now + rest);
+        Some(peer)
+    }
+
+    /// The addresses the scans leave out at `now`.
+    fn left_out(&mut self, now: Instant) -> HashSet<IpAddr> {
+        self.resting.retain(|_, until| *until > now);
+        self.resting.keys().copied().collect()
     }
 }
 
@@ -2098,7 +2172,7 @@ async fn run_mim(
                     }
                 };
 
-                match hunt_masque_peer(&primary, &mode_str, ip).await {
+                match hunt_masque_peer(&primary, &mode_str, ip, &HashSet::new()).await {
                     Ok(peer) => peer,
                     Err(e) => {
                         log::warn!("[-] no usable MASQUE gateway found: {e}; rescanning shortly");
@@ -3384,6 +3458,45 @@ mod tests {
             ..account::handshake_identity()
         };
         assert!(!warp_still_to_enable(&refused));
+    }
+
+    #[test]
+    fn a_masque_gateway_is_left_once_its_tunnel_ended_twice_in_a_row() {
+        let gateway: SocketAddr = "162.159.198.1:443".parse().unwrap();
+        let now = Instant::now();
+        let rest = std::time::Duration::from_secs(300);
+        let mut strikes = GatewayStrikes::default();
+
+        strikes.using(gateway);
+        strikes.ended();
+        assert_eq!(strikes.give_up(now, rest), None);
+        // The reconnect goes back to it, and it ends again.
+        strikes.using(gateway);
+        strikes.ended();
+        assert_eq!(strikes.give_up(now, rest), Some(gateway));
+        // Out of the scans on any port until it has rested; the count starts over.
+        assert!(strikes.left_out(now).contains(&gateway.ip()));
+        assert_eq!(strikes.give_up(now, rest), None);
+        assert!(strikes.left_out(now + rest).is_empty());
+    }
+
+    #[test]
+    fn another_masque_gateway_starts_with_no_strikes() {
+        let first: SocketAddr = "162.159.198.1:443".parse().unwrap();
+        let second: SocketAddr = "162.159.198.2:443".parse().unwrap();
+        let now = Instant::now();
+        let rest = std::time::Duration::from_secs(300);
+        let mut strikes = GatewayStrikes::default();
+
+        strikes.using(first);
+        strikes.ended();
+        strikes.using(second);
+        strikes.ended();
+        assert_eq!(strikes.give_up(now, rest), None);
+        assert!(strikes.left_out(now).is_empty());
+        // A tunnel that has not ended yet counts for nothing either.
+        strikes.using(second);
+        assert_eq!(strikes.give_up(now, rest), None);
     }
 
     #[test]

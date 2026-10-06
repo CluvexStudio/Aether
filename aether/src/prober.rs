@@ -264,6 +264,16 @@ pub async fn host_has_ipv6() -> bool {
 }
 
 pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<ProbeResult> {
+    hunt_best_gateway_avoiding(probe, mode, &HashSet::new()).await
+}
+
+/// `hunt_best_gateway`, leaving out the addresses in `avoid` on every port: gateways a run gave
+/// up on for a while.
+pub async fn hunt_best_gateway_avoiding(
+    probe: &MasqueProbe,
+    mode: ScanMode,
+    avoid: &HashSet<IpAddr>,
+) -> Result<ProbeResult> {
     let mut st = mode.strategy();
     st.concurrency = crate::sysprofile::cap_concurrency(st.concurrency);
     let timeout = st.per_probe_timeout;
@@ -277,7 +287,13 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
             return Err(AetherError::NoCleanEndpoint);
         }
     }
-    let candidates = build_candidates(&st, &probe.ports, effective_ip);
+    let candidates = leave_out(build_candidates(&st, &probe.ports, effective_ip), avoid);
+    if !avoid.is_empty() {
+        log::info!(
+            "[*] leaving {} gateway(s) out of this scan for now",
+            avoid.len()
+        );
+    }
 
     log::info!(
         "[*] scan mode={} ip={} candidates={} ports={:?} concurrency={} per_probe={:?} budget={:?}",
@@ -373,6 +389,14 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
         }
         None => Err(AetherError::NoCleanEndpoint),
     }
+}
+
+/// `candidates` without the addresses in `avoid`, whatever their port.
+fn leave_out(candidates: Vec<(IpAddr, u16)>, avoid: &HashSet<IpAddr>) -> Vec<(IpAddr, u16)> {
+    candidates
+        .into_iter()
+        .filter(|(ip, _)| !avoid.contains(ip))
+        .collect()
 }
 
 async fn verify_one(
@@ -645,6 +669,21 @@ fn sample_cidr_v6(cidr: &str, n: usize, v4_cidrs: &[&str]) -> Vec<Ipv6Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gateway_left_out_is_probed_on_no_port() {
+        let left: IpAddr = "162.159.198.1".parse().unwrap();
+        let other: IpAddr = "162.159.198.2".parse().unwrap();
+        let avoid: HashSet<IpAddr> = [left].into_iter().collect();
+        assert_eq!(
+            leave_out(vec![(left, 443), (other, 443), (left, 4500)], &avoid),
+            vec![(other, 443)]
+        );
+        assert_eq!(
+            leave_out(vec![(left, 443)], &HashSet::new()),
+            vec![(left, 443)]
+        );
+    }
 
     #[test]
     fn the_documented_zero_trust_masque_ingress_range_is_scanned() {
