@@ -60,13 +60,17 @@ share the tunnel with your network; nothing authenticates the callers.
 | --- | --- | --- |
 | MASQUE | `--masque` (default) | QUIC/HTTP-3 on UDP 443, or HTTP/2 on TCP 443 |
 | WireGuard | `--wg` | WireGuard on UDP 2408 and documented fallbacks |
-| WARP-in-WARP | `--gool` | a WireGuard tunnel inside another one |
+| WireGuard over MASQUE (gool) | `--gool` | a WireGuard tunnel inside a MASQUE one |
+| WARP-in-WARP (classic gool) | `--gool-classic` | a WireGuard tunnel inside another one |
 | MASQUE-in-MASQUE | `--mim` | a MASQUE tunnel inside another one |
 
 MASQUE is the default because it looks like ordinary HTTPS traffic and Cloudflare
 treats it as the primary protocol. Use WireGuard when UDP QUIC is throttled but
-plain UDP still passes. `--gool` adds a second hop for networks that recognise a
-single WARP handshake; it costs latency, so reach for it last.
+plain UDP still passes. `--gool` adds a second hop: your network sees only the
+MASQUE tunnel, and the WireGuard hop inside it is dialled from inside WARP, so
+Cloudflare gives it a different exit than your own address would get.
+`--gool-classic` nests WireGuard in WireGuard instead. Both cost latency, so reach
+for them last.
 
 MASQUE has two carriers. HTTP/3 over QUIC is the default. If UDP 443 is blocked
 outright, `--h2` moves the same tunnel onto TCP 443, which survives networks that
@@ -78,11 +82,11 @@ aether --masque --h2
 
 ### MASQUE-in-MASQUE
 
-`--mim` runs a second MASQUE tunnel inside the first one, the way `--gool` nests
-WireGuard. The outer hop is dialled from your network; the inner hop is dialled
-from inside it, so Cloudflare sees the outer edge's address rather than yours and
-gives the inner tunnel a different exit. Use it when a single tunnel keeps coming
-out in the country you are trying to leave.
+`--mim` runs a second MASQUE tunnel inside the first one, the way `--gool` runs a
+WireGuard one inside it. The outer hop is dialled from your network; the inner
+hop is dialled from inside it, so Cloudflare sees the outer edge's address rather
+than yours and gives the inner tunnel a different exit. Use it when a single
+tunnel keeps coming out in the country you are trying to leave.
 
 Both hops use the same carrier: HTTP/3 inside HTTP/3 by default, or HTTP/2 inside
 HTTP/2 with `--h2`. The inner hop gets its own identity file, named
@@ -141,11 +145,20 @@ The last working endpoint is saved, and `--quick-reconnect` reuses it without a
 new sweep. An endpoint that just failed is held on a cooldown so the next attempt
 does not land on it again.
 
-### Choosing the WARP-in-WARP hops yourself
+### Choosing the gool hops yourself
 
-`--peer` names one endpoint and warp-in-warp needs two, so each hop has its own
-setting. Name both and no scan runs at all; name one and the scan finds the
-other:
+`--gool` scans for one hop only, the MASQUE gateway, which `--peer` names as it
+does for MASQUE. The WireGuard hop inside the tunnel is not scanned for: it is
+the endpoint the gool identity's registration names, then a few known ones, on
+port 2408, unless `--gool-peer` names another:
+
+```sh
+aether --gool --peer 162.159.196.1:443 --gool-peer 162.159.192.1:2408
+```
+
+The classic gool, warp-in-warp, needs two WireGuard endpoints and `--peer` names
+one, so each hop has its own setting. Name both and no scan runs at all; name
+one and the scan finds the other:
 
 ```sh
 aether --gool --wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408
@@ -161,14 +174,15 @@ different addresses — a second tunnel leaving through the edge it arrived on
 gains nothing — and a scan run for one hop leaves the other's address out of
 the sweep.
 
-Naming a hop is enough to select warp-in-warp, so `--gool` alongside it is
-optional, and `--wg-peer` names the outer hop. An endpoint you named is kept
-across reconnects rather than swapped for a scanned one, so a hop that stops
-answering is retried instead of replaced. `--wiw-scan` scans for both, ignoring
-an endpoint left in the environment.
+Naming a hop is enough to select the classic gool, so `--gool` or
+`--gool-classic` alongside it is optional. With `--gool-classic`, `--wg-peer`
+names the outer hop too. An endpoint you named is kept across reconnects rather
+than swapped for a scanned one, so a hop that stops answering is retried instead
+of replaced. `--wiw-scan` scans for both, ignoring an endpoint left in the
+environment.
 
-Nothing here is asked at startup. `--gool` on its own scans for both hops and
-prints a line above the scan mode question naming the alternative.
+Nothing here is asked at startup. `--gool-classic` on its own scans for both
+hops and prints a line above the scan mode question naming the alternative.
 
 ## Obfuscation
 
