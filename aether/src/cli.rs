@@ -293,8 +293,11 @@ Config files:
                            warp-in-warp adds a second identity of its own beside
                            the wireguard one, named <config>-secondary.toml
   --register <which>       register identities and exit, with no scan and no
-                           tunnel: masque, wg, gool (both wireguard hops), mim
-                           (both masque hops) or all. An identity file already
+                           tunnel: masque, wg, gool (masque and the wireguard
+                           identity gool carries inside it, registered from
+                           here rather than from inside warp), gool-classic
+                           (both wireguard hops), mim (both masque hops) or all
+                           five. An identity file already
                            there is kept, never replaced; point the config paths
                            at new files to get new keys. With --tor-reverse or
                            --psiphon-reverse the registrations go through that

@@ -262,7 +262,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             select_masque_transport().await;
             let config_path = masque_config_path(&base_config);
             let identity = load_or_provision_masque(&config_path, EnableWarp::Beside).await?;
-            let inner_path = derive_sibling_path(&config_path, "gool");
+            let inner_path = gool_identity_path(&config_path);
             log::info!(
                 "[+] gool: masque device={} carries the wireguard identity in {inner_path}",
                 identity.device_id
@@ -837,6 +837,12 @@ fn masque_config_path(base: &str) -> String {
     }
 }
 
+/// Where gool keeps the wireguard identity it carries inside its masque tunnel: beside the masque identity at
+/// `masque_config`, named `<masque config>-gool.toml`. The tunnel and `--register gool` both find it here.
+fn gool_identity_path(masque_config: &str) -> String {
+    derive_sibling_path(masque_config, "gool")
+}
+
 fn derive_sibling_path(base: &str, suffix: &str) -> String {
     let dir_end = base
         .rfind(|c| c == '/' || c == '\\')
@@ -989,13 +995,23 @@ async fn load_or_enrol_masque(config_path: &str) -> Result<account::Identity> {
 }
 
 /// The identities `--register` asks for: those of one protocol, both hops of a two-hop one, or
-/// all four.
+/// all five.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RegisterSet {
     wireguard: bool,
     wireguard_inner: bool,
     masque: bool,
     masque_inner: bool,
+    /// The wireguard identity gool carries inside its masque tunnel, see [`gool_identity_path`].
+    gool: bool,
+}
+
+/// How `--register` makes an identity it does not find.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provision {
+    Warp,
+    Masque,
+    Gool,
 }
 
 impl RegisterSet {
@@ -1005,6 +1021,7 @@ impl RegisterSet {
             wireguard_inner: false,
             masque: false,
             masque_inner: false,
+            gool: false,
         };
         match value.trim().to_lowercase().as_str() {
             "all" => Ok(RegisterSet {
@@ -1012,6 +1029,7 @@ impl RegisterSet {
                 wireguard_inner: true,
                 masque: true,
                 masque_inner: true,
+                gool: true,
             }),
             "masque" => Ok(RegisterSet {
                 masque: true,
@@ -1021,7 +1039,14 @@ impl RegisterSet {
                 wireguard: true,
                 ..none
             }),
-            "gool" | "wiw" | "warp-in-warp" => Ok(RegisterSet {
+            // What --gool runs: wireguard carried inside masque.
+            "gool" | "wg-over-masque" => Ok(RegisterSet {
+                masque: true,
+                gool: true,
+                ..none
+            }),
+            // What --gool-classic runs: wireguard inside wireguard.
+            "gool-classic" | "wiw" | "warp-in-warp" => Ok(RegisterSet {
                 wireguard: true,
                 wireguard_inner: true,
                 ..none
@@ -1032,7 +1057,7 @@ impl RegisterSet {
                 ..none
             }),
             other => Err(AetherError::Other(format!(
-                "--register takes masque, wg, gool, mim or all, not '{other}'"
+                "--register takes masque, wg, gool, gool-classic, mim or all, not '{other}'"
             ))),
         }
     }
@@ -1077,31 +1102,42 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
     let wireguard = warp_config_path(base_config);
     let masque = masque_config_path(base_config);
     let identities = [
-        (wanted.wireguard, "wireguard", wireguard.clone(), false),
+        (
+            wanted.wireguard,
+            "wireguard",
+            wireguard.clone(),
+            Provision::Warp,
+        ),
         (
             wanted.wireguard_inner,
             "wireguard inner",
             derive_sibling_path(&wireguard, "secondary"),
-            false,
+            Provision::Warp,
         ),
-        (wanted.masque, "masque", masque.clone(), true),
+        (wanted.masque, "masque", masque.clone(), Provision::Masque),
         (
             wanted.masque_inner,
             "masque inner",
             derive_sibling_path(&masque, "secondary"),
-            true,
+            Provision::Masque,
+        ),
+        (
+            wanted.gool,
+            "gool",
+            gool_identity_path(&masque),
+            Provision::Gool,
         ),
     ];
 
     let mut ready = Vec::new();
-    for (asked, label, path, over_masque) in identities {
+    for (asked, label, path, provision) in identities {
         if !asked {
             continue;
         }
-        let identity = if over_masque {
-            load_or_provision_masque(&path, EnableWarp::Wait).await?
-        } else {
-            load_or_provision_warp(&path).await?
+        let identity = match provision {
+            Provision::Warp => load_or_provision_warp(&path).await?,
+            Provision::Masque => load_or_provision_masque(&path, EnableWarp::Wait).await?,
+            Provision::Gool => load_or_provision_gool(&path).await?,
         };
         log::info!(
             "[+] {label} identity ready: device={} ipv4={} ipv6={}",
@@ -2985,28 +3021,55 @@ async fn gool_inner_identity(
     log::info!("[*] registering the gool wireguard identity through the masque tunnel");
     let previous = std::env::var("AETHER_UPSTREAM").ok();
     std::env::set_var("AETHER_UPSTREAM", format!("socks5h://{through}"));
-    let registered = account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await;
-    let mut warp_enabled = false;
-    if let Ok(id) = &registered {
-        match account::enable_warp(&id.device_id, &id.access_token).await {
-            Ok(()) => warp_enabled = true,
-            Err(e) => log::warn!("[-] could not enable warp on the gool identity: {e}"),
-        }
-    }
+    let provisioned = provision_gool(inner_path).await;
     match previous {
         Some(value) => std::env::set_var("AETHER_UPSTREAM", value),
         None => std::env::remove_var("AETHER_UPSTREAM"),
     }
-    let identity = account::Identity {
-        warp_enabled,
-        ..registered?
-    };
-    config::save(inner_path, &identity)?;
+    let identity = provisioned?;
     log::info!(
         "[+] gool wireguard identity registered from inside warp and saved to {inner_path}: device={} ipv4={}",
         identity.device_id,
         identity.ipv4
     );
+    Ok(identity)
+}
+
+/// `--register gool`: the wireguard identity gool carries inside its masque tunnel, saved at `path`,
+/// or a new one registered now, from where the other identities are registered. The tunnel
+/// registers one from inside warp only when there is none, see [`gool_inner_identity`].
+async fn load_or_provision_gool(path: &str) -> Result<account::Identity> {
+    if let Some(identity) = config::load(path)? {
+        log::info!("[+] loaded the gool wireguard identity from {path}");
+        return Ok(identity);
+    }
+    let identity = provision_gool(path).await?;
+    log::info!(
+        "[+] gool wireguard identity registered and saved to {path}: device={} ipv4={}",
+        identity.device_id,
+        identity.ipv4
+    );
+    Ok(identity)
+}
+
+/// Registers the wireguard identity gool carries inside its masque tunnel, enables WARP on it and
+/// saves it at `path`, recording whether WARP was enabled; a failure to enable it is a warning.
+async fn provision_gool(path: &str) -> Result<account::Identity> {
+    let registered =
+        account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await?;
+    let warp_enabled =
+        match account::enable_warp(&registered.device_id, &registered.access_token).await {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("[-] could not enable warp on the gool identity: {e}");
+                false
+            }
+        };
+    let identity = account::Identity {
+        warp_enabled,
+        ..registered
+    };
+    config::save(path, &identity)?;
     Ok(identity)
 }
 
@@ -3500,27 +3563,55 @@ mod tests {
     }
 
     #[test]
-    fn register_names_the_identities_of_one_protocol_or_all_four() {
+    fn register_names_the_identities_of_one_protocol_or_all_five() {
         let all = RegisterSet::parse("all").expect("all");
-        assert!(all.wireguard && all.wireguard_inner && all.masque && all.masque_inner);
+        assert!(all.wireguard && all.wireguard_inner && all.masque && all.masque_inner && all.gool);
 
         let masque = RegisterSet::parse(" MASQUE ").expect("masque");
-        assert!(masque.masque && !masque.masque_inner);
+        assert!(masque.masque && !masque.masque_inner && !masque.gool);
         assert!(!masque.wireguard && !masque.wireguard_inner);
 
         let wireguard = RegisterSet::parse("wg").expect("wg");
         assert!(wireguard.wireguard && !wireguard.wireguard_inner);
-        assert!(!wireguard.masque && !wireguard.masque_inner);
+        assert!(!wireguard.masque && !wireguard.masque_inner && !wireguard.gool);
 
-        let gool = RegisterSet::parse("gool").expect("gool");
-        assert!(gool.wireguard && gool.wireguard_inner);
-        assert!(!gool.masque && !gool.masque_inner);
+        // What --gool runs: masque, and the wireguard identity it carries inside.
+        for word in ["gool", "GOOL", "wg-over-masque"] {
+            let gool = RegisterSet::parse(word).expect(word);
+            assert!(gool.masque && gool.gool, "{word}");
+            assert!(
+                !gool.masque_inner && !gool.wireguard && !gool.wireguard_inner,
+                "{word}"
+            );
+        }
+
+        // What --gool-classic runs: both wireguard hops.
+        for word in ["gool-classic", "wiw", "warp-in-warp"] {
+            let classic = RegisterSet::parse(word).expect(word);
+            assert!(classic.wireguard && classic.wireguard_inner, "{word}");
+            assert!(
+                !classic.masque && !classic.masque_inner && !classic.gool,
+                "{word}"
+            );
+        }
 
         let mim = RegisterSet::parse("mim").expect("mim");
-        assert!(mim.masque && mim.masque_inner);
+        assert!(mim.masque && mim.masque_inner && !mim.gool);
         assert!(!mim.wireguard && !mim.wireguard_inner);
 
         assert!(RegisterSet::parse("everything").is_err());
+    }
+
+    #[test]
+    fn gool_keeps_its_wireguard_identity_beside_the_masque_one() {
+        assert_eq!(
+            gool_identity_path("/data/files/aether/aether-masque.toml"),
+            "/data/files/aether/aether-masque-gool.toml"
+        );
+        assert_eq!(
+            gool_identity_path(r"C:\keys\aether-masque.toml"),
+            r"C:\keys\aether-masque-gool.toml"
+        );
     }
 
     #[test]
