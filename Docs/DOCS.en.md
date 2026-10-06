@@ -399,7 +399,8 @@ The other way round: Tor is bootstrapped first, and the tunnel is then dialled
 through it, so the WARP edge is reached from a Tor exit and the network you are on
 never sees WARP at all. The proxy on `127.0.0.1:1819` comes out of WARP as usual.
 Tor carries TCP only, and WARP's WireGuard endpoints answer on UDP alone, so this
-mode runs MASQUE over HTTP/2 and refuses WireGuard and `gool`. If you want
+mode runs MASQUE over HTTP/2, the outer hop of `gool` too, and refuses WireGuard and
+the classic gool (`--gool-classic`). If you want
 WireGuard in the path, put Tor inside the tunnel with `--tor` instead, where the
 WireGuard tunnel carries Tor directly. This mode also needs Tor reachable before
 anything else works, so on a network that blocks Tor, give it bridges.

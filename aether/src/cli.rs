@@ -182,7 +182,8 @@ Tor:
                            warp is reached from a tor exit and your network never
                            sees warp. Tor carries tcp only and the wireguard
                            endpoints of warp answer on udp alone, so this runs
-                           masque over http/2 and refuses --wg and --gool
+                           masque over http/2, gool's outer hop too, and
+                           refuses --wg and --gool-classic
   --tor-only               no tunnel at all: the proxy on --bind is plain tor
   --tor-bind <addr>        where the tor proxy listens with --tor and
                            --tor-reverse (default 127.0.0.1:1820)
@@ -207,7 +208,8 @@ Tor:
                            psiphon -> internet, served on --psiphon-bind
   --psiphon-reverse        the other way round: dial the tunnel through psiphon.
                            psiphon carries tcp only, so this runs masque over
-                           http/2 and refuses --wg and --gool
+                           http/2, gool's outer hop too, and refuses --wg and
+                           --gool-classic
   --psiphon-only           no tunnel at all: the proxy on --bind is plain psiphon
   --psiphon-mode <shape>   auto (default, let psiphon pick), cdn (only fronted
                            meek through a cdn, for networks that block the rest)
@@ -295,8 +297,8 @@ Config files:
                            at new files to get new keys. With --tor-reverse or
                            --psiphon-reverse the registrations go through that
                            carrier whatever the protocol: they are https, which
-                           tor and psiphon carry, so --wg and --gool are refused
-                           there only for the tunnel
+                           tor and psiphon carry, so --wg and --gool-classic are
+                           refused there only for the tunnel
   --enroll-address <ip|name[:port]>
                            where the calls to the WARP API, which register and
                            enroll the keys, go: port 443 unless one follows the

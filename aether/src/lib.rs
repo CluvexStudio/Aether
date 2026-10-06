@@ -184,11 +184,11 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             });
         }
         tor::Mode::Reverse => {
-            if matches!(protocol, Protocol::WireGuard | Protocol::WarpInWarp) {
+            if needs_udp_to_warp(protocol, gool_classic()) {
                 return Err(AetherError::Other(format!(
                     "tor carries tcp only and warp's wireguard endpoints answer on udp alone, so \
-                     {} can never be reached through tor; use --masque, which this mode runs over \
-                     http/2, or put tor inside the tunnel instead with --tor",
+                     {} can never be reached through tor; use --masque or --gool, which this mode \
+                     runs over http/2, or put tor inside the tunnel instead with --tor",
                     protocol.label()
                 )));
             }
@@ -212,11 +212,11 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             });
         }
         psiphon::Mode::Reverse => {
-            if matches!(protocol, Protocol::WireGuard | Protocol::WarpInWarp) {
+            if needs_udp_to_warp(protocol, gool_classic()) {
                 return Err(AetherError::Other(format!(
                     "psiphon carries tcp only and warp's wireguard endpoints answer on udp alone, \
-                     so {} can never be reached through psiphon; use --masque, which this mode \
-                     runs over http/2, or put psiphon inside the tunnel instead with --psiphon",
+                     so {} can never be reached through psiphon; use --masque or --gool, which this \
+                     mode runs over http/2, or put psiphon inside the tunnel instead with --psiphon",
                     protocol.label()
                 )));
             }
@@ -2816,6 +2816,17 @@ async fn run_warp_in_warp(
     outcome
 }
 
+/// Whether a tunnel of `protocol` needs UDP to reach WARP, which Tor and Psiphon around the tunnel
+/// do not carry: WireGuard does, and so does the classic gool, WireGuard in WireGuard. Gool over
+/// masque dials MASQUE alone, which runs over HTTP/2.
+fn needs_udp_to_warp(protocol: Protocol, classic_gool: bool) -> bool {
+    match protocol {
+        Protocol::WireGuard => true,
+        Protocol::WarpInWarp => classic_gool,
+        Protocol::Masque | Protocol::MasqueInMasque => false,
+    }
+}
+
 fn gool_classic() -> bool {
     matches!(
         std::env::var("AETHER_GOOL_MODE").as_deref(),
@@ -3303,6 +3314,16 @@ mod tests {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
         move |key: &str| values.get(key).cloned()
+    }
+
+    #[test]
+    fn tor_and_psiphon_around_the_tunnel_refuse_only_what_needs_udp() {
+        assert!(needs_udp_to_warp(Protocol::WireGuard, false));
+        assert!(needs_udp_to_warp(Protocol::WarpInWarp, true));
+        // Gool over masque reaches WARP by MASQUE alone; its WireGuard rides inside that tunnel.
+        assert!(!needs_udp_to_warp(Protocol::WarpInWarp, false));
+        assert!(!needs_udp_to_warp(Protocol::Masque, true));
+        assert!(!needs_udp_to_warp(Protocol::MasqueInMasque, false));
     }
 
     #[test]
