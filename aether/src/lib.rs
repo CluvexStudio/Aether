@@ -2979,14 +2979,10 @@ async fn gool_inner_identity(
     let _socks_guard = TaskGuard(vec![socks_task.abort_handle()]);
 
     log::info!("[*] registering the gool wireguard identity through the masque tunnel");
-    let previous = std::env::var("AETHER_UPSTREAM").ok();
-    std::env::set_var("AETHER_UPSTREAM", format!("socks5h://{through}"));
-    let provisioned = provision_gool(inner_path).await;
-    match previous {
-        Some(value) => std::env::set_var("AETHER_UPSTREAM", value),
-        None => std::env::remove_var("AETHER_UPSTREAM"),
-    }
-    let identity = provisioned?;
+    // Through the tunnel for this registration alone: AETHER_UPSTREAM, which the rest of the
+    // process dials out through, stays as it is.
+    let tunnel = upstream::Upstream::parse(&format!("socks5h://{through}"))?;
+    let identity = upstream::through(tunnel, provision_gool(inner_path)).await?;
     log::info!(
         "[+] gool wireguard identity registered from inside warp and saved to {inner_path}: device={} ipv4={}",
         identity.device_id,

@@ -57,8 +57,12 @@ Protocol:
   --wg, --wireguard, --warp
                            use classic WireGuard
   --gool, --wiw            use gool: a wireguard warp tunnel carried inside a
-                           masque one, with its own identity registered from
-                           inside warp, so it leaves from a foreign address
+                           masque one. The wireguard hop is dialled from
+                           inside warp, so cloudflare gives it another exit
+                           than your own address would get. Its identity is
+                           <masque config>-gool.toml: --register gool makes
+                           it, and the tunnel registers one from inside warp
+                           when there is none
   --gool-peer <ip:port>    the wireguard endpoint gool dials inside the tunnel
                            (default: the one its registration names, port 2408)
   --gool-classic           the older gool: wireguard tunneled in wireguard
