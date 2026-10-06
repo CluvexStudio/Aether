@@ -101,7 +101,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     // A cipher string or a group list BoringSSL does not take, or an address the calls to the
     // WARP API cannot use, stops the core here, with its option named.
     tls::check_tls_options()?;
-    account::check_enroll_address()?;
+    account::check_api_address()?;
     // The key of the WARP API calls of an earlier run of the library is not this run's.
     account::forget_api_ech();
 

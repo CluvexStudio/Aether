@@ -416,30 +416,30 @@ fn extract_api_error(body: &str) -> Option<String> {
     }
 }
 
-/// --enroll-address (AETHER_ENROLL_ADDRESS): where the calls to the WARP API go, an IP address
+/// --api-address (AETHER_API_ADDRESS): where the calls to the WARP API go, an IP address
 /// or a domain name and its port: 443 unless `:port` follows the address, an IPv6 one then in
 /// brackets; the API's name on 443 when it is not given. Only the connection goes there: the
 /// API's name stays the server name of the ClientHello and the HTTP host.
-fn enroll_address() -> Result<(String, u16)> {
-    let value = std::env::var("AETHER_ENROLL_ADDRESS").unwrap_or_default();
+fn api_address() -> Result<(String, u16)> {
+    let value = std::env::var("AETHER_API_ADDRESS").unwrap_or_default();
     let value = value.trim();
     if value.is_empty() {
         return Ok((api_host().to_string(), 443));
     }
     crate::dns::host_and_port(value, 443).ok_or_else(|| {
         AetherError::Api(format!(
-            "--enroll-address: {value} is no IP address or domain name, with or without a port"
+            "--api-address: {value} is no IP address or domain name, with or without a port"
         ))
     })
 }
 
-/// Checks --enroll-address as the core starts: an address it cannot use stops it, with the
+/// Checks --api-address as the core starts: an address it cannot use stops it, with the
 /// option named.
-pub fn check_enroll_address() -> Result<()> {
-    enroll_address().map(drop)
+pub fn check_api_address() -> Result<()> {
+    api_address().map(drop)
 }
 
-/// A call to the WARP API: to --enroll-address, the API's name on port 443 unless it names
+/// A call to the WARP API: to --api-address, the API's name on port 443 unless it names
 /// another address or port, with the API's name for the server name and the HTTP host, over
 /// BoringSSL with the
 /// core's TLS fingerprint (see `https`), offering the ECH key of --ech when it is given, through
@@ -453,7 +453,7 @@ async fn api_call(
     bearer: Option<&str>,
     jwt: Option<&str>,
 ) -> Result<AccountData> {
-    let (address, port) = enroll_address()?;
+    let (address, port) = api_address()?;
     // The system resolver looks a name up outside the socket mark; through the upstream proxy,
     // the proxy looks it up and only the marked connection to the proxy leaves.
     if crate::egress::mark() != 0
@@ -461,7 +461,7 @@ async fn api_call(
         && address.parse::<std::net::IpAddr>().is_err()
     {
         return Err(AetherError::Api(format!(
-            "{label}: {address} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --enroll-address an IP address"
+            "{label}: {address} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --api-address an IP address"
         )));
     }
 
@@ -1156,13 +1156,13 @@ mod tests {
     }
 
     #[test]
-    fn an_enroll_address_is_an_ip_address_or_a_domain_name_with_or_without_a_port() {
+    fn an_api_address_is_an_ip_address_or_a_domain_name_with_or_without_a_port() {
         let address = |value: Option<&str>| {
             match value {
-                Some(value) => std::env::set_var("AETHER_ENROLL_ADDRESS", value),
-                None => std::env::remove_var("AETHER_ENROLL_ADDRESS"),
+                Some(value) => std::env::set_var("AETHER_API_ADDRESS", value),
+                None => std::env::remove_var("AETHER_API_ADDRESS"),
             }
-            enroll_address().map_err(|e| e.to_string())
+            api_address().map_err(|e| e.to_string())
         };
         let at = |host: &str, port: u16| -> std::result::Result<(String, u16), String> {
             Ok((host.to_string(), port))
@@ -1203,13 +1203,13 @@ mod tests {
             assert_eq!(
                 said,
                 format!(
-                    "api: --enroll-address: {refused} is no IP address or domain name, with or without a port"
+                    "api: --api-address: {refused} is no IP address or domain name, with or without a port"
                 )
             );
-            assert!(check_enroll_address().is_err());
+            assert!(check_api_address().is_err());
         }
-        std::env::remove_var("AETHER_ENROLL_ADDRESS");
-        assert!(check_enroll_address().is_ok());
+        std::env::remove_var("AETHER_API_ADDRESS");
+        assert!(check_api_address().is_ok());
     }
 
     #[test]

@@ -33,7 +33,7 @@ Connection:
                            looping them back in (Linux and Android, needs root or
                            CAP_NET_ADMIN); a name is looked up outside the mark, so
                            without --upstream the calls to the WARP API take an IP
-                           address only, see --enroll-address
+                           address only, see --api-address
   --exit-loc <spec>        refuse a tunnel whose exit country is not wanted, checked
                            through the finished tunnel before socks5 opens and again
                            every minute after: !IR,AZ,RU blocks those, DE,SE allows
@@ -305,7 +305,7 @@ Config files:
                            carrier whatever the protocol: they are https, which
                            tor and psiphon carry, so --wg and --gool-classic are
                            refused there only for the tunnel
-  --enroll-address <ip|name[:port]>
+  --api-address <ip|name[:port]>
                            where the calls to the WARP API, which register and
                            enroll the keys, go: port 443 unless one follows the
                            address, an IPv6 one then in brackets, e.g.
@@ -421,7 +421,7 @@ Environment variables:
   AETHER_WG_CONFIG                 --wg-config
   AETHER_MASQUE_CONFIG             --masque-config
   AETHER_REGISTER                  --register
-  AETHER_ENROLL_ADDRESS            --enroll-address
+  AETHER_API_ADDRESS               --api-address
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
 
@@ -617,7 +617,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
             "--register" => set("AETHER_REGISTER", next_value!()),
-            "--enroll-address" => set("AETHER_ENROLL_ADDRESS", next_value!()),
+            "--api-address" => set("AETHER_API_ADDRESS", next_value!()),
 
             "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
             "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),

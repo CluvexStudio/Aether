@@ -361,18 +361,18 @@ aether --masque --h2 --upstream http://proxy.example:8080
 
 ثبت یک دستگاه، ثبت کلید MASQUE آن و به‌روزرسانی یک پروفایل درخواست‌هایی به API وارپ،
 `api.cloudflareclient.com`، هستند که همان‌طور که در بخش TLS آمده فرستاده می‌شوند.
-`--enroll-address` آن‌ها را به نشانی دیگری می‌فرستد، یک نشانی IP یا یک نام دامنه،
+`--api-address` آن‌ها را به نشانی دیگری می‌فرستد، یک نشانی IP یا یک نام دامنه،
 روی پورت 443 مگر اینکه پورتی بعد از آن بیاید، که آن‌وقت نشانی IPv6 داخل کروشه می‌رود:
 `188.114.97.6`، `188.114.97.6:2053`، `[2606:4700::1]:8443`. فقط اتصال به آنجا می‌رود:
 نام API همچنان نام سرور در ClientHello و میزبان HTTP می‌ماند، که پورتی ندارد. یک نام
 اول جست‌وجو می‌شود، با `--upstream` به دست پروکسی و گرنه با resolver سیستم؛ با
 `--mark` و بدون `--upstream` فقط نشانی IP پذیرفته می‌شود، چون آن جست‌وجو بیرون از
 علامت می‌رفت و به داخل تونل برمی‌گشت. با `--ech` نام API فقط درون ClientHello
-رمزشده می‌رود، و یک نشانی IP برای `--enroll-address` آن را از جست‌وجوی DNS هم دور
+رمزشده می‌رود، و یک نشانی IP برای `--api-address` آن را از جست‌وجوی DNS هم دور
 نگه می‌دارد.
 
 ```sh
-aether --register all --ech auto --enroll-address 141.101.113.10
+aether --register all --ech auto --api-address 141.101.113.10
 ```
 
 ## استفاده از ایتر به‌عنوان کتابخانه
@@ -443,7 +443,7 @@ cargo build --release --bin aether   # فقط باینری
 | `AETHER_UPSTREAM` | خروج از یک پروکسی دیگر |
 | `AETHER_REPROVISION` | جایگزینی هویتی که کلادفلر نمی‌پذیرد |
 | `AETHER_CONFIG`، `AETHER_WG_CONFIG`، `AETHER_MASQUE_CONFIG` | مسیر فایل هویت |
-| `AETHER_ENROLL_ADDRESS` | جایی که درخواست‌ها به API وارپ می‌روند |
+| `AETHER_API_ADDRESS` | جایی که درخواست‌ها به API وارپ می‌روند |
 | `AETHER_TLS_GROUPS` | گروه‌های TLS (بخش TLS را ببینید) |
 | `AETHER_TLS_CIPHERS` | سوئیت‌های رمز TLS 1.2 (بخش TLS را ببینید) |
 | `AETHER_DISABLE_GREASE` | `1` مقدارهای GREASE را کنار می‌گذارد (بخش TLS را ببینید) |

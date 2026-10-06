@@ -503,7 +503,7 @@ The mark is a decimal or `0x` number and needs root or `CAP_NET_ADMIN`; Aether s
 at startup if it cannot set it, rather than send unmarked traffic. It only works on
 Linux and Android. The calls to the WARP API and the DoH lookup of the ECH config
 are marked as well, but the system resolver looks a name up outside the mark:
-without `--upstream`, `--enroll-address` then takes an IP address only (see
+without `--upstream`, `--api-address` then takes an IP address only (see
 [Where the WARP API is asked](#where-the-warp-api-is-asked)), and a DoH URL of
 `--ech-dns` should name an IP address, or give one with `@address=`. The same
 setting is available as `AETHER_MARK`.
@@ -561,7 +561,7 @@ not discard an identity.
 
 Registering a device, enrolling its MASQUE key and refreshing a profile are calls
 to the WARP API, `api.cloudflareclient.com`, made as described under TLS above.
-`--enroll-address` sends them to another address, an IP address or a domain name,
+`--api-address` sends them to another address, an IP address or a domain name,
 on port 443 unless a port follows it, an IPv6 address then in brackets:
 `188.114.97.6`, `188.114.97.6:2053`, `[2606:4700::1]:8443`. Only the connection goes
 there: the API's name stays the server name of the ClientHello and the HTTP host,
@@ -569,10 +569,10 @@ which carries no port. A name is looked up first, by the proxy with `--upstream`
 and by the system resolver otherwise; with `--mark` and no `--upstream` only an IP
 address is taken, since that lookup would leave outside the mark and loop back into
 the tunnel. With `--ech` the API's name goes only inside the encrypted ClientHello,
-and an IP address for `--enroll-address` keeps it out of the DNS lookup as well.
+and an IP address for `--api-address` keeps it out of the DNS lookup as well.
 
 ```sh
-aether --register all --ech auto --enroll-address 141.101.113.10
+aether --register all --ech auto --api-address 141.101.113.10
 ```
 
 ## Using Aether as a library
@@ -651,7 +651,7 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_TCP_KEEPALIVE_SECS`, `AETHER_TCP_CONNECT_SECS` | keep-alive and connect timeout inside the tunnel |
 | `AETHER_REPROVISION` | replace an identity Cloudflare refuses |
 | `AETHER_CONFIG`, `AETHER_WG_CONFIG`, `AETHER_MASQUE_CONFIG` | identity paths |
-| `AETHER_ENROLL_ADDRESS` | where the calls to the WARP API go |
+| `AETHER_API_ADDRESS` | where the calls to the WARP API go |
 | `AETHER_TLS_GROUPS` | TLS groups (see TLS) |
 | `AETHER_TLS_CIPHERS` | TLS 1.2 cipher suites (see TLS) |
 | `AETHER_DISABLE_GREASE` | `1` leaves GREASE out (see TLS) |
