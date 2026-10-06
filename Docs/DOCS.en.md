@@ -200,9 +200,10 @@ reshape them so the opening exchange does not match a known pattern.
 aether --noize aggressive
 ```
 
-One extra applies to MASQUE only: `--fragment` splits the TLS ClientHello on the
-HTTP/2 carrier, which defeats inspectors that read the SNI from a single packet.
-`--fragment-size` and `--fragment-delay` tune it.
+One extra concerns the TLS ClientHello: `--fragment` splits it on MASQUE's HTTP/2
+carrier, which defeats inspectors that read the SNI from a single packet, and on
+the calls to the WARP API, whatever the transport. `--fragment-size` and
+`--fragment-delay` tune both. Without `--fragment`, both go whole.
 
 ## TLS
 

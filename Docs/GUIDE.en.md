@@ -39,7 +39,7 @@ Run `./aether help` (or `--help`) to see the full list — every flag, every env
 --turbo/--balanced/--thorough/--stealth/--ironclad  shortcuts for --scan
 --noize <profile>         obfuscation profile
 --h2, --http2             use HTTP/2 instead of HTTP/3 for MASQUE
---fragment                fragment the TLS ClientHello (HTTP/2 only)
+--fragment                fragment the TLS ClientHello (MASQUE over HTTP/2, and the WARP API calls)
 --quick-reconnect         skip the prompt, always reuse the last working gateway
 --no-quick-reconnect      skip the prompt, always scan fresh
 ```
@@ -143,9 +143,11 @@ AETHER_MASQUE_HTTP2=1 ./target/release/aether
 
 The values `1`, `true`, `h2`, `yes`, and `on` all turn on h2. If you do not set this, it is always h3.
 
-### Fragmenting the ClientHello (h2 only)
+### Fragmenting the ClientHello (h2, and the WARP API calls)
 
-On some networks, DPI blocks the connection the moment it sees a complete, single TLS ClientHello record with a recognizable SNI. When you run MASQUE over h2, Aether can split that first TLS flight into several small chunks and send them with a short random delay in between, so no single packet on the wire contains the whole handshake or the SNI in one piece. This is the same idea used elsewhere as "TLS ClientHello fragmentation" — this is only available for h2 because it needs a TCP stream to fragment; h3 runs over QUIC/UDP where the concept does not apply the same way.
+On some networks, DPI blocks the connection the moment it sees a complete, single TLS ClientHello record with a recognizable SNI. When you run MASQUE over h2, Aether can split that first TLS flight into several small chunks and send them with a short random delay in between, so no single packet on the wire contains the whole handshake or the SNI in one piece. This is the same idea used elsewhere as "TLS ClientHello fragmentation" — for MASQUE this is only available for h2 because it needs a TCP stream to fragment; h3 runs over QUIC/UDP where the concept does not apply the same way.
+
+The same flag also splits the ClientHello of the calls Aether makes to the WARP API to get a new key, on any transport, since those always go over TLS on TCP. `--fragment-size` and `--fragment-delay` shape both. Without `--fragment`, both go out whole.
 
 It is off by default because it adds a small delay to every reconnect. Turn it on with:
 
@@ -208,10 +210,9 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 
 - `AETHER_MASQUE_HTTP2` (`--h2`, `--http2`) — if it is `1`/`true`/`h2`/`yes`/`on`, it uses h2. Otherwise h3.
 - `AETHER_MASQUE_H2_PEER` (`--h2-peer`) — manual override of the destination address for h2 mode.
-- `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — fragment the TLS ClientHello on h2. Off by default.
+- `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — fragment the TLS ClientHello on h2, and that of the WARP API calls. Off by default.
 - `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — fragment chunk size in bytes, `n` or `a-b`. Default `8-16`.
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — delay between fragments in ms, `n` or `a-b`. Default `2-10`.
-- `AETHER_API_FRAGMENT` (`--api-fragment`) — send the TLS ClientHello of the WARP API calls in pieces, shaped by `--fragment-size` and `--fragment-delay`. Off by default.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — if set, a `:status 200` alone is enough; the end-to-end data-plane probe is skipped.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — seconds to wait for the data-plane probe to succeed before giving up on a gateway. Default `10`.
 - `AETHER_MASQUE_STARTUP_SECS` (`--startup-secs`) — total deadline for TCP/QUIC, TLS, CONNECT-IP, and initial data-plane validation. Default `30`.

@@ -39,7 +39,7 @@ Aether رو می‌شه سه‌جوری کنترل کرد، و می‌تونی �
 --turbo/--balanced/--thorough/--stealth/--ironclad  میانبر برای --scan
 --noize <profile>         پروفایل استتار
 --h2, --http2             استفاده از HTTP/2 به‌جای HTTP/3 برای MASQUE
---fragment                فرگمنت کردن TLS ClientHello (فقط روی HTTP/2)
+--fragment                فرگمنت کردن TLS ClientHello (MASQUE روی HTTP/2، و فراخوانی‌های WARP API)
 --quick-reconnect         بدون سؤال، همیشه از آخرین گیت‌وی سالم استفاده کن
 --no-quick-reconnect      بدون سؤال، همیشه از نو اسکن کن
 ```
@@ -145,9 +145,11 @@ AETHER_MASQUE_HTTP2=1 ./target/release/aether
 
 مقدارهای `1`، `true`، `h2`، `yes` و `on` همه‌شون h2 رو روشن می‌کنن. اگه این رو نذاری، همیشه h3 استفاده می‌شه.
 
-### فرگمنت کردن ClientHello (فقط h2)
+### فرگمنت کردن ClientHello (h2، و فراخوانی‌های WARP API)
 
-توی بعضی شبکه‌ها، DPI همون لحظه که یه رکورد TLS ClientHello کامل و یکپارچه با یه SNI قابل‌شناسایی می‌بینه، اتصال رو می‌بنده. وقتی MASQUE رو روی h2 اجرا می‌کنی، Aether می‌تونه اولین بسته‌ی TLS (همون ClientHello) رو به چند تکه‌ی کوچیک بشکنه و با یه تأخیر تصادفی کوتاه بین‌شون بفرسته، طوری که هیچ بسته‌ی تکی روی خط، کل دست‌دادن یا SNI رو یک‌جا نداشته باشه. این همون تکنیک معروف "TLS ClientHello fragmentation" هست — این قابلیت فقط برای h2 موجوده چون نیاز به یه استریم TCP برای فرگمنت کردن دارد؛ h3 روی QUIC/UDP کار می‌کنه که این مفهوم اونجا به همین شکل معنی نداره.
+توی بعضی شبکه‌ها، DPI همون لحظه که یه رکورد TLS ClientHello کامل و یکپارچه با یه SNI قابل‌شناسایی می‌بینه، اتصال رو می‌بنده. وقتی MASQUE رو روی h2 اجرا می‌کنی، Aether می‌تونه اولین بسته‌ی TLS (همون ClientHello) رو به چند تکه‌ی کوچیک بشکنه و با یه تأخیر تصادفی کوتاه بین‌شون بفرسته، طوری که هیچ بسته‌ی تکی روی خط، کل دست‌دادن یا SNI رو یک‌جا نداشته باشه. این همون تکنیک معروف "TLS ClientHello fragmentation" هست — برای MASQUE این قابلیت فقط برای h2 موجوده چون نیاز به یه استریم TCP برای فرگمنت کردن دارد؛ h3 روی QUIC/UDP کار می‌کنه که این مفهوم اونجا به همین شکل معنی نداره.
+
+همین پرچم ClientHello فراخوانی‌هایی که Aether برای گرفتن کلید جدید به WARP API می‌فرسته رو هم تکه می‌کنه، با هر پروتکلی، چون اون‌ها همیشه TLS روی TCP هستن. `--fragment-size` و `--fragment-delay` شکل هر دو رو تعیین می‌کنن. بدون `--fragment` هر دو یه‌تکه می‌رن.
 
 پیش‌فرض خاموشه چون به هر بار reconnect یه تأخیر کوچیک اضافه می‌کنه. با این روشنش کن:
 
@@ -210,10 +212,9 @@ Reconnect to it now without rescanning? [Y/n]:
 
 - `AETHER_MASQUE_HTTP2` (`--h2`, `--http2`) — اگه `1`/`true`/`h2`/`yes`/`on` باشه، از h2 استفاده می‌کنه. وگرنه h3.
 - `AETHER_MASQUE_H2_PEER` (`--h2-peer`) — بازنویسی دستیِ آدرس مقصد برای حالت h2 (برای کاربرهای پیشرفته).
-- `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — فرگمنت کردن TLS ClientHello روی h2. پیش‌فرض خاموشه.
+- `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — فرگمنت کردن TLS ClientHello روی h2، و ClientHello فراخوانی‌های WARP API. پیش‌فرض خاموشه.
 - `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — اندازهٔ هر تکه به بایت، `n` یا `a-b`. پیش‌فرض `8-16`.
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — تأخیر بین تکه‌ها به میلی‌ثانیه، `n` یا `a-b`. پیش‌فرض `2-10`.
-- `AETHER_API_FRAGMENT` (`--api-fragment`) — فرستادن TLS ClientHello فراخوانی‌های WARP API به‌صورت تکه‌تکه، با اندازه و تأخیرِ `--fragment-size` و `--fragment-delay`. پیش‌فرض خاموشه.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — اگه این رو بذاری، فقط `:status 200` کافیه؛ پروب end-to-end دیتاپلین انجام نمی‌شه.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — چند ثانیه صبر کنه تا پروب دیتاپلین موفق بشه قبل از اینکه از یه گیت‌وی صرف‌نظر کنه. پیش‌فرض `10`.
 - `AETHER_MASQUE_STARTUP_SECS` (`--startup-secs`) — مهلت کلی برای اتصال TCP/QUIC، TLS، CONNECT-IP و تأیید اولیهٔ دیتاپلین. پیش‌فرض `30`.

@@ -159,9 +159,10 @@ aether --gool --wiw-inner 188.114.96.1:1701    # هاپ بیرونی اسکن م
 aether --noize aggressive
 ```
 
-یک مورد فقط به MASQUE مربوط است: `--fragment` روی حامل HTTP/2 پیام ClientHello را
-تکه می‌کند و بازرس‌هایی را که SNI را از یک بسته می‌خوانند خنثی می‌کند.
-`--fragment-size` و `--fragment-delay` تنظیمش می‌کنند.
+یک مورد به ClientHello در TLS مربوط است: `--fragment` آن را روی حامل HTTP/2 در MASQUE
+تکه می‌کند و بازرس‌هایی را که SNI را از یک بسته می‌خوانند خنثی می‌کند، و ClientHello
+فراخوانی‌های WARP API را هم، با هر پروتکلی. `--fragment-size` و `--fragment-delay`
+هر دو را تنظیم می‌کنند. بدون `--fragment` هر دو یک‌تکه می‌روند.
 
 ## TLS
 

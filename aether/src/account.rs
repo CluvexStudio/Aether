@@ -552,14 +552,11 @@ async fn api_call(
     Err(last_error)
 }
 
-/// `--api-fragment`: the ClientHello of the calls to the WARP API goes out in pieces, sized and
-/// spaced by `--fragment-size` and `--fragment-delay` as on MASQUE over HTTP/2, for networks that
-/// filter the name of the API.
+/// `--fragment`: the ClientHello of the calls to the WARP API goes out in pieces as on MASQUE over
+/// HTTP/2, sized and spaced by the same `--fragment-size` and `--fragment-delay`, for networks that
+/// filter the name of the API. Without `--fragment` it goes whole.
 fn api_fragment() -> crate::fragment::FragmentConfig {
-    let fragment = api_fragment_of(
-        std::env::var("AETHER_API_FRAGMENT").ok().as_deref(),
-        crate::fragment::FragmentConfig::from_env(),
-    );
+    let fragment = crate::fragment::FragmentConfig::from_env();
     if fragment.enabled {
         static SAID: std::sync::Once = std::sync::Once::new();
         SAID.call_once(|| {
@@ -573,22 +570,6 @@ fn api_fragment() -> crate::fragment::FragmentConfig {
         });
     }
     fragment
-}
-
-/// The fragmenting `flag`, the value of AETHER_API_FRAGMENT, asks of the WARP API's ClientHello: the
-/// pieces of `masque`, the fragmenting of MASQUE over HTTP/2, whether that is on or not.
-fn api_fragment_of(
-    flag: Option<&str>,
-    masque: crate::fragment::FragmentConfig,
-) -> crate::fragment::FragmentConfig {
-    if flag.is_some_and(crate::fragment::is_truthy) {
-        crate::fragment::FragmentConfig {
-            enabled: true,
-            ..masque
-        }
-    } else {
-        crate::fragment::FragmentConfig::disabled()
-    }
 }
 
 /// The wait a server asked for with Retry-After, before the attempt after `attempt`: none after
@@ -1111,29 +1092,39 @@ mod tests {
     }
 
     #[test]
-    fn api_fragment_takes_the_pieces_of_the_http2_fragmenting_whether_that_is_on_or_not() {
-        let masque = crate::fragment::FragmentConfig {
-            enabled: false,
-            size_min: 8,
-            size_max: 16,
-            delay_min_ms: 2,
-            delay_max_ms: 10,
-            sni_split: false,
-        };
-        let on = api_fragment_of(Some("1"), masque);
+    fn the_calls_to_the_api_are_fragmented_as_masque_over_http2_is() {
+        // --fragment, --fragment-size and --fragment-delay. No other test sets them; the HTTP/2
+        // dial reads them as well, and its ClientHello in pieces changes nothing a test checks.
+        const SETTINGS: [&str; 3] = [
+            "AETHER_MASQUE_H2_FRAGMENT",
+            "AETHER_MASQUE_H2_FRAGMENT_SIZE",
+            "AETHER_MASQUE_H2_FRAGMENT_DELAY",
+        ];
+        let before: Vec<Option<String>> =
+            SETTINGS.iter().map(|key| std::env::var(key).ok()).collect();
+        std::env::set_var(SETTINGS[0], "1");
+        std::env::set_var(SETTINGS[1], "4-6");
+        std::env::set_var(SETTINGS[2], "1-3");
+        let on = api_fragment();
+        // Off when the setting says so, and without --fragment.
+        std::env::set_var(SETTINGS[0], "0");
+        let off = api_fragment();
+        std::env::remove_var(SETTINGS[0]);
+        let unset = api_fragment();
+        for (key, value) in SETTINGS.iter().zip(before) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+
         assert!(on.enabled);
         assert_eq!(
             (on.size_min, on.size_max, on.delay_min_ms, on.delay_max_ms),
-            (8, 16, 2, 10)
+            (4, 6, 1, 3)
         );
-        assert!(api_fragment_of(Some(" yes "), masque).enabled);
-        assert!(!api_fragment_of(None, masque).enabled);
-        let fragmenting = crate::fragment::FragmentConfig {
-            enabled: true,
-            ..masque
-        };
-        assert!(!api_fragment_of(Some("0"), fragmenting).enabled);
-        assert!(!api_fragment_of(None, fragmenting).enabled);
+        assert!(!off.enabled);
+        assert!(!unset.enabled);
     }
 
     #[test]
