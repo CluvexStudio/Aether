@@ -532,7 +532,7 @@ async fn api_call(
             return Err(last_error);
         }
 
-        if let Some(wait) = cooldown {
+        if let Some(wait) = retry_after_wait(attempt, cooldown) {
             log::warn!(
                 "[!] {label} asked us to wait {}s before retrying",
                 wait.as_secs()
@@ -542,6 +542,15 @@ async fn api_call(
     }
 
     Err(last_error)
+}
+
+/// The wait a server asked for with Retry-After, before the attempt after `attempt`: none after
+/// the last one, which no attempt follows.
+fn retry_after_wait(
+    attempt: u32,
+    asked: Option<std::time::Duration>,
+) -> Option<std::time::Duration> {
+    asked.filter(|_| attempt + 1 < API_ATTEMPTS)
 }
 
 fn generate_x25519_keypair() -> ([u8; 32], String) {
@@ -1052,6 +1061,15 @@ mod tests {
         assert!(first >= std::time::Duration::from_millis(API_BACKOFF_BASE_MS / 2));
         assert!(late <= std::time::Duration::from_millis(API_BACKOFF_CAP_MS * 2));
         assert!(late >= first);
+    }
+
+    #[test]
+    fn a_retry_after_is_waited_out_only_when_another_attempt_follows() {
+        let asked = Some(std::time::Duration::from_secs(30));
+        assert_eq!(retry_after_wait(0, asked), asked);
+        assert_eq!(retry_after_wait(API_ATTEMPTS - 2, asked), asked);
+        assert_eq!(retry_after_wait(API_ATTEMPTS - 1, asked), None);
+        assert_eq!(retry_after_wait(0, None), None);
     }
 
     #[test]
