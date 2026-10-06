@@ -233,7 +233,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         Protocol::Masque => {
             select_masque_transport().await;
             let config_path = masque_config_path(&base_config);
-            let identity = load_or_provision_masque(&config_path).await?;
+            let identity = load_or_provision_masque(&config_path, EnableWarp::Beside).await?;
             log::info!(
                 "[+] identity ready: device={} ipv4={} ipv6={}",
                 identity.device_id,
@@ -261,7 +261,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         Protocol::WarpInWarp if !gool_classic() => {
             select_masque_transport().await;
             let config_path = masque_config_path(&base_config);
-            let identity = load_or_provision_masque(&config_path).await?;
+            let identity = load_or_provision_masque(&config_path, EnableWarp::Beside).await?;
             let inner_path = derive_sibling_path(&config_path, "gool");
             log::info!(
                 "[+] gool: masque device={} carries the wireguard identity in {inner_path}",
@@ -289,8 +289,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             select_masque_transport().await;
             let primary_path = masque_config_path(&base_config);
             let secondary_path = derive_sibling_path(&primary_path, "secondary");
-            let primary = load_or_provision_masque(&primary_path).await?;
-            let secondary = load_or_provision_masque(&secondary_path).await?;
+            let primary = load_or_provision_masque(&primary_path, EnableWarp::Beside).await?;
+            let secondary = load_or_provision_masque(&secondary_path, EnableWarp::Beside).await?;
             log::info!(
                 "[+] outer device={} ipv4={} | inner device={} ipv4={}",
                 primary.device_id,
@@ -880,18 +880,57 @@ async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> 
     Ok(identity)
 }
 
-async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity> {
+/// When WARP is enabled on a MASQUE identity that does not have it yet: before the run goes on, as
+/// a registration has it, or beside the tunnel, which does not wait for an API that may be
+/// filtered where the tunnel gets through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnableWarp {
+    Wait,
+    Beside,
+}
+
+async fn load_or_provision_masque(
+    config_path: &str,
+    enable: EnableWarp,
+) -> Result<account::Identity> {
     let identity = load_or_enrol_masque(config_path).await?;
-    if identity.refused {
+    if !warp_still_to_enable(&identity) {
         return Ok(identity);
     }
-    match account::enable_warp(&identity.device_id, &identity.access_token).await {
-        Ok(()) => log::info!("[+] warp enabled for the masque device"),
+    let enabling = enable_masque_warp(
+        config_path.to_string(),
+        identity.device_id.clone(),
+        identity.access_token.clone(),
+    );
+    match enable {
+        EnableWarp::Wait => enabling.await,
+        EnableWarp::Beside => {
+            tokio::spawn(enabling);
+        }
+    }
+    Ok(identity)
+}
+
+/// Whether WARP is still to be enabled on a MASQUE identity: one the API refused is left alone, and
+/// one whose file records it enabled needs it no more.
+fn warp_still_to_enable(identity: &account::Identity) -> bool {
+    !identity.refused && !identity.warp_enabled
+}
+
+/// Enables WARP on the MASQUE device and, once the API has taken it, records that in its identity
+/// file at `path`, so the call is made once per identity rather than at every start.
+async fn enable_masque_warp(path: String, device_id: String, token: String) {
+    match account::enable_warp(&device_id, &token).await {
+        Ok(()) => {
+            log::info!("[+] warp enabled for the masque device");
+            if let Err(error) = config::save_warp_enabled(&path, &device_id) {
+                log::warn!("[!] warp is enabled for the masque device, but {path} does not say so: {error}");
+            }
+        }
         Err(error) => log::warn!(
             "[!] could not enable warp for the masque device, the edge may refuse it: {error}"
         ),
     }
-    Ok(identity)
 }
 
 async fn load_or_enrol_masque(config_path: &str) -> Result<account::Identity> {
@@ -1060,7 +1099,7 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
             continue;
         }
         let identity = if over_masque {
-            load_or_provision_masque(&path).await?
+            load_or_provision_masque(&path, EnableWarp::Wait).await?
         } else {
             load_or_provision_warp(&path).await?
         };
@@ -2873,16 +2912,21 @@ async fn gool_inner_identity(
     let previous = std::env::var("AETHER_UPSTREAM").ok();
     std::env::set_var("AETHER_UPSTREAM", format!("socks5h://{through}"));
     let registered = account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await;
+    let mut warp_enabled = false;
     if let Ok(id) = &registered {
-        if let Err(e) = account::enable_warp(&id.device_id, &id.access_token).await {
-            log::warn!("[-] could not enable warp on the gool identity: {e}");
+        match account::enable_warp(&id.device_id, &id.access_token).await {
+            Ok(()) => warp_enabled = true,
+            Err(e) => log::warn!("[-] could not enable warp on the gool identity: {e}"),
         }
     }
     match previous {
         Some(value) => std::env::set_var("AETHER_UPSTREAM", value),
         None => std::env::remove_var("AETHER_UPSTREAM"),
     }
-    let identity = registered?;
+    let identity = account::Identity {
+        warp_enabled,
+        ..registered?
+    };
     config::save(inner_path, &identity)?;
     log::info!(
         "[+] gool wireguard identity registered from inside warp and saved to {inner_path}: device={} ipv4={}",
@@ -3324,6 +3368,22 @@ mod tests {
         assert!(!needs_udp_to_warp(Protocol::WarpInWarp, false));
         assert!(!needs_udp_to_warp(Protocol::Masque, true));
         assert!(!needs_udp_to_warp(Protocol::MasqueInMasque, false));
+    }
+
+    #[test]
+    fn warp_is_enabled_once_on_an_identity_and_never_on_a_refused_one() {
+        let fresh = account::handshake_identity();
+        assert!(warp_still_to_enable(&fresh));
+        let enabled = account::Identity {
+            warp_enabled: true,
+            ..account::handshake_identity()
+        };
+        assert!(!warp_still_to_enable(&enabled));
+        let refused = account::Identity {
+            refused: true,
+            ..account::handshake_identity()
+        };
+        assert!(!warp_still_to_enable(&refused));
     }
 
     #[test]

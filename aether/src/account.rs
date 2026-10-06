@@ -149,6 +149,9 @@ pub struct Identity {
     pub gateway_proxy: String,
     pub assigned_endpoint: String,
     pub refused: bool,
+    /// Whether WARP was enabled on the device (`enable_warp`), as its identity file records it, so
+    /// that it is asked for once per identity rather than at every start.
+    pub warp_enabled: bool,
 }
 
 pub struct MasqueKeyPair {
@@ -241,6 +244,7 @@ pub(crate) fn handshake_identity() -> Identity {
         gateway_proxy: String::new(),
         assigned_endpoint: String::new(),
         refused: false,
+        warp_enabled: false,
     }
 }
 
@@ -827,6 +831,7 @@ fn finish_provision(reg: AccountData, wg_private: [u8; 32]) -> Result<Identity> 
         gateway_proxy,
         assigned_endpoint,
         refused: false,
+        warp_enabled: false,
     })
 }
 
@@ -1008,6 +1013,7 @@ mod tests {
             gateway_proxy: String::new(),
             assigned_endpoint: String::new(),
             refused: false,
+            warp_enabled: false,
         }
     }
 
