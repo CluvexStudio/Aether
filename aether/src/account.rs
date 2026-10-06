@@ -471,6 +471,7 @@ async fn api_call(
 
     let mut ech = api_ech().await?;
     let fingerprint = crate::tls::Fingerprint::configured();
+    let fragment = api_fragment();
     let headers = front_headers(bearer, jwt);
     let request = crate::https::Request {
         method,
@@ -498,7 +499,14 @@ async fn api_call(
             tokio::time::sleep(wait).await;
         }
 
-        let sent = crate::https::send(&request, &fingerprint, ech.as_mut(), API_TIMEOUT).await;
+        let sent = crate::https::send_fragmented(
+            &request,
+            &fingerprint,
+            ech.as_mut(),
+            API_TIMEOUT,
+            fragment,
+        )
+        .await;
         if let Some(key) = &ech {
             // A key a server handed back is the one the later calls offer.
             remember_api_ech(key.clone());
@@ -546,6 +554,45 @@ async fn api_call(
     }
 
     Err(last_error)
+}
+
+/// `--api-fragment`: the ClientHello of the calls to the WARP API goes out in pieces, sized and
+/// spaced by `--fragment-size` and `--fragment-delay` as on MASQUE over HTTP/2, for networks that
+/// filter the name of the API.
+fn api_fragment() -> crate::fragment::FragmentConfig {
+    let fragment = api_fragment_of(
+        std::env::var("AETHER_API_FRAGMENT").ok().as_deref(),
+        crate::fragment::FragmentConfig::from_env(),
+    );
+    if fragment.enabled {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| {
+            log::info!(
+                "[*] the calls to the warp api send their ClientHello in pieces of {}-{} bytes, {}-{}ms apart",
+                fragment.size_min,
+                fragment.size_max,
+                fragment.delay_min_ms,
+                fragment.delay_max_ms
+            )
+        });
+    }
+    fragment
+}
+
+/// The fragmenting `flag`, the value of AETHER_API_FRAGMENT, asks of the WARP API's ClientHello: the
+/// pieces of `masque`, the fragmenting of MASQUE over HTTP/2, whether that is on or not.
+fn api_fragment_of(
+    flag: Option<&str>,
+    masque: crate::fragment::FragmentConfig,
+) -> crate::fragment::FragmentConfig {
+    if flag.is_some_and(crate::fragment::is_truthy) {
+        crate::fragment::FragmentConfig {
+            enabled: true,
+            ..masque
+        }
+    } else {
+        crate::fragment::FragmentConfig::disabled()
+    }
 }
 
 /// The wait a server asked for with Retry-After, before the attempt after `attempt`: none after
@@ -1067,6 +1114,32 @@ mod tests {
         assert!(first >= std::time::Duration::from_millis(API_BACKOFF_BASE_MS / 2));
         assert!(late <= std::time::Duration::from_millis(API_BACKOFF_CAP_MS * 2));
         assert!(late >= first);
+    }
+
+    #[test]
+    fn api_fragment_takes_the_pieces_of_the_http2_fragmenting_whether_that_is_on_or_not() {
+        let masque = crate::fragment::FragmentConfig {
+            enabled: false,
+            size_min: 8,
+            size_max: 16,
+            delay_min_ms: 2,
+            delay_max_ms: 10,
+            sni_split: false,
+        };
+        let on = api_fragment_of(Some("1"), masque);
+        assert!(on.enabled);
+        assert_eq!(
+            (on.size_min, on.size_max, on.delay_min_ms, on.delay_max_ms),
+            (8, 16, 2, 10)
+        );
+        assert!(api_fragment_of(Some(" yes "), masque).enabled);
+        assert!(!api_fragment_of(None, masque).enabled);
+        let fragmenting = crate::fragment::FragmentConfig {
+            enabled: true,
+            ..masque
+        };
+        assert!(!api_fragment_of(Some("0"), fragmenting).enabled);
+        assert!(!api_fragment_of(None, fragmenting).enabled);
     }
 
     #[test]

@@ -205,6 +205,7 @@ Reconnect to it now without rescanning? [Y/n]:
 - `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — فرگمنت کردن TLS ClientHello روی h2. پیش‌فرض خاموشه.
 - `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — اندازهٔ هر تکه به بایت، `n` یا `a-b`. پیش‌فرض `8-16`.
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — تأخیر بین تکه‌ها به میلی‌ثانیه، `n` یا `a-b`. پیش‌فرض `2-10`.
+- `AETHER_API_FRAGMENT` (`--api-fragment`) — فرستادن TLS ClientHello فراخوانی‌های WARP API به‌صورت تکه‌تکه، با اندازه و تأخیرِ `--fragment-size` و `--fragment-delay`. پیش‌فرض خاموشه.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — اگه این رو بذاری، فقط `:status 200` کافیه؛ پروب end-to-end دیتاپلین انجام نمی‌شه.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — چند ثانیه صبر کنه تا پروب دیتاپلین موفق بشه قبل از اینکه از یه گیت‌وی صرف‌نظر کنه. پیش‌فرض `10`.
 - `AETHER_MASQUE_STARTUP_SECS` (`--startup-secs`) — مهلت کلی برای اتصال TCP/QUIC، TLS، CONNECT-IP و تأیید اولیهٔ دیتاپلین. پیش‌فرض `30`.

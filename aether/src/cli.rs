@@ -62,8 +62,10 @@ Protocol:
   --gool-peer <ip:port>    the wireguard endpoint gool dials inside the tunnel
                            (default: the one its registration names, port 2408)
   --gool-classic           the older gool: wireguard tunneled in wireguard
-  --api-fragment           reach the warp api only over the fragmented route,
-                           for networks that filter the key domain
+  --api-fragment           send the TLS ClientHello of the calls to the WARP
+                           API in pieces, as --fragment does on HTTP/2 and
+                           with its --fragment-size and --fragment-delay, for
+                           networks that filter the name of the API
   --mim, --masque-in-masque
                            use MASQUE-in-MASQUE: a masque tunnel carried inside
                            another one, which changes the address you come out
@@ -372,7 +374,7 @@ Environment variables:
   AETHER_PROTOCOL                  --protocol: masque, wg, gool or mim
   AETHER_GOOL_INNER                --gool-peer
   AETHER_GOOL_MODE                 classic for --gool-classic
-  AETHER_API_FRAGMENT              --api-fragment
+  AETHER_API_FRAGMENT              --api-fragment (default off)
   AETHER_WIW_OUTER_PEER            --wiw-outer
   AETHER_WIW_INNER_PEER            --wiw-inner
   AETHER_WIW_PEERS                 --wiw-peers, or auto for --wiw-scan
