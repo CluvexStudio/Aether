@@ -789,8 +789,9 @@ pub fn default_path() -> &'static str {
     "/"
 }
 
+/// The server name the MASQUE handshakes send without --masque-sni.
 pub fn default_sni() -> &'static str {
-    consts::CONNECT_SNI
+    consts::DEFAULT_MASQUE_SNI
 }
 
 /// The server name the MASQUE handshakes put in their ClientHello, over HTTP/3 and HTTP/2:
@@ -1140,12 +1141,14 @@ mod masque_sni_tests {
     #[test]
     fn the_masque_sni_is_a_domain_name_or_the_default() {
         for (given, sent) in [
-            ("", consts::CONNECT_SNI),
-            ("  ", consts::CONNECT_SNI),
-            ("www.cloudflare.com", "www.cloudflare.com"),
-            (" www.cloudflare.com ", "www.cloudflare.com"),
+            // None given: www.cloudflare.com.
+            ("", "www.cloudflare.com"),
+            ("  ", "www.cloudflare.com"),
+            // The name the WARP client sends.
+            (consts::CONNECT_SNI, consts::CONNECT_SNI),
+            (" front.example.test ", "front.example.test"),
             // SNI has no trailing dot (RFC 6066).
-            ("www.cloudflare.com.", "www.cloudflare.com"),
+            ("front.example.test.", "front.example.test"),
             ("localhost", "localhost"),
         ] {
             assert_eq!(
@@ -1177,9 +1180,9 @@ mod masque_sni_tests {
     #[tokio::test]
     async fn the_masque_sni_is_that_of_its_variable() {
         let _options = tls::hold_options().await;
-        assert_eq!(masque_sni().ok().as_deref(), Some(consts::CONNECT_SNI));
-        std::env::set_var("AETHER_MASQUE_SNI", "www.cloudflare.com");
         assert_eq!(masque_sni().ok().as_deref(), Some("www.cloudflare.com"));
+        std::env::set_var("AETHER_MASQUE_SNI", consts::CONNECT_SNI);
+        assert_eq!(masque_sni().ok().as_deref(), Some(consts::CONNECT_SNI));
         std::env::set_var("AETHER_MASQUE_SNI", "1.1.1.1");
         assert!(masque_sni().is_err());
     }

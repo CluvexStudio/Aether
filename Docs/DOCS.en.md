@@ -230,14 +230,15 @@ a TLS of their own. Three options change the fingerprint of all four:
 A cipher or group name BoringSSL does not know stops the core as it starts, with
 the option named.
 
-`--masque-sni <name>` changes the server name the MASQUE handshakes, on both
-carriers, put in their ClientHello, `consumer-masque.cloudflareclient.com` unless it
-is given. Only the TLS name changes: the HTTP host, the `:authority` of the CONNECT
-request, stays `cloudflareaccess.com`. It goes into every MASQUE handshake: the scans
-and checks of gateways, the tunnel, and both hops of MASQUE-in-MASQUE. With `--ech`
-it is the name inside the encrypted ClientHello, and the one in the clear is the
-config's public name. A value that is no domain name, an IP address among them,
-stops the core as it starts.
+The MASQUE handshakes, on both carriers, put `www.cloudflare.com` in their
+ClientHello as the server name; `--masque-sni <name>` puts another one there, such
+as `consumer-masque.cloudflareclient.com`, the one the WARP client sends. Only the
+TLS name changes: the HTTP host, the `:authority` of the CONNECT request, stays
+`cloudflareaccess.com`. The name goes into every MASQUE handshake: the scans and
+checks of gateways, the tunnel, and both hops of MASQUE-in-MASQUE. With `--ech` it is
+the name inside the encrypted ClientHello, and the one in the clear is the config's
+public name. A value that is no domain name, an IP address among them, stops the
+core as it starts.
 
 `--ech auto` fetches an Encrypted Client Hello config and hides the server name
 altogether, when the network permits it, on the MASQUE handshakes, on both
@@ -635,7 +636,7 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_QUICK_RECONNECT` | reuse the saved endpoint |
 | `AETHER_MASQUE_HTTP2`, `AETHER_MASQUE_H2_PEER` | HTTP/2 carrier; `--h3` sets it to `0` |
 | `AETHER_QUIC_V2` | `0` turns off the QUIC v2 opener (on by default) |
-| `AETHER_MASQUE_SNI` | server name of the MASQUE ClientHello; the HTTP host stays |
+| `AETHER_MASQUE_SNI` | server name of the MASQUE ClientHello (default `www.cloudflare.com`); the HTTP host stays |
 | `AETHER_ECH` | `auto` or a base64 config, for MASQUE and the WARP API |
 | `AETHER_ECH_DNS` | resolver `--ech auto` asks (`udp://`, `tcp://` or `https://`) |
 | `AETHER_ECH_DOMAIN` | domain whose ECH config `--ech auto` takes |

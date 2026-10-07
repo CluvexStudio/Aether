@@ -190,9 +190,9 @@ ClientHello مرورگر Chrome را همان‌طور که BoringSSL می‌ن�
 نام رمز یا گروهی که BoringSSL نشناسد هسته را در شروع، با نام همان گزینه، متوقف
 می‌کند.
 
-`--masque-sni <name>` نام سروری را که هندشیک‌های MASQUE، روی هر دو حامل، در ClientHello
-می‌گذارند تغییر می‌دهد؛ بدون آن این نام `consumer-masque.cloudflareclient.com` است.
-فقط نام TLS عوض می‌شود: میزبان HTTP، یعنی `:authority` درخواست CONNECT، همان
+هندشیک‌های MASQUE، روی هر دو حامل، `www.cloudflare.com` را به‌عنوان نام سرور در
+ClientHello می‌گذارند؛ `--masque-sni <name>` نام دیگری را به‌جای آن می‌گذارد، مثلاً
+`consumer-masque.cloudflareclient.com` که کلاینت WARP می‌فرستد. فقط نام TLS عوض می‌شود: میزبان HTTP، یعنی `:authority` درخواست CONNECT، همان
 `cloudflareaccess.com` می‌ماند. این نام در همه‌ی هندشیک‌های MASQUE می‌رود: اسکن و
 بررسی گیت‌وی‌ها، خود تونل، و هر دو هاپ MASQUE-in-MASQUE (`--mim`). با `--ech` این نام
 درون ClientHello رمزشده می‌رود و نامی که آشکار فرستاده می‌شود نام عمومی (public name)
@@ -429,7 +429,7 @@ cargo build --release --bin aether   # فقط باینری
 | `AETHER_REPROVISION` | جایگزینی هویتی که کلادفلر نمی‌پذیرد |
 | `AETHER_QUICK_RECONNECT` | استفاده از نقطه‌ی ذخیره‌شده |
 | `AETHER_MASQUE_HTTP2`، `AETHER_MASQUE_H2_PEER` | حامل HTTP/2 |
-| `AETHER_MASQUE_SNI` | نام سرور در ClientHello هندشیک‌های MASQUE؛ میزبان HTTP همان می‌ماند |
+| `AETHER_MASQUE_SNI` | نام سرور در ClientHello هندشیک‌های MASQUE (پیش‌فرض `www.cloudflare.com`)؛ میزبان HTTP همان می‌ماند |
 | `AETHER_ECH` | `auto` یا یک کانفیگ base64، برای MASQUE و API وارپ |
 | `AETHER_ECH_DNS` | سرور DNS که `--ech auto` از آن می‌پرسد (`udp://`، `tcp://` یا `https://`) |
 | `AETHER_ECH_DOMAIN` | دامنه‌ای که `--ech auto` کانفیگ ECH آن را می‌گیرد |

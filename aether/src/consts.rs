@@ -2,6 +2,9 @@ pub const API_URL: &str = "https://api.cloudflareclient.com";
 pub const API_VERSION: &str = "v0a4471";
 
 pub const CONNECT_SNI: &str = "consumer-masque.cloudflareclient.com";
+/// The server name the MASQUE handshakes send unless --masque-sni names another, in place of
+/// CONNECT_SNI, the one the WARP client sends.
+pub const DEFAULT_MASQUE_SNI: &str = "www.cloudflare.com";
 pub const L4_CONNECT_SNI: &str = "consumer-masque-proxy.cloudflareclient.com";
 pub const CONNECT_URI: &str = "https://cloudflareaccess.com";
 

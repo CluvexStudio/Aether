@@ -4145,46 +4145,57 @@ mod tests {
         let _setting = upstream::hold_setting().await;
         // The handshakes take --masque-sni, the carrier and the fingerprint from the options.
         let _options = tls::hold_options().await;
-        std::env::set_var("AETHER_MASQUE_SNI", "www.cloudflare.com");
         let identity = account::handshake_identity();
         let startup = std::time::Duration::from_secs(10);
 
-        for h2 in [false, true] {
-            if h2 {
-                std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+        // Without --masque-sni, www.cloudflare.com; with it, the name it gives.
+        for (option, sni) in [
+            (None, "www.cloudflare.com"),
+            (Some(consts::CONNECT_SNI), consts::CONNECT_SNI),
+        ] {
+            match option {
+                Some(name) => std::env::set_var("AETHER_MASQUE_SNI", name),
+                None => std::env::remove_var("AETHER_MASQUE_SNI"),
             }
-            // The check of a gateway, and the tunnel.
-            for tunnel in [false, true] {
-                let case = format!("h2 {h2}, tunnel {tunnel}");
-                let (address, reached) = if h2 {
-                    h2_masque_server().await
+            for h2 in [false, true] {
+                if h2 {
+                    std::env::set_var("AETHER_MASQUE_HTTP2", "1");
                 } else {
-                    h3_masque_server().await
-                };
-                let client = async {
-                    if tunnel {
-                        let mtu = if h2 { H2_TUNNEL_MTU } else { TUNNEL_MTU };
-                        let datagram = quic::MAX_DATAGRAM_SIZE;
-                        let hop = establish_masque(
-                            &identity, address, None, h2, mtu, datagram, false, startup, "test",
-                        );
-                        let _ = hop.await;
+                    std::env::remove_var("AETHER_MASQUE_HTTP2");
+                }
+                // The check of a gateway, and the tunnel.
+                for tunnel in [false, true] {
+                    let case = format!("--masque-sni {option:?}, h2 {h2}, tunnel {tunnel}");
+                    let (address, reached) = if h2 {
+                        h2_masque_server().await
                     } else {
-                        quick_verify_masque_peer(&identity, address, None).await;
-                    }
-                };
-                let (name, authority) = tokio::select! {
-                    biased;
-                    reached = reached => reached.expect("the server"),
-                    () = client => panic!("{case}: the request did not reach the server"),
-                };
-                assert_eq!(name.as_deref(), Some("www.cloudflare.com"), "{case}");
-                let host = if h2 {
-                    "cloudflareaccess.com:443"
-                } else {
-                    "cloudflareaccess.com"
-                };
-                assert_eq!(authority, host, "{case}");
+                        h3_masque_server().await
+                    };
+                    let client = async {
+                        if tunnel {
+                            let mtu = if h2 { H2_TUNNEL_MTU } else { TUNNEL_MTU };
+                            let datagram = quic::MAX_DATAGRAM_SIZE;
+                            let hop = establish_masque(
+                                &identity, address, None, h2, mtu, datagram, false, startup, "test",
+                            );
+                            let _ = hop.await;
+                        } else {
+                            quick_verify_masque_peer(&identity, address, None).await;
+                        }
+                    };
+                    let (name, authority) = tokio::select! {
+                        biased;
+                        reached = reached => reached.expect("the server"),
+                        () = client => panic!("{case}: the request did not reach the server"),
+                    };
+                    assert_eq!(name.as_deref(), Some(sni), "{case}");
+                    let host = if h2 {
+                        "cloudflareaccess.com:443"
+                    } else {
+                        "cloudflareaccess.com"
+                    };
+                    assert_eq!(authority, host, "{case}");
+                }
             }
         }
     }

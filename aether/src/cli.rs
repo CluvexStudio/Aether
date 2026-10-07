@@ -143,6 +143,7 @@ TLS:
   unchecked
   --masque-sni <name>      the server name the MASQUE handshakes, over HTTP/3 and
                            HTTP/2, put in their ClientHello (default
+                           www.cloudflare.com; the WARP client sends
                            consumer-masque.cloudflareclient.com); the HTTP host,
                            the :authority of the CONNECT request, stays
                            cloudflareaccess.com. With --ech it is the name

@@ -766,7 +766,8 @@ mod tests {
         rand::rng().fill(&mut scid[..]);
         let scid = quiche::ConnectionId::from_ref(&scid);
 
-        let sni = crate::consts::CONNECT_SNI;
+        // The name the core's MASQUE handshakes send.
+        let sni = quic::default_sni();
         let mut conn = quiche::connect(Some(sni), &scid, local, peer, &mut config).ok()?;
 
         let mut out = [0u8; 1350];
