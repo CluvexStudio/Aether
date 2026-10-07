@@ -793,6 +793,31 @@ pub fn default_sni() -> &'static str {
     consts::CONNECT_SNI
 }
 
+/// The server name the MASQUE handshakes put in their ClientHello, over HTTP/3 and HTTP/2:
+/// that of --masque-sni (AETHER_MASQUE_SNI), see `masque_sni_of`. Only the TLS name changes;
+/// the HTTP host, the :authority of the CONNECT request, stays `default_authority`.
+pub fn masque_sni() -> Result<String> {
+    masque_sni_of(&std::env::var("AETHER_MASQUE_SNI").unwrap_or_default())
+}
+
+/// The server name `value`, given to --masque-sni, makes the MASQUE handshakes send: none
+/// given, `default_sni`; else that domain name, without a trailing dot, as SNI has it
+/// (RFC 6066). An address or anything else that is no domain name is refused, rather than
+/// have the handshakes send the default name in its place.
+pub fn masque_sni_of(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default_sni().to_string());
+    }
+    let name = value.strip_suffix('.').unwrap_or(value);
+    if name.ends_with('.') || name.parse::<IpAddr>().is_ok() || !crate::dns::valid_domain(name) {
+        return Err(AetherError::Tls(format!(
+            "--masque-sni: {value} is no domain name"
+        )));
+    }
+    Ok(name.to_string())
+}
+
 #[derive(Clone)]
 pub struct VerifyParams {
     pub peer: SocketAddr,
@@ -1105,5 +1130,57 @@ mod v2_bait_tests {
         client.connect(server_addr).await.unwrap();
         send_version_bait(&client, server_addr, Duration::from_secs(2), 1).await;
         responder.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod masque_sni_tests {
+    use super::*;
+
+    #[test]
+    fn the_masque_sni_is_a_domain_name_or_the_default() {
+        for (given, sent) in [
+            ("", consts::CONNECT_SNI),
+            ("  ", consts::CONNECT_SNI),
+            ("www.cloudflare.com", "www.cloudflare.com"),
+            (" www.cloudflare.com ", "www.cloudflare.com"),
+            // SNI has no trailing dot (RFC 6066).
+            ("www.cloudflare.com.", "www.cloudflare.com"),
+            ("localhost", "localhost"),
+        ] {
+            assert_eq!(
+                masque_sni_of(given).ok().as_deref(),
+                Some(sent),
+                "{given:?}"
+            );
+        }
+        for refused in [
+            "1.1.1.1",
+            "1.1.1.1.",
+            "2606:4700:4700::1111",
+            "[2606:4700:4700::1111]",
+            "www..cloudflare.com",
+            "www.cloudflare.com..",
+            ".",
+            "www cloudflare com",
+            "www.cloudflare.com:443",
+            "https://www.cloudflare.com",
+        ] {
+            let error = masque_sni_of(refused).expect_err(refused);
+            assert_eq!(
+                error.to_string(),
+                format!("tls: --masque-sni: {refused} is no domain name")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_masque_sni_is_that_of_its_variable() {
+        let _options = tls::hold_options().await;
+        assert_eq!(masque_sni().ok().as_deref(), Some(consts::CONNECT_SNI));
+        std::env::set_var("AETHER_MASQUE_SNI", "www.cloudflare.com");
+        assert_eq!(masque_sni().ok().as_deref(), Some("www.cloudflare.com"));
+        std::env::set_var("AETHER_MASQUE_SNI", "1.1.1.1");
+        assert!(masque_sni().is_err());
     }
 }

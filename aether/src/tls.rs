@@ -187,17 +187,21 @@ pub fn check_tls_options() -> Result<()> {
     set_groups(&mut builder, &fingerprint.groups).map_err(|e| named("--tls-groups", e))
 }
 
-/// The variables of the options of the fingerprint.
+/// The variables of the options the handshakes are made with: those of the fingerprint, and
+/// for MASQUE --masque-sni and the carrier.
 #[cfg(test)]
-const OPTION_VARIABLES: [&str; 3] = [
+const OPTION_VARIABLES: [&str; 5] = [
     "AETHER_TLS_CIPHERS",
     "AETHER_TLS_GROUPS",
     "AETHER_DISABLE_GREASE",
+    "AETHER_MASQUE_SNI",
+    "AETHER_MASQUE_HTTP2",
 ];
 
-/// A hold on the options of the fingerprint, which the whole process shares, for a test that
-/// sets them or reads them through `Fingerprint::configured`: they start out clear, and are
-/// cleared again as it ends. A test that holds AETHER_UPSTREAM as well takes that first.
+/// A hold on the options the handshakes are made with, which the whole process shares, for a
+/// test that sets them, reads them through `Fingerprint::configured`, or makes a MASQUE
+/// handshake: they start out clear, and are cleared again as it ends. A test that holds
+/// AETHER_UPSTREAM as well takes that first.
 #[cfg(test)]
 pub(crate) struct OptionsHeld(tokio::sync::MutexGuard<'static, ()>);
 
@@ -210,7 +214,7 @@ impl Drop for OptionsHeld {
     }
 }
 
-/// Waits for the hold on the options of the fingerprint, see `OptionsHeld`.
+/// Waits for the hold on the options of the handshakes, see `OptionsHeld`.
 #[cfg(test)]
 pub(crate) async fn hold_options() -> OptionsHeld {
     static OPTIONS: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();

@@ -239,6 +239,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_WG_CONFIG` and `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — the config path specific to each protocol.
 - `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — how long an endpoint is excluded from rescans once its tunnel ended twice in a row, each time within five minutes of starting; a tunnel that stayed up longer does not count. Default `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — override the TLS key-share groups advertised in the handshake. Default mimics Chrome (`P-256:X25519:P-384`).
+- `AETHER_MASQUE_SNI` (`--masque-sni`) — the server name the MASQUE handshakes (HTTP/3 and HTTP/2) put in their ClientHello, instead of `consumer-masque.cloudflareclient.com`. Only the TLS name changes; the HTTP host (`:authority`) stays `cloudflareaccess.com`.
 
 ## Practical examples
 

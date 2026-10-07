@@ -241,6 +241,7 @@ Reconnect to it now without rescanning? [Y/n]:
 - `AETHER_WG_CONFIG` و `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — مسیر فایل کانفیگ مخصوص هر پروتکل.
 - `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — مدت حذف موقت نقطه‌ای از اسکن‌ها که تونلش دو بار پشت‌سرهم، هر بار کمتر از پنج دقیقه بعد از وصل شدن، قطع شده؛ تونلی که بیشتر سرپا مونده حساب نمی‌شه. پیش‌فرض `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — بازنویسی گروه‌های TLS key-share که توی دست‌دادن اعلام می‌شن. پیش‌فرض شبیه کروم هست (`P-256:X25519:P-384`).
+- `AETHER_MASQUE_SNI` (`--masque-sni`) — نام سروری که هندشیک‌های MASQUE (روی HTTP/3 و HTTP/2) توی ClientHello می‌فرستن، به‌جای `consumer-masque.cloudflareclient.com`. فقط نام TLS عوض می‌شه؛ میزبان HTTP (`:authority`) همون `cloudflareaccess.com` می‌مونه.
 
 ## مثال‌های عملی
 

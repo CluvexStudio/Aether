@@ -98,9 +98,11 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     stats::spawn_reporter();
 
     install_netstack_panic_guard();
-    // A cipher string or a group list BoringSSL does not take, or an address the calls to the
-    // WARP API cannot use, stops the core here, with its option named.
+    // A cipher string or a group list BoringSSL does not take, a --masque-sni that is no domain
+    // name, or an address the calls to the WARP API cannot use, stops the core here, with its
+    // option named.
     tls::check_tls_options()?;
+    quic::masque_sni()?;
     account::check_api_address()?;
     // The key of the WARP API calls of an earlier run of the library is not this run's.
     account::forget_api_ech();
@@ -1139,7 +1141,7 @@ async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result
             log::info!("[*] hunting for a working MASQUE gateway (deep connect-ip verification)");
             let mode = prober::ScanMode::parse(&mode_str);
             let probe = prober::MasqueProbe {
-                sni: consts::CONNECT_SNI.to_string(),
+                sni: quic::masque_sni()?,
                 authority: quic::default_authority().to_string(),
                 path: quic::default_path().to_string(),
                 cert_pem: std::sync::Arc::from(identity.cert_pem.clone()),
@@ -1297,7 +1299,7 @@ async fn hunt_masque_peer(
     );
     let mode = prober::ScanMode::parse(mode_str);
     let probe = prober::MasqueProbe {
-        sni: consts::CONNECT_SNI.to_string(),
+        sni: quic::masque_sni()?,
         authority: quic::default_authority().to_string(),
         path: quic::default_path().to_string(),
         cert_pem: std::sync::Arc::from(identity.cert_pem.clone()),
@@ -1338,9 +1340,18 @@ async fn quick_verify_masque_peer(
     peer: SocketAddr,
     ech: Option<Vec<u8>>,
 ) -> bool {
+    // The core checks the name as it starts; a job of the library given no domain name fails
+    // every check here.
+    let sni = match quic::masque_sni() {
+        Ok(sni) => sni,
+        Err(e) => {
+            log::warn!("[-] {e}");
+            return false;
+        }
+    };
     let vp = quic::VerifyParams {
         peer,
-        sni: consts::CONNECT_SNI.to_string(),
+        sni: sni.clone(),
         authority: quic::default_authority().to_string(),
         path: quic::default_path().to_string(),
         cert_pem: identity.cert_pem.clone(),
@@ -1354,7 +1365,7 @@ async fn quick_verify_masque_peer(
     if masque_h2::enabled() {
         let cfg = masque_h2::H2TunnelConfig {
             peer: masque_h2::h2_peer(peer),
-            sni: consts::CONNECT_SNI.to_string(),
+            sni,
             authority: quic::default_authority().to_string(),
             path: quic::default_path().to_string(),
             cert_pem: identity.cert_pem.clone(),
@@ -1628,6 +1639,7 @@ async fn establish_masque(
     startup: std::time::Duration,
     label: &str,
 ) -> Result<MasqueHop> {
+    let sni = quic::masque_sni()?;
     let (chans, internals) = quic::channels();
     let quic::Channels {
         outbound_tx,
@@ -1659,7 +1671,7 @@ async fn establish_masque(
     let tunnel_task = if h2 {
         let h2cfg = masque_h2::H2TunnelConfig {
             peer,
-            sni: consts::CONNECT_SNI.to_string(),
+            sni,
             authority: quic::default_authority().to_string(),
             path: quic::default_path().to_string(),
             cert_pem: identity.cert_pem.clone(),
@@ -1680,7 +1692,7 @@ async fn establish_masque(
     } else {
         let cfg = quic::TunnelConfig {
             peer,
-            sni: consts::CONNECT_SNI.to_string(),
+            sni,
             authority: quic::default_authority().to_string(),
             path: quic::default_path().to_string(),
             cert_pem: identity.cert_pem.clone(),
@@ -4015,5 +4027,165 @@ mod tests {
         .expect("the inner hop stays where it was put");
         assert_eq!(chosen.outer, Some("162.159.192.1:2408".parse().unwrap()));
         assert_eq!(chosen.inner, Some("162.159.195.1:2408".parse().unwrap()));
+    }
+
+    /// What reached a MASQUE server on this machine first: the server name of the ClientHello,
+    /// and the :authority of the request.
+    type Reached = tokio::task::JoinHandle<(Option<String>, String)>;
+
+    /// A MASQUE server over HTTP/2 on this machine, see `Reached`.
+    async fn h2_masque_server() -> (SocketAddr, Reached) {
+        let (address, listener, acceptor) = crate::https::test_server(b"\x02h2").await;
+        let reached = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("a connection");
+            let tls = tokio_boring::accept(&acceptor, tcp)
+                .await
+                .expect("a handshake");
+            let name = tls
+                .ssl()
+                .servername(boring::ssl::NameType::HOST_NAME)
+                .map(str::to_string);
+            let mut connection = h2::server::handshake(tls).await.expect("h2");
+            let (request, _answer) = connection
+                .accept()
+                .await
+                .expect("a request")
+                .expect("a whole request");
+            let authority = request.uri().authority().expect("an authority").to_string();
+            (name, authority)
+        });
+        (address, reached)
+    }
+
+    /// A MASQUE server over HTTP/3 on this machine, see `Reached`. It passes over what comes
+    /// before the first QUIC v1 Initial: the version bait and the junk of the obfuscation.
+    async fn h3_masque_server() -> (SocketAddr, Reached) {
+        use quiche::h3::NameValue;
+
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let address = socket.local_addr().expect("its address");
+        let reached = tokio::spawn(async move {
+            let pair = account::generate_masque_keypair().expect("a key and a certificate");
+            let mut tls =
+                boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).expect("tls");
+            tls.set_certificate(
+                &boring::x509::X509::from_pem(&pair.cert_pem).expect("a certificate"),
+            )
+            .expect("the certificate");
+            tls.set_private_key(
+                &boring::pkey::PKey::private_key_from_pem(&pair.key_pem).expect("a key"),
+            )
+            .expect("the key");
+            let mut config =
+                quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls)
+                    .expect("a configuration");
+            config
+                .set_application_protos(&[consts::ALPN_H3])
+                .expect("h3");
+            config.set_initial_max_data(1 << 20);
+            config.set_initial_max_stream_data_bidi_remote(1 << 20);
+            config.set_initial_max_stream_data_uni(1 << 20);
+            config.set_initial_max_streams_bidi(8);
+            config.set_initial_max_streams_uni(8);
+            config.enable_dgram(true, 64, 64);
+            let mut h3_config = quiche::h3::Config::new().expect("h3");
+            h3_config.enable_extended_connect(true);
+
+            let mut conn: Option<quiche::Connection> = None;
+            let mut h3: Option<quiche::h3::Connection> = None;
+            let mut packet = vec![0u8; 65535];
+            let mut out = vec![0u8; 1500];
+            loop {
+                let (read, from) = socket.recv_from(&mut packet).await.expect("a packet");
+                if conn.is_none() {
+                    // A long header of the Initial type, and version 1.
+                    if read <= 5 || packet[0] & 0xf0 != 0xc0 || packet[1..5] != [0, 0, 0, 1] {
+                        continue;
+                    }
+                    let scid = [7u8; 16];
+                    let scid = quiche::ConnectionId::from_ref(&scid);
+                    conn = Some(
+                        quiche::accept(&scid, None, address, from, &mut config)
+                            .expect("a connection"),
+                    );
+                }
+                let conn = conn.as_mut().expect("the connection");
+                let _ = conn.recv(&mut packet[..read], quiche::RecvInfo { from, to: address });
+                if conn.is_established() && h3.is_none() {
+                    h3 =
+                        Some(quiche::h3::Connection::with_transport(conn, &h3_config).expect("h3"));
+                }
+                if let Some(h3) = h3.as_mut() {
+                    while let Ok((_, event)) = h3.poll(conn) {
+                        if let quiche::h3::Event::Headers { list, .. } = event {
+                            let authority = list
+                                .iter()
+                                .find(|header| header.name() == b":authority")
+                                .map(|header| String::from_utf8_lossy(header.value()).into_owned())
+                                .expect("an authority");
+                            return (conn.server_name().map(str::to_string), authority);
+                        }
+                    }
+                }
+                while let Ok((written, sent)) = conn.send(&mut out) {
+                    socket
+                        .send_to(&out[..written], sent.to)
+                        .await
+                        .expect("a packet sent");
+                }
+            }
+        });
+        (address, reached)
+    }
+
+    #[tokio::test]
+    async fn the_masque_handshakes_send_the_masque_sni_and_keep_the_authority() {
+        let _setting = upstream::hold_setting().await;
+        // The handshakes take --masque-sni, the carrier and the fingerprint from the options.
+        let _options = tls::hold_options().await;
+        std::env::set_var("AETHER_MASQUE_SNI", "www.cloudflare.com");
+        let identity = account::handshake_identity();
+        let startup = std::time::Duration::from_secs(10);
+
+        for h2 in [false, true] {
+            if h2 {
+                std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+            }
+            // The check of a gateway, and the tunnel.
+            for tunnel in [false, true] {
+                let case = format!("h2 {h2}, tunnel {tunnel}");
+                let (address, reached) = if h2 {
+                    h2_masque_server().await
+                } else {
+                    h3_masque_server().await
+                };
+                let client = async {
+                    if tunnel {
+                        let mtu = if h2 { H2_TUNNEL_MTU } else { TUNNEL_MTU };
+                        let datagram = quic::MAX_DATAGRAM_SIZE;
+                        let hop = establish_masque(
+                            &identity, address, None, h2, mtu, datagram, false, startup, "test",
+                        );
+                        let _ = hop.await;
+                    } else {
+                        quick_verify_masque_peer(&identity, address, None).await;
+                    }
+                };
+                let (name, authority) = tokio::select! {
+                    biased;
+                    reached = reached => reached.expect("the server"),
+                    () = client => panic!("{case}: the request did not reach the server"),
+                };
+                assert_eq!(name.as_deref(), Some("www.cloudflare.com"), "{case}");
+                let host = if h2 {
+                    "cloudflareaccess.com:443"
+                } else {
+                    "cloudflareaccess.com"
+                };
+                assert_eq!(authority, host, "{case}");
+            }
+        }
     }
 }

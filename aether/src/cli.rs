@@ -141,6 +141,12 @@ TLS:
   the calls to the WARP API and the DoH lookup of --ech-dns, have Chrome's
   fingerprint as BoringSSL writes it, with what these change; certificates go
   unchecked
+  --masque-sni <name>      the server name the MASQUE handshakes, over HTTP/3 and
+                           HTTP/2, put in their ClientHello (default
+                           consumer-masque.cloudflareclient.com); the HTTP host,
+                           the :authority of the CONNECT request, stays
+                           cloudflareaccess.com. With --ech it is the name
+                           inside the encrypted ClientHello
   --ech <auto|base64>      enable Encrypted Client Hello on the MASQUE handshakes
                            and the calls to the WARP API, with the key looked up
                            (auto) or given in base64; without a key it can
@@ -400,6 +406,7 @@ Environment variables:
   AETHER_MASQUE_H2_FRAGMENT        --fragment (default off)
   AETHER_MASQUE_H2_FRAGMENT_SIZE   --fragment-size
   AETHER_MASQUE_H2_FRAGMENT_DELAY  --fragment-delay
+  AETHER_MASQUE_SNI                --masque-sni
   AETHER_ECH                       --ech
   AETHER_ECH_DNS                   --ech-dns
   AETHER_ECH_DOMAIN                --ech-domain
@@ -588,6 +595,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--h3" | "--quic" => set("AETHER_MASQUE_HTTP2", "0"),
             "--no-quic-v2" => set("AETHER_QUIC_V2", "0"),
             "--h2-peer" => set("AETHER_MASQUE_H2_PEER", next_value!()),
+            "--masque-sni" => set("AETHER_MASQUE_SNI", next_value!()),
             "--ech" => set("AETHER_ECH", next_value!()),
             "--ech-dns" => set("AETHER_ECH_DNS", next_value!()),
             "--ech-domain" => set("AETHER_ECH_DOMAIN", next_value!()),
