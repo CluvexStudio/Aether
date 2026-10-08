@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::error::{AetherError, Result};
+use crate::fragment::{FragmentConfig, FragmentingStream};
 use crate::tls::Fingerprint;
 
 /// ALPN: HTTP/2, then HTTP/1.1, as Chrome offers them.
@@ -93,7 +94,8 @@ async fn exchange(
         }
         let tcp = dial(address, port).await?;
         let _ = tcp.set_nodelay(true);
-        match tokio_boring::connect(config, request.sni.unwrap_or(request.host), tcp).await {
+        let stream = FragmentingStream::new(tcp, fragment_config());
+        match tokio_boring::connect(config, request.sni.unwrap_or(request.host), stream).await {
             Ok(tls) => break tls,
             Err(e) => {
                 let message = e.to_string();
@@ -161,6 +163,14 @@ async fn dial(host: &str, port: u16) -> Result<TcpStream> {
 
 /// `host`:`port` as a URL writes it: an IPv6 address in brackets, and the port left out when
 /// it is 443.
+fn fragment_config() -> FragmentConfig {
+    if cfg!(test) {
+        FragmentConfig::disabled()
+    } else {
+        FragmentConfig::from_env()
+    }
+}
+
 fn authority(host: &str, port: u16) -> String {
     let host = if host.contains(':') {
         format!("[{host}]")

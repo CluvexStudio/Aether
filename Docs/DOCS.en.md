@@ -186,9 +186,14 @@ reshape them so the opening exchange does not match a known pattern.
 aether --noize aggressive
 ```
 
-One extra applies to MASQUE only: `--fragment` splits the TLS ClientHello on the
-HTTP/2 carrier, which defeats inspectors that read the SNI from a single packet.
-`--fragment-size` and `--fragment-delay` tune it.
+One extra applies to MASQUE only: `--fragment` splits the TLS ClientHello on
+the HTTP/2 carrier. The default re-frames it as several TLS Records, each with
+its own header, and forces one of the boundaries to fall in the middle of the
+SNI, which defeats inspectors that read the name from a single record. This is
+what Xray calls `tlshello` fragmentation. `--fragment-size` and
+`--fragment-delay` tune it; `--fragment-tcp` falls back to splitting the raw
+TCP stream (weaker, kept for networks that throttle the re-framed version);
+`--fragment-no-sni-split` turns off the SNI-midpoint rule.
 
 ## TLS
 

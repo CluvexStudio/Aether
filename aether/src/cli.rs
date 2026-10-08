@@ -130,8 +130,17 @@ MASQUE transport:
                            (on by default; Iran's firewall resets a whole
                            ClientHello whose SNI ends in cloudflareclient.com)
   --no-fragment            send the ClientHello in one piece on HTTP/2
-  --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
+  --fragment-size <n|a-b>  fragment chunk size in bytes
+                           (default 64-128 for the TLS-record mode below,
+                            8-16 for the raw TCP-split mode)
   --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
+  --fragment-tcp           split the raw TCP stream instead of emitting real
+                           TLS Records; weaker, for networks where re-framing
+                           the ClientHello is throttled
+                           (default: off, i.e. real TLS Record Fragmentation)
+  --fragment-no-sni-split  do not force a split at the midpoint of the SNI
+                           (default: on, i.e. always split the SNI)
+                           
 
 TLS:
   the TLS handshakes of the tunnel and its setup, MASQUE over HTTP/2 and HTTP/3,
@@ -602,6 +611,8 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--fragment" => set("AETHER_MASQUE_H2_FRAGMENT", "1"),
             "--no-fragment" => set("AETHER_MASQUE_H2_FRAGMENT", "0"),
             "--fragment-size" => set("AETHER_MASQUE_H2_FRAGMENT_SIZE", next_value!()),
+            "--fragment-tcp" => set("AETHER_MASQUE_H2_FRAGMENT_TLS_RECORDS", "0"),
+            "--fragment-no-sni-split" => set("AETHER_MASQUE_H2_FRAGMENT_SNI", "0"),
             "--fragment-delay" => set("AETHER_MASQUE_H2_FRAGMENT_DELAY", next_value!()),
 
             "--keepalive" => set("AETHER_WG_KEEPALIVE", next_value!()),
