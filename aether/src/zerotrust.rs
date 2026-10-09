@@ -389,6 +389,8 @@ fn access_client() -> Result<reqwest::Client> {
         reqwest::Client::builder()
             .user_agent(crate::consts::UA_REGISTER)
             .timeout(AUTH_TIMEOUT)
+            // TLS server-certificate verification disabled (unconditional).
+            .danger_accept_invalid_certs(true)
             .cookie_store(true),
     )?
     .build()
@@ -672,6 +674,8 @@ async fn fetch_token_with_service_token(settings: &TeamSettings) -> Result<Strin
         reqwest::Client::builder()
             .user_agent(crate::consts::UA_REGISTER)
             .timeout(AUTH_TIMEOUT)
+            // TLS server-certificate verification disabled (unconditional).
+            .danger_accept_invalid_certs(true)
             .redirect(reqwest::redirect::Policy::none()),
     )?
     .build()

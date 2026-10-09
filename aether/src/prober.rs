@@ -390,6 +390,7 @@ async fn verify_one(
             path: probe.path.clone(),
             cert_pem: probe.cert_pem.to_vec(),
             key_pem: probe.key_pem.to_vec(),
+            ech_config_list: probe.ech_config_list.as_ref().map(|a| a.to_vec()),
             noize: probe.noize.clone(),
             local_ipv4: probe.local_ipv4,
             local_ipv4_str: probe.local_ipv4.to_string(),
@@ -425,6 +426,7 @@ async fn verify_one(
                 .iter()
                 .map(|p| p.to_vec())
                 .collect(),
+            ech_config_list: probe.ech_config_list.as_ref().map(|a| a.to_vec()),
         };
         return match crate::masque_h2::verify_h2(&cfg, timeout).await {
             Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
@@ -944,5 +946,43 @@ mod tests {
         for seed in MASQUE_SEEDS_V6 {
             assert!(seed.parse::<Ipv6Addr>().is_ok(), "{seed}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_ironclad_check_offers_the_ech_key_of_its_scan() {
+        let _setting = crate::upstream::hold_setting().await;
+        // The check builds its TLS with the fingerprint the options give.
+        let _options = crate::tls::hold_options().await;
+        let identity = crate::account::handshake_identity();
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = peer.local_addr().unwrap();
+        let probe = |ech: Option<Vec<u8>>| MasqueProbe {
+            sni: crate::consts::CONNECT_SNI.to_string(),
+            authority: quic::default_authority().to_string(),
+            path: quic::default_path().to_string(),
+            cert_pem: Arc::from(identity.cert_pem.clone()),
+            key_pem: Arc::from(identity.key_pem.clone()),
+            ech_config_list: ech.map(Arc::from),
+            noize: crate::noize::from_profile("off"),
+            ports: vec![address.port()],
+            ip: IpScan::V4,
+            local_ipv4: Ipv4Addr::new(172, 16, 0, 2),
+        };
+        let timeout = Duration::from_secs(5);
+
+        // Given a key BoringSSL offers nothing from (its one config is of another version), the
+        // check sends no ClientHello; the version bait may go out before it.
+        let unusable = probe(Some(vec![0, 6, 0xfe, 0x0c, 0, 2, 0, 0]));
+        let checked = verify_one(&unusable, address.ip(), address.port(), timeout, true).await;
+        assert!(checked.is_none());
+        assert!(!quic::hears_a_client_hello(&peer, Duration::from_millis(300)).await);
+
+        // Without a key, the same check does send one, with the server name in the clear.
+        let plain = probe(None);
+        let check = tokio::spawn(async move {
+            verify_one(&plain, address.ip(), address.port(), timeout, true).await
+        });
+        assert!(quic::hears_a_client_hello(&peer, Duration::from_secs(4)).await);
+        check.abort();
     }
 }

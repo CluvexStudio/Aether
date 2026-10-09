@@ -384,7 +384,9 @@ pub fn install_hint() -> &'static str {
 fn http_client(through: Option<std::net::SocketAddr>) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent(crate::consts::UA_REGISTER)
-        .timeout(REQUEST_TIMEOUT);
+        .timeout(REQUEST_TIMEOUT)
+        // TLS server-certificate verification disabled (unconditional).
+        .danger_accept_invalid_certs(true);
 
     match through {
         Some(proxy) => {
@@ -817,6 +819,15 @@ pub async fn keep_reachable(
     if through.is_some() {
         log::info!(
             "[*] tor will dial its bridges through the tunnel, so they are not probed from here"
+        );
+        return lines;
+    }
+
+    // A probe from here would leave outside the upstream proxy, which tor dials its bridges
+    // through, or without which it does not start.
+    if crate::upstream::configured().is_some() {
+        log::info!(
+            "[*] tor will dial its bridges through the upstream proxy, so they are not probed from here"
         );
         return lines;
     }
