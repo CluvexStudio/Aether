@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::error::{AetherError, Result};
+use crate::fragment::{FragmentConfig, FragmentingStream};
 use crate::tls::Fingerprint;
 
 /// ALPN: HTTP/2, then HTTP/1.1, as Chrome offers them.
@@ -64,7 +65,27 @@ pub async fn send(
     ech: Option<&mut Vec<u8>>,
     timeout: Duration,
 ) -> Result<Response> {
-    tokio::time::timeout(timeout, exchange(request, fingerprint, ech))
+    send_fragmented(
+        request,
+        fingerprint,
+        ech,
+        timeout,
+        FragmentConfig::disabled(),
+    )
+    .await
+}
+
+/// `send`, with the ClientHello written to the connection in pieces, sized and spaced as
+/// `fragment` has them, the way `--fragment` writes the one of MASQUE over HTTP/2. Nothing after
+/// it is cut up.
+pub async fn send_fragmented(
+    request: &Request<'_>,
+    fingerprint: &Fingerprint,
+    ech: Option<&mut Vec<u8>>,
+    timeout: Duration,
+    fragment: FragmentConfig,
+) -> Result<Response> {
+    tokio::time::timeout(timeout, exchange(request, fingerprint, ech, fragment))
         .await
         .map_err(|_| {
             AetherError::Api(format!(
@@ -79,6 +100,7 @@ async fn exchange(
     request: &Request<'_>,
     fingerprint: &Fingerprint,
     mut ech: Option<&mut Vec<u8>>,
+    fragment: FragmentConfig,
 ) -> Result<Response> {
     let (address, port) = request.address.unwrap_or((request.host, request.port));
     let mut retried = false;
@@ -93,7 +115,8 @@ async fn exchange(
         }
         let tcp = dial(address, port).await?;
         let _ = tcp.set_nodelay(true);
-        match tokio_boring::connect(config, request.sni.unwrap_or(request.host), tcp).await {
+        let stream = FragmentingStream::new(tcp, fragment);
+        match tokio_boring::connect(config, request.sni.unwrap_or(request.host), stream).await {
             Ok(tls) => break tls,
             Err(e) => {
                 let message = e.to_string();
@@ -567,6 +590,78 @@ mod tests {
             ("Content-Type".to_string(), "application/json".to_string()),
             ("CF-Client-Version".to_string(), "a-test".to_string()),
         ]
+    }
+
+    /// The length of the TLS record that starts `seen`, its header included.
+    fn record_len(seen: &[u8]) -> usize {
+        5 + u16::from_be_bytes([seen[3], seen[4]]) as usize
+    }
+
+    /// The TLS record a server gets first on a connection, and the size of each read it took.
+    async fn first_record(listener: tokio::net::TcpListener) -> (Vec<u8>, Vec<usize>) {
+        let (mut tcp, _) = listener.accept().await.expect("a connection");
+        let mut seen = Vec::new();
+        let mut reads = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while seen.len() < 5 || seen.len() < record_len(&seen) {
+            let read = tcp.read(&mut chunk).await.expect("the hello");
+            if read == 0 {
+                break;
+            }
+            reads.push(read);
+            seen.extend_from_slice(&chunk[..read]);
+        }
+        (seen, reads)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fragmented_client_hello_reaches_the_server_in_pieces() {
+        let _setting = crate::upstream::hold_setting().await;
+        let headers = headers();
+        let fragment = FragmentConfig {
+            enabled: true,
+            size_min: 64,
+            size_max: 64,
+            delay_min_ms: 50,
+            delay_max_ms: 50,
+            sni_split: false,
+        };
+        for pieces in [Some(fragment), None] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a listener");
+            let port = listener.local_addr().expect("its address").port();
+            let served = tokio::spawn(first_record(listener));
+            let request = Request {
+                method: "GET",
+                host: "127.0.0.1",
+                port,
+                address: None,
+                sni: Some("api.cloudflareclient.com"),
+                path: "/",
+                headers: &headers,
+                body: None,
+            };
+            // No server answers it: the ClientHello is all this is about.
+            let timeout = Duration::from_secs(10);
+            let _ = match pieces {
+                Some(fragment) => {
+                    send_fragmented(&request, &Fingerprint::default(), None, timeout, fragment)
+                        .await
+                }
+                None => send(&request, &Fingerprint::default(), None, timeout).await,
+            };
+
+            let (seen, reads) = served.await.expect("the server");
+            assert_eq!(&seen[..2], &[0x16, 0x03], "a TLS handshake record");
+            assert_eq!(seen.len(), record_len(&seen));
+            if pieces.is_some() {
+                assert!(reads.iter().all(|&read| read <= 64), "{reads:?}");
+                assert!(reads.len() >= seen.len() / 64, "{reads:?}");
+            } else {
+                assert!(reads[0] > 64, "{reads:?}");
+            }
+        }
     }
 
     #[tokio::test]

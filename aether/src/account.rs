@@ -416,30 +416,30 @@ fn extract_api_error(body: &str) -> Option<String> {
     }
 }
 
-/// --enroll-address (AETHER_ENROLL_ADDRESS): where the calls to the WARP API go, an IP address
+/// --api-address (AETHER_API_ADDRESS): where the calls to the WARP API go, an IP address
 /// or a domain name and its port: 443 unless `:port` follows the address, an IPv6 one then in
 /// brackets; the API's name on 443 when it is not given. Only the connection goes there: the
 /// API's name stays the server name of the ClientHello and the HTTP host.
-fn enroll_address() -> Result<(String, u16)> {
-    let value = std::env::var("AETHER_ENROLL_ADDRESS").unwrap_or_default();
+fn api_address() -> Result<(String, u16)> {
+    let value = std::env::var("AETHER_API_ADDRESS").unwrap_or_default();
     let value = value.trim();
     if value.is_empty() {
         return Ok((api_host().to_string(), 443));
     }
     crate::dns::host_and_port(value, 443).ok_or_else(|| {
         AetherError::Api(format!(
-            "--enroll-address: {value} is no IP address or domain name, with or without a port"
+            "--api-address: {value} is no IP address or domain name, with or without a port"
         ))
     })
 }
 
-/// Checks --enroll-address as the core starts: an address it cannot use stops it, with the
+/// Checks --api-address as the core starts: an address it cannot use stops it, with the
 /// option named.
-pub fn check_enroll_address() -> Result<()> {
-    enroll_address().map(drop)
+pub fn check_api_address() -> Result<()> {
+    api_address().map(drop)
 }
 
-/// A call to the WARP API: to --enroll-address, the API's name on port 443 unless it names
+/// A call to the WARP API: to --api-address, the API's name on port 443 unless it names
 /// another address or port, with the API's name for the server name and the HTTP host, over
 /// BoringSSL with the
 /// core's TLS fingerprint (see `https`), offering the ECH key of --ech when it is given, through
@@ -453,7 +453,7 @@ async fn api_call(
     bearer: Option<&str>,
     jwt: Option<&str>,
 ) -> Result<AccountData> {
-    let (address, port) = enroll_address()?;
+    let (address, port) = api_address()?;
     // The system resolver looks a name up outside the socket mark; through the upstream proxy,
     // the proxy looks it up and only the marked connection to the proxy leaves.
     if crate::egress::mark() != 0
@@ -461,12 +461,13 @@ async fn api_call(
         && address.parse::<std::net::IpAddr>().is_err()
     {
         return Err(AetherError::Api(format!(
-            "{label}: {address} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --enroll-address an IP address"
+            "{label}: {address} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --api-address an IP address"
         )));
     }
 
     let mut ech = api_ech().await?;
     let fingerprint = crate::tls::Fingerprint::configured();
+    let fragment = api_fragment();
     let headers = front_headers(bearer, jwt);
     let request = crate::https::Request {
         method,
@@ -494,7 +495,14 @@ async fn api_call(
             tokio::time::sleep(wait).await;
         }
 
-        let sent = crate::https::send(&request, &fingerprint, ech.as_mut(), API_TIMEOUT).await;
+        let sent = crate::https::send_fragmented(
+            &request,
+            &fingerprint,
+            ech.as_mut(),
+            API_TIMEOUT,
+            fragment,
+        )
+        .await;
         if let Some(key) = &ech {
             // A key a server handed back is the one the later calls offer.
             remember_api_ech(key.clone());
@@ -532,7 +540,7 @@ async fn api_call(
             return Err(last_error);
         }
 
-        if let Some(wait) = cooldown {
+        if let Some(wait) = retry_after_wait(attempt, cooldown) {
             log::warn!(
                 "[!] {label} asked us to wait {}s before retrying",
                 wait.as_secs()
@@ -542,6 +550,35 @@ async fn api_call(
     }
 
     Err(last_error)
+}
+
+/// `--fragment`: the ClientHello of the calls to the WARP API goes out in pieces as on MASQUE over
+/// HTTP/2, sized and spaced by the same `--fragment-size` and `--fragment-delay`, for networks that
+/// filter the name of the API. Without `--fragment` it goes whole.
+fn api_fragment() -> crate::fragment::FragmentConfig {
+    let fragment = crate::fragment::FragmentConfig::from_env();
+    if fragment.enabled {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| {
+            log::info!(
+                "[*] the calls to the warp api send their ClientHello in pieces of {}-{} bytes, {}-{}ms apart",
+                fragment.size_min,
+                fragment.size_max,
+                fragment.delay_min_ms,
+                fragment.delay_max_ms
+            )
+        });
+    }
+    fragment
+}
+
+/// The wait a server asked for with Retry-After, before the attempt after `attempt`: none after
+/// the last one, which no attempt follows.
+fn retry_after_wait(
+    attempt: u32,
+    asked: Option<std::time::Duration>,
+) -> Option<std::time::Duration> {
+    asked.filter(|_| attempt + 1 < API_ATTEMPTS)
 }
 
 fn generate_x25519_keypair() -> ([u8; 32], String) {
@@ -1055,6 +1092,51 @@ mod tests {
     }
 
     #[test]
+    fn the_calls_to_the_api_are_fragmented_as_masque_over_http2_is() {
+        // --fragment, --fragment-size and --fragment-delay. No other test sets them; the HTTP/2
+        // dial reads them as well, and its ClientHello in pieces changes nothing a test checks.
+        const SETTINGS: [&str; 3] = [
+            "AETHER_MASQUE_H2_FRAGMENT",
+            "AETHER_MASQUE_H2_FRAGMENT_SIZE",
+            "AETHER_MASQUE_H2_FRAGMENT_DELAY",
+        ];
+        let before: Vec<Option<String>> =
+            SETTINGS.iter().map(|key| std::env::var(key).ok()).collect();
+        std::env::set_var(SETTINGS[0], "1");
+        std::env::set_var(SETTINGS[1], "4-6");
+        std::env::set_var(SETTINGS[2], "1-3");
+        let on = api_fragment();
+        // Off when the setting says so, and without --fragment.
+        std::env::set_var(SETTINGS[0], "0");
+        let off = api_fragment();
+        std::env::remove_var(SETTINGS[0]);
+        let unset = api_fragment();
+        for (key, value) in SETTINGS.iter().zip(before) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+
+        assert!(on.enabled);
+        assert_eq!(
+            (on.size_min, on.size_max, on.delay_min_ms, on.delay_max_ms),
+            (4, 6, 1, 3)
+        );
+        assert!(!off.enabled);
+        assert!(!unset.enabled);
+    }
+
+    #[test]
+    fn a_retry_after_is_waited_out_only_when_another_attempt_follows() {
+        let asked = Some(std::time::Duration::from_secs(30));
+        assert_eq!(retry_after_wait(0, asked), asked);
+        assert_eq!(retry_after_wait(API_ATTEMPTS - 2, asked), asked);
+        assert_eq!(retry_after_wait(API_ATTEMPTS - 1, asked), None);
+        assert_eq!(retry_after_wait(0, None), None);
+    }
+
+    #[test]
     fn a_retry_after_header_is_honoured_but_capped() {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -1074,13 +1156,13 @@ mod tests {
     }
 
     #[test]
-    fn an_enroll_address_is_an_ip_address_or_a_domain_name_with_or_without_a_port() {
+    fn an_api_address_is_an_ip_address_or_a_domain_name_with_or_without_a_port() {
         let address = |value: Option<&str>| {
             match value {
-                Some(value) => std::env::set_var("AETHER_ENROLL_ADDRESS", value),
-                None => std::env::remove_var("AETHER_ENROLL_ADDRESS"),
+                Some(value) => std::env::set_var("AETHER_API_ADDRESS", value),
+                None => std::env::remove_var("AETHER_API_ADDRESS"),
             }
-            enroll_address().map_err(|e| e.to_string())
+            api_address().map_err(|e| e.to_string())
         };
         let at = |host: &str, port: u16| -> std::result::Result<(String, u16), String> {
             Ok((host.to_string(), port))
@@ -1121,13 +1203,13 @@ mod tests {
             assert_eq!(
                 said,
                 format!(
-                    "api: --enroll-address: {refused} is no IP address or domain name, with or without a port"
+                    "api: --api-address: {refused} is no IP address or domain name, with or without a port"
                 )
             );
-            assert!(check_enroll_address().is_err());
+            assert!(check_api_address().is_err());
         }
-        std::env::remove_var("AETHER_ENROLL_ADDRESS");
-        assert!(check_enroll_address().is_ok());
+        std::env::remove_var("AETHER_API_ADDRESS");
+        assert!(check_api_address().is_ok());
     }
 
     #[test]

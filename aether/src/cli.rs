@@ -33,7 +33,7 @@ Connection:
                            looping them back in (Linux and Android, needs root or
                            CAP_NET_ADMIN); a name is looked up outside the mark, so
                            without --upstream the calls to the WARP API take an IP
-                           address only, see --enroll-address
+                           address only, see --api-address
   --exit-loc <spec>        refuse a tunnel whose exit country is not wanted, checked
                            through the finished tunnel before socks5 opens and again
                            every minute after: !IR,AZ,RU blocks those, DE,SE allows
@@ -57,13 +57,15 @@ Protocol:
   --wg, --wireguard, --warp
                            use classic WireGuard
   --gool, --wiw            use gool: a wireguard warp tunnel carried inside a
-                           masque one, with its own identity registered from
-                           inside warp, so it leaves from a foreign address
+                           masque one. The wireguard hop is dialled from
+                           inside warp, so cloudflare gives it another exit
+                           than your own address would get. Its identity is
+                           <masque config>-gool.toml: --register gool makes
+                           it, and the tunnel registers one from inside warp
+                           when there is none
   --gool-peer <ip:port>    the wireguard endpoint gool dials inside the tunnel
                            (default: the one its registration names, port 2408)
   --gool-classic           the older gool: wireguard tunneled in wireguard
-  --api-fragment           reach the warp api only over the fragmented route,
-                           for networks that filter the key domain
   --mim, --masque-in-masque
                            use MASQUE-in-MASQUE: a masque tunnel carried inside
                            another one, which changes the address you come out
@@ -127,10 +129,11 @@ MASQUE transport:
   --reconnect-secs <n>     delay before reconnecting after a tunnel drop (default 2)
   --dns <list>             resolvers used inside the tunnel (default 1.1.1.1,1.0.0.1)
   --fragment               fragment the TLS ClientHello on the HTTP/2 transport
-                           (on by default; Iran's firewall resets a whole
-                           ClientHello whose SNI ends in cloudflareclient.com)
-  --no-fragment            send the ClientHello in one piece on HTTP/2
-  --fragment-size <n|a-b>  fragment chunk size in bytes (default 16-32)
+                           and on the calls to the WARP API, whatever the
+                           transport (off by default; it helps where a
+                           firewall resets a whole ClientHello whose SNI ends
+                           in cloudflareclient.com, as Iran's does)
+  --fragment-size <n|a-b>  fragment chunk size in bytes (default 8-16)
   --fragment-delay <n|a-b> delay between fragments in ms (default 2-10)
 
 TLS:
@@ -138,6 +141,13 @@ TLS:
   the calls to the WARP API and the DoH lookup of --ech-dns, have Chrome's
   fingerprint as BoringSSL writes it, with what these change; certificates go
   unchecked
+  --masque-sni <name>      the server name the MASQUE handshakes, over HTTP/3 and
+                           HTTP/2, put in their ClientHello (default
+                           www.cloudflare.com; the WARP client sends
+                           consumer-masque.cloudflareclient.com); the HTTP host,
+                           the :authority of the CONNECT request, stays
+                           cloudflareaccess.com. With --ech it is the name
+                           inside the encrypted ClientHello
   --ech <auto|base64>      enable Encrypted Client Hello on the MASQUE handshakes
                            and the calls to the WARP API, with the key looked up
                            (auto) or given in base64; without a key it can
@@ -181,7 +191,8 @@ Tor:
                            warp is reached from a tor exit and your network never
                            sees warp. Tor carries tcp only and the wireguard
                            endpoints of warp answer on udp alone, so this runs
-                           masque over http/2 and refuses --wg and --gool
+                           masque over http/2, gool's outer hop too, and
+                           refuses --wg and --gool-classic
   --tor-only               no tunnel at all: the proxy on --bind is plain tor
   --tor-bind <addr>        where the tor proxy listens with --tor and
                            --tor-reverse (default 127.0.0.1:1820)
@@ -206,7 +217,8 @@ Tor:
                            psiphon -> internet, served on --psiphon-bind
   --psiphon-reverse        the other way round: dial the tunnel through psiphon.
                            psiphon carries tcp only, so this runs masque over
-                           http/2 and refuses --wg and --gool
+                           http/2, gool's outer hop too, and refuses --wg and
+                           --gool-classic
   --psiphon-only           no tunnel at all: the proxy on --bind is plain psiphon
   --psiphon-mode <shape>   auto (default, let psiphon pick), cdn (only fronted
                            meek through a cdn, for networks that block the rest)
@@ -288,15 +300,19 @@ Config files:
                            warp-in-warp adds a second identity of its own beside
                            the wireguard one, named <config>-secondary.toml
   --register <which>       register identities and exit, with no scan and no
-                           tunnel: masque, wg, gool (both wireguard hops), mim
-                           (both masque hops) or all. An identity file already
+                           tunnel: masque, wg, gool (masque and the wireguard
+                           identity gool carries inside it, registered from
+                           here rather than from inside warp), gool-classic
+                           (both wireguard hops), mim (both masque hops) or all
+                           five. Each new identity is saved only once WARP is
+                           enabled on it. An identity file already
                            there is kept, never replaced; point the config paths
                            at new files to get new keys. With --tor-reverse or
                            --psiphon-reverse the registrations go through that
                            carrier whatever the protocol: they are https, which
-                           tor and psiphon carry, so --wg and --gool are refused
-                           there only for the tunnel
-  --enroll-address <ip|name[:port]>
+                           tor and psiphon carry, so --wg and --gool-classic are
+                           refused there only for the tunnel
+  --api-address <ip|name[:port]>
                            where the calls to the WARP API, which register and
                            enroll the keys, go: port 443 unless one follows the
                            address, an IPv6 one then in brackets, e.g.
@@ -369,7 +385,6 @@ Environment variables:
   AETHER_PROTOCOL                  --protocol: masque, wg, gool or mim
   AETHER_GOOL_INNER                --gool-peer
   AETHER_GOOL_MODE                 classic for --gool-classic
-  AETHER_API_FRAGMENT              --api-fragment
   AETHER_WIW_OUTER_PEER            --wiw-outer
   AETHER_WIW_INNER_PEER            --wiw-inner
   AETHER_WIW_PEERS                 --wiw-peers, or auto for --wiw-scan
@@ -389,9 +404,10 @@ Environment variables:
   AETHER_MASQUE_RECONNECT_SECS     --reconnect-secs, MASQUE side
   AETHER_WG_RECONNECT_SECS         --reconnect-secs, WireGuard side
   AETHER_DNS                       --dns
-  AETHER_MASQUE_H2_FRAGMENT        --fragment / --no-fragment (default on)
+  AETHER_MASQUE_H2_FRAGMENT        --fragment (default off)
   AETHER_MASQUE_H2_FRAGMENT_SIZE   --fragment-size
   AETHER_MASQUE_H2_FRAGMENT_DELAY  --fragment-delay
+  AETHER_MASQUE_SNI                --masque-sni
   AETHER_ECH                       --ech
   AETHER_ECH_DNS                   --ech-dns
   AETHER_ECH_DOMAIN                --ech-domain
@@ -413,7 +429,7 @@ Environment variables:
   AETHER_WG_CONFIG                 --wg-config
   AETHER_MASQUE_CONFIG             --masque-config
   AETHER_REGISTER                  --register
-  AETHER_ENROLL_ADDRESS            --enroll-address
+  AETHER_API_ADDRESS               --api-address
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
 
@@ -422,8 +438,9 @@ Environment variables:
                                    which is what makes routing rules work behind
                                    a tun front end)
   AETHER_ROUTE_SNIFF_MS            how long to wait for those bytes (default 400)
-  AETHER_WG_ENDPOINT_COOLDOWN_SECS how long an endpoint that failed twice is left
-                                   out of rescans (default 300)
+  AETHER_WG_ENDPOINT_COOLDOWN_SECS how long an endpoint is left out of rescans once
+                                   its tunnel ended twice in a row, each time within
+                                   five minutes of starting (default 300)
   AETHER_WG_STALE_SECS             silence on a wireguard tunnel before it counts
                                    as dead (default 10)
   AETHER_MASQUE_H2_KEEPALIVE_SECS  HTTP/2 keepalive interval (default 15)
@@ -555,7 +572,6 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
                 set("AETHER_PROTOCOL", "gool");
                 set("AETHER_GOOL_INNER", next_value!())
             }
-            "--api-fragment" => set("AETHER_API_FRAGMENT", "1"),
             "--gool-classic" => {
                 set("AETHER_PROTOCOL", "gool");
                 set("AETHER_GOOL_MODE", "classic")
@@ -580,6 +596,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--h3" | "--quic" => set("AETHER_MASQUE_HTTP2", "0"),
             "--no-quic-v2" => set("AETHER_QUIC_V2", "0"),
             "--h2-peer" => set("AETHER_MASQUE_H2_PEER", next_value!()),
+            "--masque-sni" => set("AETHER_MASQUE_SNI", next_value!()),
             "--ech" => set("AETHER_ECH", next_value!()),
             "--ech-dns" => set("AETHER_ECH_DNS", next_value!()),
             "--ech-domain" => set("AETHER_ECH_DOMAIN", next_value!()),
@@ -600,7 +617,6 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             }
             "--dns" => set("AETHER_DNS", next_value!()),
             "--fragment" => set("AETHER_MASQUE_H2_FRAGMENT", "1"),
-            "--no-fragment" => set("AETHER_MASQUE_H2_FRAGMENT", "0"),
             "--fragment-size" => set("AETHER_MASQUE_H2_FRAGMENT_SIZE", next_value!()),
             "--fragment-delay" => set("AETHER_MASQUE_H2_FRAGMENT_DELAY", next_value!()),
 
@@ -611,7 +627,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--wg-config" => set("AETHER_WG_CONFIG", next_value!()),
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
             "--register" => set("AETHER_REGISTER", next_value!()),
-            "--enroll-address" => set("AETHER_ENROLL_ADDRESS", next_value!()),
+            "--api-address" => set("AETHER_API_ADDRESS", next_value!()),
 
             "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
             "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),

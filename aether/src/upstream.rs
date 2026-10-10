@@ -57,12 +57,29 @@ impl std::fmt::Debug for Upstream {
     }
 }
 
-/// The proxy AETHER_UPSTREAM names, as it names it now. It is looked up on every call rather
-/// than once: --tor-reverse and --psiphon-reverse name their carrier only when it is up, and tor
-/// looks the setting up while it bootstraps, to fetch bridges, so an answer kept from then sent
-/// the registration and the tunnel past the carrier instead of through it. A setting is parsed,
-/// and announced, only when it changes.
+tokio::task_local! {
+    /// The proxy one task goes through instead of AETHER_UPSTREAM, see [`through`].
+    static TASK_UPSTREAM: Upstream;
+}
+
+/// Runs `future` with the connections it makes going through `proxy` instead of AETHER_UPSTREAM.
+/// The setting stays as it is, and every other task of the process keeps going through it, so one
+/// call can be sent elsewhere, as gool sends the registration of its wireguard identity through
+/// its tunnel, without the rest of the process following it. A task `future` spawns goes through
+/// the setting as well.
+pub async fn through<F: std::future::Future>(proxy: Upstream, future: F) -> F::Output {
+    TASK_UPSTREAM.scope(proxy, future).await
+}
+
+/// The proxy AETHER_UPSTREAM names, as it names it now, or the one a task runs [`through`]. It is
+/// looked up on every call rather than once: --tor-reverse and --psiphon-reverse name their
+/// carrier only when it is up, and tor looks the setting up while it bootstraps, to fetch bridges,
+/// so an answer kept from then sent the registration and the tunnel past the carrier instead of
+/// through it. A setting is parsed, and announced, only when it changes.
 pub fn configured() -> Option<Upstream> {
+    if let Ok(proxy) = TASK_UPSTREAM.try_with(Upstream::clone) {
+        return Some(proxy);
+    }
     static SEEN: std::sync::Mutex<Option<(String, Option<Upstream>)>> = std::sync::Mutex::new(None);
     let raw = std::env::var("AETHER_UPSTREAM").unwrap_or_default();
     let mut seen = SEEN
@@ -894,6 +911,78 @@ async fn relay_address(bound: SocketAddr, host: &str, port: u16) -> Result<Socke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_task_through_a_proxy_of_its_own_leaves_the_rest_on_the_setting() {
+        let _setting = hold_setting().await;
+        std::env::set_var("AETHER_UPSTREAM", "socks5://127.0.0.1:1080");
+        let tunnel = Upstream::parse("socks5h://127.0.0.1:2080").expect("proxy");
+
+        // Another task looks while the one inside is still there.
+        let (look, looking) = tokio::sync::oneshot::channel::<()>();
+        let (seen, saw) = tokio::sync::oneshot::channel::<Option<Upstream>>();
+        tokio::spawn(async move {
+            looking.await.ok();
+            seen.send(configured()).ok();
+        });
+        let (inside, beside, spawned) = through(tunnel, async move {
+            look.send(()).ok();
+            let beside = saw.await.expect("the other task");
+            let spawned = tokio::spawn(async { configured() })
+                .await
+                .expect("a task of its own");
+            (configured(), beside, spawned)
+        })
+        .await;
+
+        assert_eq!(inside.map(|proxy| proxy.port), Some(2080));
+        assert_eq!(beside.map(|proxy| proxy.port), Some(1080));
+        assert_eq!(spawned.map(|proxy| proxy.port), Some(1080));
+        // The setting itself was never touched, and the task is back on it once out.
+        assert_eq!(
+            std::env::var("AETHER_UPSTREAM").as_deref(),
+            Ok("socks5://127.0.0.1:1080")
+        );
+        assert_eq!(configured().map(|proxy| proxy.port), Some(1080));
+    }
+
+    #[tokio::test]
+    async fn a_call_to_the_api_through_a_proxy_of_its_own_goes_to_that_proxy_alone() {
+        let _setting = hold_setting().await;
+        // The setting names a proxy that only counts the connections it gets.
+        let setting = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        std::env::set_var(
+            "AETHER_UPSTREAM",
+            format!("socks5://{}", setting.local_addr().unwrap()),
+        );
+        let (tunnel, server) = fake_socks_http_server().await;
+        let tunnel = Upstream::parse(&format!("socks5h://{tunnel}")).unwrap();
+
+        let headers = Vec::new();
+        let request = crate::https::Request {
+            method: "POST",
+            host: "api.cloudflareclient.com",
+            port: 443,
+            address: None,
+            sni: None,
+            path: "/v0a4005/reg",
+            headers: &headers,
+            body: None,
+        };
+        let fingerprint = crate::tls::Fingerprint::default();
+        let call = crate::https::send(&request, &fingerprint, None, Duration::from_secs(5));
+        // The fake answers in plain HTTP, so the handshake fails: where the call went is what
+        // counts.
+        let _ = through(tunnel, call).await;
+
+        let target = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the call went to the proxy of its own")
+            .unwrap();
+        assert_eq!(target.as_deref(), Some("api.cloudflareclient.com"));
+        let dialled = tokio::time::timeout(Duration::from_millis(100), setting.accept()).await;
+        assert!(dialled.is_err(), "the call went to the setting's proxy too");
+    }
 
     #[test]
     fn a_proxy_named_after_the_first_look_is_still_used() {

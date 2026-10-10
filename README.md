@@ -16,7 +16,8 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 - Automatic endpoint discovery, with end-to-end data-plane validation so a gateway is only trusted once it actually passes traffic, not just once it answers the handshake
 - MASQUE (HTTP/3 & HTTP/2), with optional TLS ClientHello fragmentation on HTTP/2
 - WireGuard support
-- Nested WireGuard mode (`gool`), with both hops discovered by the scan or given by hand
+- WireGuard over MASQUE (`--gool`), a WireGuard tunnel inside a MASQUE one for a different exit address
+- Nested WireGuard mode (`--gool-classic`), with both hops discovered by the scan or given by hand
 - Nested MASQUE mode (`--mim`), a masque tunnel inside another one for a different exit address
 - Traffic obfuscation
 - Routing rules by domain, address, or port, matched from the TLS server name so they keep working behind a tun front end
@@ -192,15 +193,23 @@ Fast and lightweight transport for networks with less aggressive inspection.
 
 ### Nested MASQUE (`--mim`)
 
-A MASQUE tunnel carried inside another MASQUE tunnel. The inner hop is dialled from inside the outer one, so Cloudflare sees the outer edge instead of your address and hands the inner tunnel a different exit IP — the same idea as `gool`, on the MASQUE carrier. Both hops use HTTP/3, or both use HTTP/2 with `--h2`.
+A MASQUE tunnel carried inside another MASQUE tunnel. The inner hop is dialled from inside the outer one, so Cloudflare sees the outer edge instead of your address and hands the inner tunnel a different exit IP — the same idea as `gool`, with a MASQUE tunnel inside instead of a WireGuard one. Both hops use HTTP/3, or both use HTTP/2 with `--h2`.
 
 ```bash
 ./target/release/aether --mim
 ```
 
-### Nested WireGuard (`gool`)
+### WireGuard over MASQUE (`--gool`)
 
-A WireGuard tunnel running inside another WireGuard tunnel, providing an additional encryption layer.
+A WireGuard tunnel carried inside a MASQUE tunnel. Your network sees only the MASQUE hop; the WireGuard hop is dialled from inside it, so Cloudflare sees the MASQUE edge instead of your address and hands the WireGuard tunnel a different exit IP. The MASQUE hop is found by the scan or named with `--peer`; the WireGuard hop is the endpoint its key names, on port 2408, unless `--gool-peer` names another.
+
+```bash
+./target/release/aether --gool
+```
+
+### Nested WireGuard (`--gool-classic`)
+
+The older gool: a WireGuard tunnel running inside another WireGuard tunnel, providing an additional encryption layer.
 
 Its two hops are found by the scan by default. If you already know addresses that work on your network, name them instead with `--wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408`, or both at once with `--wiw-peers 162.159.192.1:2408,188.114.96.1:2408`. The port is required — which port gets through is what differs between networks, so none is assumed. Give only one and the scan finds the other.
 
@@ -220,7 +229,7 @@ cargo build --release --features tor
 ./target/release/aether --masque --tor
 ```
 
-With `--tor` the usual proxy on `127.0.0.1:1819` keeps the WARP exit and a second one on `127.0.0.1:1820` comes out of Tor. Because Tor rides inside the tunnel, a network that blocks Tor never sees it. Any transport can carry it — `--masque` over HTTP/3 or HTTP/2, `--wg`, `--gool`, `--mim` — with nothing in between: `--wg --tor` has the WireGuard tunnel carry Tor directly. The other direction cannot do that, because Tor carries TCP only and WARP's WireGuard endpoints answer on UDP alone, so `--tor-reverse` runs MASQUE over HTTP/2. `--tor-reverse` and `--tor-only` reach Tor directly, and where Tor is blocked they fetch their own bridges from bridgedb and run them through the pluggable transports shipped in the `pt/` folder beside the binary, so there is nothing to install and nothing to paste in. See [Docs/DOCS.en.md](Docs/DOCS.en.md#tor).
+With `--tor` the usual proxy on `127.0.0.1:1819` keeps the WARP exit and a second one on `127.0.0.1:1820` comes out of Tor. Because Tor rides inside the tunnel, a network that blocks Tor never sees it. Any transport can carry it — `--masque` over HTTP/3 or HTTP/2, `--wg`, `--gool`, `--mim` — with nothing in between: `--wg --tor` has the WireGuard tunnel carry Tor directly. The other direction cannot do that, because Tor carries TCP only and WARP's WireGuard endpoints answer on UDP alone, so `--tor-reverse` runs MASQUE over HTTP/2 (for `--gool`, its MASQUE hop) and refuses `--wg` and `--gool-classic`. `--tor-reverse` and `--tor-only` reach Tor directly, and where Tor is blocked they fetch their own bridges from bridgedb and run them through the pluggable transports shipped in the `pt/` folder beside the binary, so there is nothing to install and nothing to paste in. See [Docs/DOCS.en.md](Docs/DOCS.en.md#tor).
 
 ## Documentation
 

@@ -290,6 +290,23 @@ mod tests {
         assert_eq!(loaded.client_id, [1, 2, 3]);
     }
 
+    #[test]
+    fn a_file_that_records_warp_as_an_earlier_build_did_still_loads() {
+        let dir = scratch("warprecord");
+        let path = dir.join("aether.toml");
+        let path_str = path.to_str().unwrap();
+
+        let zeros = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let body = format!(
+            "device_id = \"d\"\naccess_token = \"t\"\nipv4 = \"172.16.0.2\"\nipv6 = \"::1\"\n\
+             wg_private_key = \"{zeros}\"\nwg_peer_public_key = \"{zeros}\"\nwarp_enabled = true\n"
+        );
+        std::fs::write(&path, body).expect("write");
+
+        let loaded = load(path_str).expect("load").expect("identity");
+        assert_eq!(loaded.device_id, "d");
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_secret_file_is_only_readable_by_its_owner() {

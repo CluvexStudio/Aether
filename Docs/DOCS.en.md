@@ -60,13 +60,17 @@ share the tunnel with your network; nothing authenticates the callers.
 | --- | --- | --- |
 | MASQUE | `--masque` (default) | QUIC/HTTP-3 on UDP 443, or HTTP/2 on TCP 443 |
 | WireGuard | `--wg` | WireGuard on UDP 2408 and documented fallbacks |
-| WARP-in-WARP | `--gool` | a WireGuard tunnel inside another one |
+| WireGuard over MASQUE (gool) | `--gool` | a WireGuard tunnel inside a MASQUE one |
+| WARP-in-WARP (classic gool) | `--gool-classic` | a WireGuard tunnel inside another one |
 | MASQUE-in-MASQUE | `--mim` | a MASQUE tunnel inside another one |
 
 MASQUE is the default because it looks like ordinary HTTPS traffic and Cloudflare
 treats it as the primary protocol. Use WireGuard when UDP QUIC is throttled but
-plain UDP still passes. `--gool` adds a second hop for networks that recognise a
-single WARP handshake; it costs latency, so reach for it last.
+plain UDP still passes. `--gool` adds a second hop: your network sees only the
+MASQUE tunnel, and the WireGuard hop inside it is dialled from inside WARP, so
+Cloudflare gives it a different exit than your own address would get.
+`--gool-classic` nests WireGuard in WireGuard instead. Both cost latency, so reach
+for them last.
 
 MASQUE has two carriers. HTTP/3 over QUIC is the default. If UDP 443 is blocked
 outright, `--h2` moves the same tunnel onto TCP 443, which survives networks that
@@ -78,11 +82,11 @@ aether --masque --h2
 
 ### MASQUE-in-MASQUE
 
-`--mim` runs a second MASQUE tunnel inside the first one, the way `--gool` nests
-WireGuard. The outer hop is dialled from your network; the inner hop is dialled
-from inside it, so Cloudflare sees the outer edge's address rather than yours and
-gives the inner tunnel a different exit. Use it when a single tunnel keeps coming
-out in the country you are trying to leave.
+`--mim` runs a second MASQUE tunnel inside the first one, the way `--gool` runs a
+WireGuard one inside it. The outer hop is dialled from your network; the inner
+hop is dialled from inside it, so Cloudflare sees the outer edge's address rather
+than yours and gives the inner tunnel a different exit. Use it when a single
+tunnel keeps coming out in the country you are trying to leave.
 
 Both hops use the same carrier: HTTP/3 inside HTTP/3 by default, or HTTP/2 inside
 HTTP/2 with `--h2`. The inner hop gets its own identity file, named
@@ -141,11 +145,20 @@ The last working endpoint is saved, and `--quick-reconnect` reuses it without a
 new sweep. An endpoint that just failed is held on a cooldown so the next attempt
 does not land on it again.
 
-### Choosing the WARP-in-WARP hops yourself
+### Choosing the gool hops yourself
 
-`--peer` names one endpoint and warp-in-warp needs two, so each hop has its own
-setting. Name both and no scan runs at all; name one and the scan finds the
-other:
+`--gool` scans for one hop only, the MASQUE gateway, which `--peer` names as it
+does for MASQUE. The WireGuard hop inside the tunnel is not scanned for: it is
+the endpoint the gool identity's registration names, then a few known ones, on
+port 2408, unless `--gool-peer` names another:
+
+```sh
+aether --gool --peer 162.159.196.1:443 --gool-peer 162.159.192.1:2408
+```
+
+The classic gool, warp-in-warp, needs two WireGuard endpoints and `--peer` names
+one, so each hop has its own setting. Name both and no scan runs at all; name
+one and the scan finds the other:
 
 ```sh
 aether --gool --wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408
@@ -161,14 +174,15 @@ different addresses — a second tunnel leaving through the edge it arrived on
 gains nothing — and a scan run for one hop leaves the other's address out of
 the sweep.
 
-Naming a hop is enough to select warp-in-warp, so `--gool` alongside it is
-optional, and `--wg-peer` names the outer hop. An endpoint you named is kept
-across reconnects rather than swapped for a scanned one, so a hop that stops
-answering is retried instead of replaced. `--wiw-scan` scans for both, ignoring
-an endpoint left in the environment.
+Naming a hop is enough to select the classic gool, so `--gool` or
+`--gool-classic` alongside it is optional. With `--gool-classic`, `--wg-peer`
+names the outer hop too. An endpoint you named is kept across reconnects rather
+than swapped for a scanned one, so a hop that stops answering is retried instead
+of replaced. `--wiw-scan` scans for both, ignoring an endpoint left in the
+environment.
 
-Nothing here is asked at startup. `--gool` on its own scans for both hops and
-prints a line above the scan mode question naming the alternative.
+Nothing here is asked at startup. `--gool-classic` on its own scans for both
+hops and prints a line above the scan mode question naming the alternative.
 
 ## Obfuscation
 
@@ -186,9 +200,10 @@ reshape them so the opening exchange does not match a known pattern.
 aether --noize aggressive
 ```
 
-One extra applies to MASQUE only: `--fragment` splits the TLS ClientHello on the
-HTTP/2 carrier, which defeats inspectors that read the SNI from a single packet.
-`--fragment-size` and `--fragment-delay` tune it.
+One extra concerns the TLS ClientHello: `--fragment` splits it on MASQUE's HTTP/2
+carrier, which defeats inspectors that read the SNI from a single packet, and on
+the calls to the WARP API, whatever the transport. `--fragment-size` and
+`--fragment-delay` tune both. Without `--fragment`, both go whole.
 
 ## TLS
 
@@ -214,6 +229,16 @@ a TLS of their own. Three options change the fingerprint of all four:
 
 A cipher or group name BoringSSL does not know stops the core as it starts, with
 the option named.
+
+The MASQUE handshakes, on both carriers, put `www.cloudflare.com` in their
+ClientHello as the server name; `--masque-sni <name>` puts another one there, such
+as `consumer-masque.cloudflareclient.com`, the one the WARP client sends. Only the
+TLS name changes: the HTTP host, the `:authority` of the CONNECT request, stays
+`cloudflareaccess.com`. The name goes into every MASQUE handshake: the scans and
+checks of gateways, the tunnel, and both hops of MASQUE-in-MASQUE. With `--ech` it is
+the name inside the encrypted ClientHello, and the one in the clear is the config's
+public name. A value that is no domain name, an IP address among them, stops the
+core as it starts.
 
 `--ech auto` fetches an Encrypted Client Hello config and hides the server name
 altogether, when the network permits it, on the MASQUE handshakes, on both
@@ -399,7 +424,8 @@ The other way round: Tor is bootstrapped first, and the tunnel is then dialled
 through it, so the WARP edge is reached from a Tor exit and the network you are on
 never sees WARP at all. The proxy on `127.0.0.1:1819` comes out of WARP as usual.
 Tor carries TCP only, and WARP's WireGuard endpoints answer on UDP alone, so this
-mode runs MASQUE over HTTP/2 and refuses WireGuard and `gool`. If you want
+mode runs MASQUE over HTTP/2, the outer hop of `gool` too, and refuses WireGuard and
+the classic gool (`--gool-classic`). If you want
 WireGuard in the path, put Tor inside the tunnel with `--tor` instead, where the
 WireGuard tunnel carries Tor directly. This mode also needs Tor reachable before
 anything else works, so on a network that blocks Tor, give it bridges.
@@ -487,7 +513,7 @@ The mark is a decimal or `0x` number and needs root or `CAP_NET_ADMIN`; Aether s
 at startup if it cannot set it, rather than send unmarked traffic. It only works on
 Linux and Android. The calls to the WARP API and the DoH lookup of the ECH config
 are marked as well, but the system resolver looks a name up outside the mark:
-without `--upstream`, `--enroll-address` then takes an IP address only (see
+without `--upstream`, `--api-address` then takes an IP address only (see
 [Where the WARP API is asked](#where-the-warp-api-is-asked)), and a DoH URL of
 `--ech-dns` should name an IP address, or give one with `@address=`. The same
 setting is available as `AETHER_MARK`.
@@ -545,7 +571,7 @@ not discard an identity.
 
 Registering a device, enrolling its MASQUE key and refreshing a profile are calls
 to the WARP API, `api.cloudflareclient.com`, made as described under TLS above.
-`--enroll-address` sends them to another address, an IP address or a domain name,
+`--api-address` sends them to another address, an IP address or a domain name,
 on port 443 unless a port follows it, an IPv6 address then in brackets:
 `188.114.97.6`, `188.114.97.6:2053`, `[2606:4700::1]:8443`. Only the connection goes
 there: the API's name stays the server name of the ClientHello and the HTTP host,
@@ -553,10 +579,10 @@ which carries no port. A name is looked up first, by the proxy with `--upstream`
 and by the system resolver otherwise; with `--mark` and no `--upstream` only an IP
 address is taken, since that lookup would leave outside the mark and loop back into
 the tunnel. With `--ech` the API's name goes only inside the encrypted ClientHello,
-and an IP address for `--enroll-address` keeps it out of the DNS lookup as well.
+and an IP address for `--api-address` keeps it out of the DNS lookup as well.
 
 ```sh
-aether --register all --ech auto --enroll-address 141.101.113.10
+aether --register all --ech auto --api-address 141.101.113.10
 ```
 
 ## Using Aether as a library
@@ -610,6 +636,7 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_QUICK_RECONNECT` | reuse the saved endpoint |
 | `AETHER_MASQUE_HTTP2`, `AETHER_MASQUE_H2_PEER` | HTTP/2 carrier; `--h3` sets it to `0` |
 | `AETHER_QUIC_V2` | `0` turns off the QUIC v2 opener (on by default) |
+| `AETHER_MASQUE_SNI` | server name of the MASQUE ClientHello (default `www.cloudflare.com`); the HTTP host stays |
 | `AETHER_ECH` | `auto` or a base64 config, for MASQUE and the WARP API |
 | `AETHER_ECH_DNS` | resolver `--ech auto` asks (`udp://`, `tcp://` or `https://`) |
 | `AETHER_ECH_DOMAIN` | domain whose ECH config `--ech auto` takes |
@@ -635,7 +662,7 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_TCP_KEEPALIVE_SECS`, `AETHER_TCP_CONNECT_SECS` | keep-alive and connect timeout inside the tunnel |
 | `AETHER_REPROVISION` | replace an identity Cloudflare refuses |
 | `AETHER_CONFIG`, `AETHER_WG_CONFIG`, `AETHER_MASQUE_CONFIG` | identity paths |
-| `AETHER_ENROLL_ADDRESS` | where the calls to the WARP API go |
+| `AETHER_API_ADDRESS` | where the calls to the WARP API go |
 | `AETHER_TLS_GROUPS` | TLS groups (see TLS) |
 | `AETHER_TLS_CIPHERS` | TLS 1.2 cipher suites (see TLS) |
 | `AETHER_DISABLE_GREASE` | `1` leaves GREASE out (see TLS) |

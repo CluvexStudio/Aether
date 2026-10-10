@@ -21,7 +21,8 @@ The flag syntax looks like this:
 ```
 ./aether --bind 127.0.0.1:1819 -4 --masque --turbo --noize firewall
 ./aether --wg --scan balanced --keepalive 25
-./aether --gool --wg-peer 162.159.192.1:2408 --dual
+./aether --gool --peer 162.159.196.1:443
+./aether --gool-classic --wg-peer 162.159.192.1:2408 --dual
 ```
 
 Run `./aether help` (or `--help`) to see the full list — every flag, every environment variable, and what each one does. The most common ones:
@@ -30,14 +31,15 @@ Run `./aether help` (or `--help`) to see the full list — every flag, every env
 --bind <addr>            local SOCKS5 listen address (default 127.0.0.1:1819)
 -4 / -6 / --dual          scan IPv4 only / IPv6 only / both
 --peer <ip:port>          force a peer and skip scanning
---wiw-outer <ip:port>     force the outer gool hop (the one your network sees)
---wiw-inner <ip:port>     force the inner gool hop (reached through the outer)
---masque / --wg / --gool  choose the transport
+--gool-peer <ip:port>     the WireGuard endpoint gool dials inside its MASQUE tunnel
+--wiw-outer <ip:port>     force the outer hop of the classic gool (the one your network sees)
+--wiw-inner <ip:port>     force the inner hop of the classic gool (reached through the outer)
+--masque / --wg / --gool / --gool-classic  choose the transport
 --scan <mode>             turbo | balanced | thorough | stealth | ironclad
 --turbo/--balanced/--thorough/--stealth/--ironclad  shortcuts for --scan
 --noize <profile>         obfuscation profile
 --h2, --http2             use HTTP/2 instead of HTTP/3 for MASQUE
---fragment                fragment the TLS ClientHello (HTTP/2 only)
+--fragment                fragment the TLS ClientHello (MASQUE over HTTP/2, and the WARP API calls)
 --quick-reconnect         skip the prompt, always reuse the last working gateway
 --no-quick-reconnect      skip the prompt, always scan fresh
 ```
@@ -58,9 +60,15 @@ A classic tunnel, lean and very fast. It has the least overhead, so when it work
 
 ### 3) Tunnel-in-tunnel (gool)
 
-Here one WireGuard session is wrapped inside another WireGuard session. That means two layers of encryption stacked on top of each other. This is a little slower, but when a single layer is not enough for clean passage it can make the difference. If plain WireGuard connects but is not stable, try this mode.
+When you pick this one, Aether asks which gool you want: gool over MASQUE (the default) or the classic gool.
 
-Because there are two hops, gool has to find two addresses, and by default it scans for both. If somebody on your network has already found addresses that work, you can hand them over instead of waiting for a sweep to rediscover them: `--wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408`, or both at once with `--wiw-peers 162.159.192.1:2408,188.114.96.1:2408`. The port has to be written out — which port gets through is the part that differs between networks, so aether does not fill one in for you. Giving only one of the two is fine: it scans for the other and keeps the sweep off the address you already chose. The two hops have to be different addresses, since leaving through the edge you arrived on gains you nothing. You do not have to remember any of this at the keyboard — when gool is about to scan, it prints the same reminder above the scan mode question.
+**gool over MASQUE** (`--gool`) runs a WireGuard session inside a MASQUE tunnel. Your network sees only the MASQUE connection, which looks like ordinary web traffic. The WireGuard session inside it is dialled from inside WARP, so Cloudflare sees the MASQUE edge rather than your address and gives you a different exit address. It is a little slower than a single tunnel, so reach for it when you need that other exit.
+
+It has only one hop to find: the MASQUE gateway, which it scans for the way MASQUE does, or which you name with `--peer`. The WireGuard hop inside is not scanned for. It is the endpoint gool's own key names, on port 2408, and `--gool-peer` picks another. That key lives in its own file next to the MASQUE one (`aether-masque-gool.toml`): `--register gool` makes the keys gool needs, and if this one is missing, gool registers it from inside the tunnel the first time it connects.
+
+**The classic gool** (`--gool-classic`) wraps one WireGuard session inside another WireGuard session. That means two layers of encryption stacked on top of each other. This is a little slower, but when a single layer is not enough for clean passage it can make the difference. If plain WireGuard connects but is not stable, try this mode.
+
+Because there are two hops, the classic gool has to find two addresses, and by default it scans for both. If somebody on your network has already found addresses that work, you can hand them over instead of waiting for a sweep to rediscover them: `--wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408`, or both at once with `--wiw-peers 162.159.192.1:2408,188.114.96.1:2408`. The port has to be written out — which port gets through is the part that differs between networks, so aether does not fill one in for you. Giving only one of the two is fine: it scans for the other and keeps the sweep off the address you already chose. The two hops have to be different addresses, since leaving through the edge you arrived on gains you nothing. Naming either hop is enough to select the classic gool. You do not have to remember any of this at the keyboard — when the classic gool is about to scan, it prints the same reminder above the scan mode question.
 
 ## Scanning: why it has no fixed address
 
@@ -88,13 +96,13 @@ Deep packet inspection devices (DPI) look, at the start of every connection, for
 
 Before the real conversation begins, Aether sends some "junk" and random packets so that the start of the connection does not look like a recognizable pattern from the outside. It can also pause a little between handshake stages and send packets at irregular intervals, so that the timing pattern of the traffic is not predictable either.
 
-### Profiles for MASQUE
+### Profiles for MASQUE (and gool's MASQUE hop)
 
 - **firewall** (default and recommended for Iran) — balanced; it gets through well without sacrificing too much speed.
 - **gfw** — heavier. Try this when firewall does not work.
 - **off** — no obfuscation. Only for open networks or for testing.
 
-### Profiles for WireGuard and gool
+### Profiles for WireGuard and the classic gool
 
 - **balanced** (default and recommended for Iran) — the sweet spot between stealth and speed.
 - **aggressive** — the heaviest. Sends the most decoy packets and obfuscation layers. For very strict networks.
@@ -103,7 +111,7 @@ Before the real conversation begins, Aether sends some "junk" and random packets
 
 ### The simple rule
 
-Start from the default. If it did not connect or kept dropping, take it one step heavier (for MASQUE go to gfw, for WireGuard go to aggressive). If your network is open and you only want speed, come down to light or off.
+Start from the default. If it did not connect or kept dropping, take it one step heavier (for MASQUE and gool go to gfw, for WireGuard and the classic gool go to aggressive). If your network is open and you only want speed, come down to light or off.
 
 ## The difference between h2 and h3 in MASQUE and choosing between them
 
@@ -135,9 +143,11 @@ AETHER_MASQUE_HTTP2=1 ./target/release/aether
 
 The values `1`, `true`, `h2`, `yes`, and `on` all turn on h2. If you do not set this, it is always h3.
 
-### Fragmenting the ClientHello (h2 only)
+### Fragmenting the ClientHello (h2, and the WARP API calls)
 
-On some networks, DPI blocks the connection the moment it sees a complete, single TLS ClientHello record with a recognizable SNI. When you run MASQUE over h2, Aether can split that first TLS flight into several small chunks and send them with a short random delay in between, so no single packet on the wire contains the whole handshake or the SNI in one piece. This is the same idea used elsewhere as "TLS ClientHello fragmentation" — this is only available for h2 because it needs a TCP stream to fragment; h3 runs over QUIC/UDP where the concept does not apply the same way.
+On some networks, DPI blocks the connection the moment it sees a complete, single TLS ClientHello record with a recognizable SNI. When you run MASQUE over h2, Aether can split that first TLS flight into several small chunks and send them with a short random delay in between, so no single packet on the wire contains the whole handshake or the SNI in one piece. This is the same idea used elsewhere as "TLS ClientHello fragmentation" — for MASQUE this is only available for h2 because it needs a TCP stream to fragment; h3 runs over QUIC/UDP where the concept does not apply the same way.
+
+The same flag also splits the ClientHello of the calls Aether makes to the WARP API to get a new key, on any transport, since those always go over TLS on TCP. `--fragment-size` and `--fragment-delay` shape both. Without `--fragment`, both go out whole.
 
 It is off by default because it adds a small delay to every reconnect. Turn it on with:
 
@@ -190,7 +200,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 
 ### General selection
 
-- `AETHER_PROTOCOL` — protocol: `masque`, `wg`, or `gool`.
+- `AETHER_PROTOCOL` — protocol: `masque`, `wg`, or `gool`. `gool` is gool over MASQUE; add `AETHER_GOOL_MODE=classic` (or pass `--gool-classic`) for the classic gool.
 - `AETHER_SOCKS` — the proxy listen address. Default `127.0.0.1:1819`.
 - `AETHER_NOIZE` — obfuscation profile (explained above).
 - `AETHER_SCAN` — scan mode: `turbo`, `balanced`, `thorough`, `stealth`, `ironclad`.
@@ -200,8 +210,8 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 
 - `AETHER_MASQUE_HTTP2` (`--h2`, `--http2`) — if it is `1`/`true`/`h2`/`yes`/`on`, it uses h2. Otherwise h3.
 - `AETHER_MASQUE_H2_PEER` (`--h2-peer`) — manual override of the destination address for h2 mode.
-- `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — fragment the TLS ClientHello on h2. Off by default.
-- `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — fragment chunk size in bytes, `n` or `a-b`. Default `16-32`.
+- `AETHER_MASQUE_H2_FRAGMENT` (`--fragment`) — fragment the TLS ClientHello on h2, and that of the WARP API calls. Off by default.
+- `AETHER_MASQUE_H2_FRAGMENT_SIZE` (`--fragment-size`) — fragment chunk size in bytes, `n` or `a-b`. Default `8-16`.
 - `AETHER_MASQUE_H2_FRAGMENT_DELAY` (`--fragment-delay`) — delay between fragments in ms, `n` or `a-b`. Default `2-10`.
 - `AETHER_MASQUE_NO_DATA_CHECK` (`--no-data-check`) — if set, a `:status 200` alone is enough; the end-to-end data-plane probe is skipped.
 - `AETHER_MASQUE_VALIDATE_SECS` (`--validate-secs`) — seconds to wait for the data-plane probe to succeed before giving up on a gateway. Default `10`.
@@ -209,7 +219,7 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 - `AETHER_MASQUE_RECONNECT_SECS` (`--reconnect-secs`) — delay before automatically reconnecting after the MASQUE tunnel drops or fails validation. Default `2`.
 - `AETHER_WG_RECONNECT_SECS` — delay before automatically reconnecting after the WireGuard tunnel drops. Default `2`.
 
-### Specific to WireGuard and gool
+### Specific to WireGuard and the classic gool
 
 - `AETHER_WG_KEEPALIVE` (`--keepalive`) — the keepalive packet interval in seconds. Default `5`.
 - `AETHER_WG_NO_DATA_CHECK` (`--no-data-check`) — if set, real data passage is not verified during the scan (faster but less reliable).
@@ -221,13 +231,15 @@ Every prompt has a variable equivalent. If you set a variable beforehand, Aether
 
 ### Forcing the endpoint and the config path
 
-- `AETHER_PEER` or `AETHER_WG_PEER` (`--peer`, `--wg-peer`) — if you want to give a fixed address yourself and bypass the scan. On gool this names the outer hop.
-- `AETHER_WIW_OUTER_PEER` and `AETHER_WIW_INNER_PEER` (`--wiw-outer`, `--wiw-inner`) — the two gool hops, one setting each, written as `ip:port`. The port is required. Set one and the scan looks for the other; set both and there is no scan. An address you set this way is retried on reconnect rather than replaced by a scanned one.
-- `AETHER_WIW_PEERS` (`--wiw-peers`) — both hops in one value, `outer,inner`. Set it to `auto` (or pass `--wiw-scan`) to always scan and never be asked.
+- `AETHER_PEER` or `AETHER_WG_PEER` (`--peer`, `--wg-peer`) — if you want to give a fixed address yourself and bypass the scan. On gool, `--peer` names the MASQUE gateway; on the classic gool, either one names the outer hop.
+- `AETHER_GOOL_INNER` (`--gool-peer`) — the WireGuard endpoint gool dials inside its MASQUE tunnel, written as `ip:port`. By default it is the one gool's key names, on port 2408.
+- `AETHER_WIW_OUTER_PEER` and `AETHER_WIW_INNER_PEER` (`--wiw-outer`, `--wiw-inner`) — the two hops of the classic gool, one setting each, written as `ip:port`. Setting either selects the classic gool. The port is required. Set one and the scan looks for the other; set both and there is no scan. An address you set this way is retried on reconnect rather than replaced by a scanned one.
+- `AETHER_WIW_PEERS` (`--wiw-peers`) — both hops of the classic gool in one value, `outer,inner`. Set it to `auto` (or pass `--wiw-scan`) to always scan and never be asked.
 - `AETHER_CONFIG` (`--config`) — the path of the base config file. Default `aether.toml`.
 - `AETHER_WG_CONFIG` and `AETHER_MASQUE_CONFIG` (`--wg-config`, `--masque-config`) — the config path specific to each protocol.
-- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — how long an endpoint that fails twice is excluded from rescans. Default `300`.
+- `AETHER_WG_ENDPOINT_COOLDOWN_SECS` — how long an endpoint is excluded from rescans once its tunnel ended twice in a row, each time within five minutes of starting; a tunnel that stayed up longer does not count. Default `300`.
 - `AETHER_TLS_GROUPS` (`--tls-groups`) — override the TLS key-share groups advertised in the handshake. Default mimics Chrome (`P-256:X25519:P-384`).
+- `AETHER_MASQUE_SNI` (`--masque-sni`) — the server name the MASQUE handshakes (HTTP/3 and HTTP/2) put in their ClientHello. Default `www.cloudflare.com`; the WARP client sends `consumer-masque.cloudflareclient.com`. Only the TLS name changes; the HTTP host (`:authority`) stays `cloudflareaccess.com`.
 
 ## Practical examples
 
@@ -257,16 +269,22 @@ AETHER_PROTOCOL=wg AETHER_NOIZE=aggressive AETHER_SCAN=thorough ./target/release
 AETHER_PROTOCOL=gool AETHER_SOCKS=127.0.0.1:1080 ./target/release/aether
 ```
 
-### gool on addresses a friend told you about, with no scan at all
+### gool on a MASQUE gateway you already know, with no scan at all
 
 ```
-./target/release/aether --gool --wiw-peers 162.159.192.1:2408,188.114.96.1:2408
+./target/release/aether --gool --peer 162.159.196.1:443
 ```
 
-### gool where you only know one good address, and aether finds the other
+### The classic gool on addresses a friend told you about, with no scan at all
 
 ```
-./target/release/aether --gool --wiw-outer 162.159.192.1:2408 --turbo -4
+./target/release/aether --gool-classic --wiw-peers 162.159.192.1:2408,188.114.96.1:2408
+```
+
+### The classic gool where you only know one good address, and aether finds the other
+
+```
+./target/release/aether --gool-classic --wiw-outer 162.159.192.1:2408 --turbo -4
 ```
 
 ### MASQUE on h2 with ClientHello fragmentation, for a network that blocks the h2 handshake specifically
@@ -316,13 +334,13 @@ If you got an answer and saw something like `warp=on` or connection details insi
 
 ## When something does not work
 
-- **It does not connect at all:** first change the protocol. If MASQUE did not work on h3, turn on h2. If h2's handshake itself gets blocked, try `--fragment`. If nothing on MASQUE works, try WireGuard or gool.
+- **It does not connect at all:** first change the protocol. If MASQUE did not work on h3, turn on h2. If h2's handshake itself gets blocked, try `--fragment`. If nothing on MASQUE works, try WireGuard or the classic gool (gool over MASQUE needs MASQUE to work).
 - **The scan finds a gateway but the tunnel never passes traffic ("connects" but nothing loads):** this is exactly what the data-plane validation now catches — a gateway that answers the handshake but silently drops data. Aether will reject that gateway and keep scanning automatically. If it happens constantly and you'd rather connect anyway, you can disable the check with `--no-data-check`, but expect the same silent-drop behavior you had before.
 - **It connects but keeps dropping:** take the noise profile one step heavier.
 - **The scan takes too long:** set the scan mode to turbo.
-- **It is slow:** if you are on gool, come to single-layer WireGuard; and if you are on h2 and your network leaves UDP open, try h3.
+- **It is slow:** if you are on gool, come down to a single tunnel (MASQUE from gool over MASQUE, WireGuard from the classic gool); and if you are on h2 and your network leaves UDP open, try h3.
 - **You keep waiting through a full scan every time you reconnect on the same network:** say yes to the "reconnect to last working gateway" prompt, or set `AETHER_QUICK_RECONNECT=1` permanently.
 
 ## Summary
 
-If you want it in one sentence: start from MASQUE with the default profile, if UDP is blocked turn on h2 (and fragment the ClientHello if h2 itself gets blocked), and if it is still strict, make the noise profile heavier or move to WireGuard and gool. Aether takes care of the rest — including refusing gateways that don't actually pass data, and reconnecting on its own if the tunnel drops.
+If you want it in one sentence: start from MASQUE with the default profile, if UDP is blocked turn on h2 (and fragment the ClientHello if h2 itself gets blocked), and if it is still strict, make the noise profile heavier or move to WireGuard and the classic gool. Aether takes care of the rest — including refusing gateways that don't actually pass data, and reconnecting on its own if the tunnel drops.

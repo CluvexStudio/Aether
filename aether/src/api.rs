@@ -275,6 +275,8 @@ pub fn save_identity(path: &str, identity: &Identity) -> Result<()> {
     config::save(path, identity)
 }
 
+/// Registers a new identity, gives it its MASQUE key when asked, and hands it back only once WARP
+/// is enabled on it, as the core saves its own; an identity that is saved is never asked about again.
 pub async fn provision_identity(request: &ProvisionRequest) -> Result<Identity> {
     let identity = match &request.team {
         Some(team) => {
@@ -291,9 +293,12 @@ pub async fn provision_identity(request: &ProvisionRequest) -> Result<Identity> 
         None => account::provision_wg(&request.model, &request.locale, None).await?,
     };
 
-    if request.masque_cert {
-        return attach_masque_cert(identity).await;
-    }
+    let identity = if request.masque_cert {
+        attach_masque_cert(identity).await?
+    } else {
+        identity
+    };
+    crate::enable_warp_on(&identity).await?;
     Ok(identity)
 }
 
@@ -397,7 +402,7 @@ pub async fn scan(identity: &Identity, request: &ScanRequest, cancel: &Cancel) -
     match request.transport {
         Transport::Masque => {
             let probe = prober::MasqueProbe {
-                sni: consts::CONNECT_SNI.to_string(),
+                sni: quic::masque_sni()?,
                 authority: quic::default_authority().to_string(),
                 path: quic::default_path().to_string(),
                 cert_pem: Arc::from(identity.cert_pem.clone()),
