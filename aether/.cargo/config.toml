@@ -1,0 +1,6 @@
+# Link the MSVC C runtime into aether.exe. Without it the Windows build needs
+# VCRUNTIME140.dll and MSVCP140.dll (the Visual C++ Redistributable) and, where
+# they are missing, exits at start without a word. boring-sys builds BoringSSL
+# with the static runtime too when this target feature is on.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
