@@ -589,42 +589,15 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.1
+            Aether v2.3.2
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            Changes that can break a command written for 2.3.0
+            Windows
 
-            - `--enroll-address` is now `--api-address`, and `AETHER_ENROLL_ADDRESS` is now `AETHER_API_ADDRESS`. It sets where every call to the WARP API goes: registering, MASQUE key enrollment and enabling WARP. A command with `--enroll-address` stops with "unknown option"; `AETHER_ENROLL_ADDRESS` is no longer read, so where it is still set the calls go to api.cloudflareclient.com.
-            - `--no-fragment` is gone, since leaving `--fragment` out already means off. A command with `--no-fragment` stops with "unknown option".
-            - `--api-fragment` is gone. 2.3.0 took it, but nothing read it; `--fragment` now splits the WARP API calls instead. A command with `--api-fragment` stops with "unknown option".
-            - `--register gool` now registers what `--gool` runs: the MASQUE identity and the WireGuard identity carried inside it (`<masque config>-gool.toml`). The two WireGuard hops of the classic gool, which it registered in 2.3.0, now take `--register gool-classic`.
-            - MASQUE handshakes now send `www.cloudflare.com` as their server name by default, instead of `consumer-masque.cloudflareclient.com`, the name the WARP client sends. `--masque-sni consumer-masque.cloudflareclient.com` sends the old name again.
-            - The Android builds need Android 10 (API 29) or later. The 2.3.0 builds ran on Android 7 (API 24) and later.
+            - `aether.exe` no longer needs the Microsoft Visual C++ Redistributable. The 2.3.1 build loaded `VCRUNTIME140.dll` and `MSVCP140.dll`, so on a PC without them Windows would not start it. The C runtime is now built into the program, which needs only the DLLs that come with Windows.
 
-            MASQUE server name
-
-            - `--masque-sni <name>` (`AETHER_MASQUE_SNI`) sets the server name in the ClientHello of every MASQUE handshake, over HTTP/3 and HTTP/2: gateway scans and checks, the tunnel, and both hops of MASQUE-in-MASQUE. Only the TLS name changes; the HTTP host stays cloudflareaccess.com. With `--ech` it is the name inside the encrypted ClientHello. A value that is not a domain name stops aether as it starts.
-
-            Fragmenting the WARP API calls
-
-            - `--fragment` now also splits the ClientHello of the WARP API calls (registering, MASQUE key enrollment, enabling WARP) on every transport, with the same `--fragment-size` and `--fragment-delay`, for networks that filter the API's name. Without `--fragment`, neither these calls nor MASQUE over HTTP/2 split their ClientHello.
-            - The help and the guides now give the HTTP/2 fragment defaults the code uses: off, and pieces of 8-16 bytes.
-
-            Gool
-
-            - `--register gool-classic` (also `wiw` and `warp-in-warp`) registers both WireGuard hops of the classic gool, and `--register all` registers all five identities.
-            - `--register gool` makes gool's WireGuard key directly. Where the key was registered does not set the exit: that comes from where the WireGuard hop is dialled, inside WARP.
-            - `--tor-reverse` and `--psiphon-reverse` now carry gool over MASQUE. They refuse only WireGuard and the classic gool, which need UDP to reach WARP.
-            - When gool registers its WireGuard key from inside its tunnel, it no longer changes `AETHER_UPSTREAM` for the whole process, so nothing else goes into the tunnel meanwhile.
-            - The READMEs, docs and guides, in English and Persian, describe the new gool (WireGuard inside MASQUE) and the classic one (`--gool-classic`).
-
-            Starts and reconnects
-
-            - 2.3.0 enabled WARP on the MASQUE identity at every start, before the tunnel came up. Where the WARP API is filtered and the tunnel is not, that held each start for about 10 seconds, or about 110 on a silent drop. Now getting an identity means registering it and then enabling WARP on it, as the WARP app does, and it is saved only when both went through; if enabling fails, the start or the registration fails and nothing is saved. An identity file that is already there is used as it is: WARP is no longer enabled on it at each start.
-            - A Retry-After from the WARP API no longer delays the error after the last attempt.
-            - A MASQUE gateway whose tunnel keeps ending, as when `--exit-loc` refuses its exit, is left after two tunnels in a row that each ended within five minutes, rested for five minutes and replaced by a scan, as WireGuard endpoints already were. This holds for gool's gateway too. A gateway named with `--peer` stays.
-            - Only tunnels that end within five minutes count towards leaving a gateway, endpoint or hop, for MASQUE, WireGuard, the classic gool and MASQUE-in-MASQUE. A tunnel that carried traffic for hours and saw two network changes now reconnects at once to the same gateway, endpoint or hops, where 2.3.0 rested the WireGuard endpoint, or dropped the hops of the classic gool and MASQUE-in-MASQUE, and scanned.
+            Nothing else changed: commands, options and the other builds work as in 2.3.1. The changes since 2.3.0, including those that can break a command written for it, are in the 2.3.1 release notes.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
