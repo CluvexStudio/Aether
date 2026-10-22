@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -156,8 +157,10 @@ fn bind_hint(error: &std::io::Error) -> &'static str {
     }
 }
 
-pub async fn serve(listener: TcpListener, stack: StackHandle) -> Result<()> {
-    let listen = listener.local_addr()?;
+/// Serves socks5 clients of `listener` through `stack` until it fails or is aborted. The listener may
+/// be one the caller holds beyond this serving (an `Arc`): it stays bound when the task ends.
+pub async fn serve<L: Borrow<TcpListener>>(listener: L, stack: StackHandle) -> Result<()> {
+    let listen = listener.borrow().local_addr()?;
     log::info!("[+] socks5 server listening on {listen}");
     warn_if_world_reachable("socks5", listen);
     let bind_ip = listen.ip();
@@ -198,16 +201,18 @@ fn client_limit() -> usize {
     }
 }
 
-async fn accept_clients<F, Fut>(
-    listener: TcpListener,
+async fn accept_clients<L, F, Fut>(
+    listener: L,
     kind: &'static str,
     max: usize,
     serve_one: F,
 ) -> Result<()>
 where
+    L: Borrow<TcpListener>,
     F: Fn(TcpStream, SocketAddr) -> Fut,
     Fut: Future<Output = ()> + Send + 'static,
 {
+    let listener = listener.borrow();
     let limit = Arc::new(Semaphore::new(max));
     let mut clients = tokio::task::JoinSet::new();
     let mut last_accept_warning: Option<std::time::Instant> = None;
@@ -250,6 +255,48 @@ where
             }
         }
     }
+}
+
+/// How long [`answers`] waits for a socks5 server's reply to its greeting.
+const ANSWER_WAIT: Duration = Duration::from_secs(2);
+
+/// Whether a socks5 server answers on `address` now: it takes the connection and replies to the
+/// greeting. A listener that is held but not served yet, as the core's own between two tunnels,
+/// takes the connection and says nothing, so it does not count until it does.
+pub(crate) async fn answers(address: SocketAddr) -> bool {
+    let greeting = async {
+        let mut sock = TcpStream::connect(address).await.ok()?;
+        sock.write_all(&[VER, 1, 0x00]).await.ok()?;
+        let mut reply = [0u8; 2];
+        sock.read_exact(&mut reply).await.ok()?;
+        Some(reply[0] == VER)
+    };
+    matches!(
+        tokio::time::timeout(ANSWER_WAIT, greeting).await,
+        Ok(Some(true))
+    )
+}
+
+/// Passes every client of `listener` on to `to`, byte for byte, until it fails or is aborted: a
+/// proxy that listens on `to`, a port of its own choosing, is reached on `listener`'s address, which
+/// the caller held before that proxy was up. A client `to` does not take is closed.
+pub(crate) async fn forward<L: Borrow<TcpListener>>(
+    listener: L,
+    kind: &'static str,
+    to: SocketAddr,
+) -> Result<()> {
+    accept_clients(
+        listener,
+        kind,
+        client_limit(),
+        move |sock, peer| async move {
+            match TcpStream::connect(to).await {
+                Ok(remote) => relay_generic(sock, remote, half_close_linger()).await,
+                Err(e) => log::debug!("{kind} client {peer}: {to} did not take it: {e}"),
+            }
+        },
+    )
+    .await
 }
 
 fn due(last: &mut Option<std::time::Instant>, every: Duration) -> bool {
@@ -1716,6 +1763,107 @@ mod relay_tests {
         assert_eq!(second_served, second.local_addr().unwrap());
         server.abort();
     }
+
+    #[tokio::test]
+    async fn a_held_listener_stays_bound_between_two_servings() {
+        // As the listener the app dials is held while one tunnel ends and the next comes up.
+        let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let address = listener.local_addr().unwrap();
+        let (served_tx, mut served) = mpsc::unbounded_channel::<u8>();
+        let serving = |round: u8| {
+            let served_tx = served_tx.clone();
+            tokio::spawn(accept_clients(
+                Arc::clone(&listener),
+                "test",
+                4,
+                move |_sock, _peer| {
+                    let served_tx = served_tx.clone();
+                    async move {
+                        let _ = served_tx.send(round);
+                    }
+                },
+            ))
+        };
+        let first = serving(1);
+        let _a = TcpStream::connect(address).await.unwrap();
+        let round = tokio::time::timeout(Duration::from_secs(2), served.recv()).await;
+        assert_eq!(round.ok().flatten(), Some(1));
+        first.abort();
+        let _ = first.await;
+
+        // No one serves the port now, yet it stays bound: no other program can take it.
+        assert!(std::net::TcpListener::bind(address).is_err());
+        // A client that comes meanwhile waits for the next serving.
+        let _b = TcpStream::connect(address).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), served.recv())
+                .await
+                .is_err()
+        );
+
+        let second = serving(2);
+        let round = tokio::time::timeout(Duration::from_secs(2), served.recv()).await;
+        assert_eq!(round.ok().flatten(), Some(2));
+        second.abort();
+    }
+
+    #[tokio::test]
+    async fn a_held_listener_answers_only_once_served() {
+        let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let address = listener.local_addr().unwrap();
+        // Held, but no one serves it: the connection is taken, the greeting goes unanswered.
+        assert!(!answers(address).await);
+
+        let server = tokio::spawn(accept_clients(
+            Arc::clone(&listener),
+            "test",
+            4,
+            |mut sock, _peer| async move {
+                let mut greeting = [0u8; 3];
+                if sock.read_exact(&mut greeting).await.is_ok() {
+                    let _ = sock.write_all(&[VER, 0x00]).await;
+                }
+            },
+        ));
+        assert!(answers(address).await);
+        server.abort();
+
+        // A port nothing listens on.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_address = closed.local_addr().unwrap();
+        drop(closed);
+        assert!(!answers(closed_address).await);
+    }
+
+    #[tokio::test]
+    async fn forward_passes_clients_on_to_the_port_behind() {
+        // The proxy behind, on a port of its own, echoes what it gets.
+        let behind = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let to = behind.local_addr().unwrap();
+        let echo = tokio::spawn(async move {
+            while let Ok((mut sock, _)) = behind.accept().await {
+                tokio::spawn(async move {
+                    let (mut rd, mut wr) = sock.split();
+                    let _ = tokio::io::copy(&mut rd, &mut wr).await;
+                });
+            }
+        });
+        let held = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = held.local_addr().unwrap();
+        let forwarder = tokio::spawn(forward(held, "test", to));
+
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client.write_all(b"hello").await.unwrap();
+        let mut answer = [0u8; 5];
+        tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut answer))
+            .await
+            .expect("the answer comes back through the held port")
+            .unwrap();
+        assert_eq!(&answer, b"hello");
+
+        forwarder.abort();
+        echo.abort();
+    }
 }
 
 #[cfg(test)]
@@ -2211,8 +2359,10 @@ mod tests {
 
 const HTTP_HEAD_LIMIT: usize = 16 * 1024;
 
-pub async fn serve_http(listener: TcpListener, stack: StackHandle) -> Result<()> {
-    let listen = listener.local_addr()?;
+/// Serves http proxy clients of `listener` through `stack`; the listener may be one the caller holds
+/// beyond this serving, as for [`serve`].
+pub async fn serve_http<L: Borrow<TcpListener>>(listener: L, stack: StackHandle) -> Result<()> {
+    let listen = listener.borrow().local_addr()?;
     log::info!("[+] http proxy listening on {listen}");
     warn_if_world_reachable("http proxy", listen);
 

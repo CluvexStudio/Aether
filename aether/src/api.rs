@@ -558,10 +558,12 @@ pub async fn connect(
         Some(listen) => std::env::set_var("AETHER_HTTP_PROXY", listen.to_string()),
         None => std::env::remove_var("AETHER_HTTP_PROXY"),
     }
+    // Held for this one tunnel, from before it comes up until it ends.
+    let listeners = crate::Listeners::bind(spec.socks).await?;
 
     match spec.transport {
         Transport::Masque => {
-            let attempt = crate::run_masque_tunnel(identity, peer, spec.ech.clone(), spec.socks);
+            let attempt = crate::run_masque_tunnel(identity, peer, spec.ech.clone(), &listeners);
             guard(cancel, attempt).await
         }
         Transport::WireGuard => {
@@ -569,7 +571,7 @@ pub async fn connect(
                 identity.clone(),
                 peer,
                 spec.aethernoize.clone(),
-                spec.socks,
+                &listeners,
             );
             guard(cancel, attempt).await
         }

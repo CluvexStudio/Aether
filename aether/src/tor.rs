@@ -841,7 +841,8 @@ mod with_tor {
     async fn wait_for_proxy(through: SocketAddr) {
         let mut announced = false;
         loop {
-            if tokio::net::TcpStream::connect(through).await.is_ok() {
+            // The core holds its listener from its start; it answers once a tunnel serves it.
+            if crate::socks::answers(through).await {
                 return;
             }
             if !announced {
