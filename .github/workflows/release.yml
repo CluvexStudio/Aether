@@ -23,10 +23,13 @@ jobs:
   #
   # Every leg also ships a LICENSES/ folder beside the binary: aether's
   # license, the license files of lyrebird and psiphon-tunnel-core from
-  # the sources the scripts build, and THIRD-PARTY-NOTICES.txt, which
-  # third-party-notices.py writes from `cargo metadata` and `cargo tree`
-  # for the Rust crates linked into aether with the target and features
-  # of the build.
+  # the sources the scripts build, lyrebird-THIRD-PARTY-NOTICES.txt and
+  # psiphon-tunnel-core-THIRD-PARTY-NOTICES.txt, which the scripts write
+  # from `go list -deps` for the Go standard library and modules linked
+  # into each, and THIRD-PARTY-NOTICES.txt, which third-party-notices.py
+  # writes from `cargo metadata` and `cargo tree` for the Rust standard
+  # library and the Rust crates linked into aether with the target and
+  # features of the build.
   # ------------------------------------------------------------------
   desktop:
     name: Build ${{ matrix.archive }}

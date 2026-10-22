@@ -25,8 +25,23 @@ begin with LICENSE, LICENCE, COPYING, NOTICE, COPYRIGHT or UNLICENSE, at any
 depth (boring-sys carries BoringSSL's license under deps/boringssl), the
 files at its root named after an identifier of its license expression (such
 as MPL-2.0.txt), and its manifest's license-file. A text given earlier in
-the file is not repeated; the entry names where it is. A crate whose package
-carries no license file says so and names its repository.
+the file is not repeated; the entry names where it is.
+
+A crate whose package carries no license file, such as the arti and tor-*
+crates and boringtun, gets the standard text of each license its expression
+names (both for "MIT OR Apache-2.0") from license-texts/ beside this script,
+whose README says where each text was copied from. A copyright line comes
+first: one per entry of the crate's authors field, or the line in
+SOURCE_COPYRIGHT for a crate whose authors are not the holder (boringtun's
+source files carry "Copyright (c) 2019 Cloudflare, Inc."; the script checks
+that they still do), or, when the authors field is empty and a license
+needs a holder, the owner of the crate's repository. The script fails when
+license-texts/ has no text for an identifier the expression names.
+
+The first entry is the Rust standard library, which rustc links into every
+binary: MIT OR Apache-2.0, with the texts from share/doc/rust in the
+toolchain's sysroot (`rustc --print sysroot`) when it has them and from
+license-texts/ when it does not.
 
 On a checkout without symlinks (git's core.symlinks=false, as Git for
 Windows often has it), a symlinked license file is a small file that holds
@@ -39,11 +54,14 @@ Python standard library only, so it runs on every release runner.
 """
 
 import argparse
+import html
 import json
 import os
 import re
 import subprocess
 import sys
+import textwrap
+import urllib.parse
 
 NOTICE_NAME = re.compile(
     r"^(?:LICEN[CS]E|COPYING|NOTICE|COPYRIGHT|UNLICENSE)(?:[-._].*)?$",
@@ -69,6 +87,33 @@ TREE_LINE = re.compile(r"^(\S+) v(\S+)(?: \(.*\))?$")
 # A git symlink placeholder holds the link's target, which is short.
 PLACEHOLDER_LIMIT = 256
 PLACEHOLDER_HOPS = 8
+# The standard license texts, <SPDX identifier>.txt, beside this script.
+STANDARD_TEXTS = "license-texts"
+# The licenses whose text begins with the holder's copyright line. A crate
+# without a license file that names one of them needs a copyright line
+# before the standard text, even when its authors field is empty.
+HOLDER_LICENSES = {"0bsd", "bsd-2-clause", "bsd-3-clause", "isc", "mit", "zlib"}
+# Crates without a license file whose authors field names people rather
+# than the copyright holder: the copyright line their source files carry.
+# The script fails when no .rs file in the package carries it any more.
+SOURCE_COPYRIGHT = {
+    "boringtun": "Copyright (c) 2019 Cloudflare, Inc.",
+}
+# The Rust standard library's license and where a toolchain keeps its texts
+# under share/doc/rust: licenses/ since the toolchain follows REUSE, the
+# LICENSE-* files before.
+STD_LICENSE = "MIT OR Apache-2.0"
+STD_TEXTS = (
+    ("MIT", ("licenses/MIT.txt", "LICENSE-MIT")),
+    ("Apache-2.0", ("licenses/Apache-2.0.txt", "LICENSE-APACHE")),
+)
+STD_COPYRIGHT_FILE = "COPYRIGHT-library.html"
+# The holder of the standard library's own files in that file: the first
+# copyright after the entry for the directory ".".
+STD_COPYRIGHT = re.compile(
+    r"<b>File/Directory:</b>\s*<code>\.</code>.*?<b>Copyright:</b>\s*([^<]+?)\s*</p>",
+    re.DOTALL,
+)
 
 
 def fail(message):
@@ -76,14 +121,14 @@ def fail(message):
     sys.exit(1)
 
 
-def run_cargo(command):
+def run_tool(command, cwd=None):
     try:
-        run = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        run = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     except OSError as error:
-        fail(f"cannot run cargo: {error}")
+        fail(f"cannot run {command[0]}: {error}")
     if run.returncode != 0:
         sys.stderr.write(run.stderr.decode("utf-8", "replace"))
-        fail(f"cargo {command[1]} exited with {run.returncode}")
+        fail(f"{command[0]} {command[1]} exited with {run.returncode}")
     return run.stdout.decode("utf-8")
 
 
@@ -94,7 +139,7 @@ def cargo_metadata(manifest, target, features):
     ]
     if features:
         command += ["--features", features]
-    return json.loads(run_cargo(command))
+    return json.loads(run_tool(command))
 
 
 def cargo_tree(manifest, target, features):
@@ -107,7 +152,7 @@ def cargo_tree(manifest, target, features):
     if features:
         command += ["--features", features]
     built = set()
-    for line in run_cargo(command).splitlines():
+    for line in run_tool(command).splitlines():
         if not line.strip():
             continue
         match = TREE_LINE.match(line)
@@ -153,9 +198,18 @@ def linked_packages(metadata, built):
     return packages[root], crates
 
 
-def expression_ids(expression):
+def expression_names(expression):
+    """The license identifiers of an expression in order, each once."""
     words = re.findall(r"[A-Za-z0-9.+-]+", expression or "")
-    return {w.casefold() for w in words if w not in EXPRESSION_WORDS}
+    names = []
+    for word in words:
+        if word not in EXPRESSION_WORDS and word.casefold() not in (n.casefold() for n in names):
+            names.append(word)
+    return names
+
+
+def expression_ids(expression):
+    return {name.casefold() for name in expression_names(expression)}
 
 
 def is_notice_file(name):
@@ -243,6 +297,159 @@ def same_text_key(text):
     return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
+def add_text(lines, given, heading, text, label):
+    """Append a license text under its heading, or a reference to the
+    entry that gave the same text before."""
+    lines += ["", f"--- {heading} ---"]
+    key = same_text_key(text)
+    if key in given:
+        lines.append(f"(The same text as {given[key]}, above.)")
+    else:
+        given[key] = label
+        lines.append(text)
+
+
+def paragraph(text):
+    return textwrap.fill(text, width=72, break_long_words=False, break_on_hyphens=False)
+
+
+def standard_texts(folder):
+    """The standard license texts by casefolded SPDX identifier."""
+    texts = {}
+    if os.path.isdir(folder):
+        for name in os.listdir(folder):
+            stem, extension = os.path.splitext(name)
+            if extension == ".txt" and os.path.isfile(os.path.join(folder, name)):
+                texts[stem.casefold()] = name
+    return texts
+
+
+def standard_text(texts, folder, name, title):
+    """The file name and text of the standard text of license name."""
+    file_name = texts.get(name.casefold())
+    if file_name is None:
+        fail(f"{title}: no license file in its package and no {STANDARD_TEXTS}/{name}.txt; "
+             f"add the standard text of {name} as {STANDARD_TEXTS}/README.md says")
+    path = os.path.join(folder, file_name)
+    return file_name, license_text(path, folder, f"{STANDARD_TEXTS}/{file_name}")
+
+
+def source_carries(package, line):
+    """Whether a .rs file in the package carries line."""
+    root = os.path.dirname(package["manifest_path"])
+    wanted = line.encode("utf-8")
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIPPED_DIRS]
+        for name in files:
+            if name.endswith(".rs"):
+                with open(os.path.join(folder, name), "rb") as f:
+                    if wanted in f.read():
+                        return True
+    return False
+
+
+def repository_owner(repository):
+    """The owner part of a repository URL: the first segment of its path."""
+    url = urllib.parse.urlparse(repository or "")
+    segments = [s for s in url.path.split("/") if s]
+    if not url.netloc or len(segments) < 2:
+        return None
+    return segments[0]
+
+
+def copyright_lines(package, names, title):
+    """The copyright lines for a crate without a license file, and where
+    they come from."""
+    line = SOURCE_COPYRIGHT.get(package["name"])
+    if line is not None:
+        if not source_carries(package, line):
+            fail(f"{title}: no source file carries '{line}' any more; check its copyright "
+                 "holder and update SOURCE_COPYRIGHT")
+        return [line], "the header of its source files, as its authors field names people, not the holder"
+    authors = [a.strip() for a in package.get("authors") or [] if a.strip()]
+    if authors:
+        return [f"Copyright (c) {author}" for author in authors], "its authors field"
+    if not any(name.casefold() in HOLDER_LICENSES for name in names):
+        return [], None
+    owner = repository_owner(package.get("repository"))
+    if owner is None:
+        fail(f"{title}: no license file, no authors and no repository owner to name as "
+             f"the copyright holder that {package['license']} needs")
+    return [f"Copyright (c) {owner}"], (
+        f"the owner of its repository {package['repository']}, as its authors field is empty")
+
+
+def standard_text_lines(package, title, texts, folder, given):
+    """The lines that give a crate without a license file its license: the
+    copyright lines and the standard text of each license it names."""
+    expression = package["license"]
+    names = expression_names(expression)
+    if not names:
+        fail(f"{title}: no license file in its package and no license expression")
+    words = set(re.findall(r"[A-Za-z]+", expression))
+    choice = ""
+    if "OR" in words and "AND" not in words:
+        choice = " (the crate may be used under {} of them)".format(
+            "either" if len(names) == 2 else "any one")
+    holders, origin = copyright_lines(package, names, title)
+    which = "each license its expression names" if len(names) > 1 else "the license its expression names"
+    sentence = f"This crate's package carries no license file. Below is the standard text of {which}{choice}"
+    if holders:
+        sentence += ", after the copyright line{} from {}.".format("s" if len(holders) > 1 else "", origin)
+    else:
+        sentence += "."
+    lines = ["", paragraph(sentence)]
+    if holders:
+        lines += [""] + holders
+    for name in names:
+        file_name, text = standard_text(texts, folder, name, title)
+        add_text(lines, given, f"{name}, standard text ({STANDARD_TEXTS}/{file_name})",
+                 text, f"{title}, {name} standard text")
+    return lines
+
+
+def rust_std_entry(manifest, texts, folder, given):
+    """The entry of the Rust standard library, from the toolchain that
+    cargo runs for the manifest, and its version."""
+    rustc = os.environ.get("RUSTC") or "rustc"
+    cwd = os.path.dirname(os.path.abspath(manifest))
+    verbose = run_tool([rustc, "-vV"], cwd=cwd)
+    release = re.search(r"^release: (\S+)$", verbose, re.MULTILINE)
+    if not release:
+        fail(f"cannot read the release of {rustc} -vV")
+    version = release.group(1)
+    sysroot = run_tool([rustc, "--print", "sysroot"], cwd=cwd).strip()
+    doc = os.path.join(sysroot, "share", "doc", "rust")
+    title = f"Rust standard library {version}"
+    lines = [RULE, title, f"License: {STD_LICENSE}",
+             f"Source: the Rust toolchain ({verbose.splitlines()[0].strip()})"]
+    sentence = ("rustc links the standard library into every Rust binary. It may be used under "
+                "either license.")
+    holder = None
+    notices = os.path.join(doc, STD_COPYRIGHT_FILE)
+    if os.path.isfile(notices):
+        match = STD_COPYRIGHT.search(read_text(notices))
+        if match:
+            holder = html.unescape(match.group(1)).strip()
+        sentence += (" The notices of the code it includes from other projects are in "
+                     f"{STD_COPYRIGHT_FILE}, which the toolchain installs in share/doc/rust.")
+    lines += ["", paragraph(sentence)]
+    if holder:
+        lines += ["", f"Copyright (c) {holder}"]
+    for name, candidates in STD_TEXTS:
+        for relative in candidates:
+            path = os.path.join(doc, *relative.split("/"))
+            if os.path.isfile(path):
+                add_text(lines, given, f"{name} (share/doc/rust/{relative} of the toolchain)",
+                         read_text(path), f"{title}, {name}")
+                break
+        else:
+            file_name, text = standard_text(texts, folder, name, title)
+            add_text(lines, given, f"{name}, standard text ({STANDARD_TEXTS}/{file_name})",
+                     text, f"{title}, {name} standard text")
+    return "\n".join(lines), version
+
+
 def describe_source(package, tree_root):
     source = package["source"]
     if source is None:
@@ -275,9 +482,12 @@ def main():
         fail("no crate is linked into the package")
     crates.sort(key=lambda p: (p["name"], p["version"]))
     tree_root = os.path.dirname(os.path.dirname(root["manifest_path"]))
+    texts_folder = os.path.join(here, STANDARD_TEXTS)
+    texts = standard_texts(texts_folder)
 
-    entries = []
     given = {}
+    std_entry, std_version = rust_std_entry(args.manifest_path, texts, texts_folder, given)
+    entries = [std_entry]
     without_files = 0
     for package in crates:
         title = f"{package['name']} {package['version']}"
@@ -288,19 +498,12 @@ def main():
         files = license_files(package)
         if not files:
             without_files += 1
-            lines += ["", "This crate's package carries no license file. Its license is the",
-                      "expression above; the full text is in the crate's repository."]
+            lines += standard_text_lines(package, title, texts, texts_folder, given)
         folder = os.path.dirname(package["manifest_path"])
         bound = tree_root if package["source"] is None else folder
         for relative in files:
             text = license_text(os.path.join(folder, *relative.split("/")), bound, f"{title}: {relative}")
-            lines += ["", f"--- {relative} ---"]
-            key = same_text_key(text)
-            if key in given:
-                lines.append(f"(The same text as {given[key]}, above.)")
-            else:
-                given[key] = f"{title}, {relative}"
-                lines.append(text)
+            add_text(lines, given, relative, text, f"{title}, {relative}")
         entries.append("\n".join(lines))
 
     features = args.features or "default"
@@ -308,16 +511,22 @@ def main():
         f"Third-party notices for {root['name']} {root['version']}",
         f"Target: {args.target}, features: {features}",
         "",
-        f"{root['name']} links the {len(crates)} Rust crates below. Each entry gives the crate's",
-        "version, license expression and source, followed by the license files its",
-        "package carries. Crates used only to build it (build dependencies and",
-        "procedural macros) and optional dependencies that no enabled feature",
-        "turns on are not linked into it and are not listed.",
-        f"{without_files} of the crates carry no license file in their package; their",
-        "entries say so and name the repository that holds the text.",
-        f"{root['name']}'s own license ({root['license']}) is not repeated here.",
+        paragraph(
+            f"{root['name']} links the Rust standard library and the {len(crates)} Rust crates "
+            "below. The first entry is the standard library. Each crate's entry gives its "
+            "version, license expression and source, followed by the license files its package "
+            "carries. Crates used only to build it (build dependencies and procedural macros) "
+            "and optional dependencies that no enabled feature turns on are not linked into it "
+            f"and are not listed. {without_files} of the crates carry no license file in their "
+            "package; their entries give the standard text of each license their expression "
+            "names, after a copyright line from the crate's authors field or from the header "
+            f"of its source files. {root['name']}'s own license ({root['license']}) is not "
+            "repeated here."),
         "",
-        "Generated by third-party-notices.py from `cargo metadata` and `cargo tree`.",
+        "Generated by third-party-notices.py from `cargo metadata`, `cargo tree`,",
+        "the Rust toolchain and license-texts/ in the Aether source tree.",
+        "",
+        f"Rust standard library {std_version}: {STD_LICENSE}",
         "",
         "Crates:",
     ]
