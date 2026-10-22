@@ -149,8 +149,10 @@ def cargo_metadata(manifest, target, features):
 
 def cargo_tree(manifest, target, features):
     """The (name, version) of each crate cargo builds into the package."""
+    # --color never: CI sets CARGO_TERM_COLOR=always, which colors the " (*)"
+    # of a crate listed before.
     command = [
-        "cargo", "tree", "--locked", "--manifest-path", manifest,
+        "cargo", "tree", "--locked", "--color", "never", "--manifest-path", manifest,
         "--target", target, "--edges", "normal,no-proc-macro",
         "--prefix", "none", "--format", "{p}",
     ]
