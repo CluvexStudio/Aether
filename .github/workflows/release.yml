@@ -659,6 +659,9 @@ jobs:
   docker:
     name: Build and push Docker image
     runs-on: ubuntu-latest
+    # Only a release pushes the image: a manual run from a branch is a build check
+    # and must not move the "latest" tag.
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     permissions:
       contents: read
       packages: write
