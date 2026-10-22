@@ -5,9 +5,12 @@ no license file, such as the arti and tor-* crates, boringtun and void. The
 crate's entry in THIRD-PARTY-NOTICES.txt then gives the standard text of each
 license its license expression names (both texts for `MIT OR Apache-2.0`),
 after a copyright line from the crate's authors field or, for boringtun,
-from the header of its source files. When a Rust toolchain has no license
-texts in its `share/doc/rust`, the script takes the standard library's MIT
-and Apache-2.0 texts from here too.
+from the header of its source files. The script also takes the standard
+library's MIT text from here when the Rust toolchain has no `LICENSE-MIT`
+in its `share/doc/rust` (a toolchain that follows REUSE has only
+`licenses/MIT.txt`, the SPDX template with the placeholder line
+`Copyright (c) <year> <copyright holders>`), and its Apache-2.0 text when
+the toolchain has none.
 
 Each file is named after an SPDX license identifier and was copied byte for
 byte from a license file in the crates.io package of a crate that

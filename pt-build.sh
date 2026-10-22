@@ -41,18 +41,25 @@ go_notice_text() {
 
 # go_notices <name> <package> <file> writes the license notices of what the
 # Go build in the current directory links into <package>: the Go standard
-# library's LICENSE from the toolchain's GOROOT, then, for each module
-# outside the main one that `go list -deps` gives a package of, its path,
-# version and the LICENSE*, LICENCE*, COPYING* and NOTICE* files at its
-# root, read from the module cache or, when the build vendors, from
-# vendor/<module path>. Run it with the build's GOOS, GOARCH, GOARM,
-# CGO_ENABLED and GOFLAGS, so that it lists what the build compiled and
-# the toolchain that compiled it. A text given before is not repeated; the
-# entry names where it is.
+# library's LICENSE, then, for each module outside the main one that
+# `go list -deps` gives a package of, its path, version and the LICENSE*,
+# LICENCE*, COPYING* and NOTICE* files at its root. Run it with the build's
+# GOOS, GOARCH, GOARM, CGO_ENABLED and GOFLAGS, so that it lists what the
+# build compiled and the toolchain that compiled it. A text given before is
+# not repeated; the entry names where it is.
+#
+# The standard library's LICENSE is the one at the root of the toolchain's
+# GOROOT or, as Fedora's and RHEL's golang package installs it as a license
+# file of the package instead (GOROOT /usr/lib/golang has none),
+# /usr/share/licenses/golang/LICENSE. A module's files come from the folder
+# `go list` gives as its .Dir: the module cache, or the local directory that
+# replaces it. A build that vendors compiles vendor/<module path>, and
+# `go list` then gives no .Dir, also for a module that go.mod replaces by a
+# local directory, so its files come from vendor/<module path>.
 go_notices() {
     local name="$1" pkg="$2" file="$3"
-    local rule goroot goversion target modules texts count=0
-    local mpath mversion mreplace mdir mrdir dir source f base found
+    local rule goroot goversion target golicense gosource modules texts count=0
+    local mpath mversion rpath rversion mdir mreplace dir source f base found
     rule="================================================================================"
     goroot="$(go env GOROOT)"
     goversion="$(go env GOVERSION)"
@@ -60,24 +67,34 @@ go_notices() {
     if [ "$(go env GOARCH)" = "arm" ]; then
         target="$target, GOARM=$(go env GOARM)"
     fi
-    if [ ! -f "$goroot/LICENSE" ]; then
-        echo "$name: the Go toolchain in $goroot has no LICENSE" >&2
+    golicense="$goroot/LICENSE"
+    gosource="the Go toolchain"
+    if [ ! -f "$golicense" ]; then
+        golicense="/usr/share/licenses/golang/LICENSE"
+        gosource="$golicense of the system's golang package"
+    fi
+    if [ ! -f "$golicense" ]; then
+        echo "$name: no LICENSE in the Go toolchain's GOROOT $goroot or in /usr/share/licenses/golang" >&2
         return 1
     fi
-    modules="$(go list -deps -f '{{if not .Standard}}{{with .Module}}{{if not .Main}}{{.Path}}|{{.Version}}|{{with .Replace}}{{.Path}} {{.Version}}{{end}}|{{.Dir}}|{{with .Replace}}{{.Dir}}{{end}}{{end}}{{end}}{{end}}' "$pkg" | sort -u)"
+    modules="$(go list -deps -f '{{if not .Standard}}{{with .Module}}{{if not .Main}}{{.Path}}|{{.Version}}|{{with .Replace}}{{.Path}}|{{.Version}}{{else}}|{{end}}|{{.Dir}}{{end}}{{end}}{{end}}' "$pkg" | sort -u)"
     texts="$(mktemp -d "$work/notices.XXXXXX")"
     {
-        printf '%s\nGo standard library %s\nSource: the Go toolchain\n' "$rule" "$goversion"
-        go_notice_text "$texts" "Go standard library $goversion, LICENSE" LICENSE "$goroot/LICENSE"
-        while IFS='|' read -r mpath mversion mreplace mdir mrdir; do
+        printf '%s\nGo standard library %s\nSource: %s\n' "$rule" "$goversion" "$gosource"
+        go_notice_text "$texts" "Go standard library $goversion, LICENSE" LICENSE "$golicense"
+        while IFS='|' read -r mpath mversion rpath rversion mdir; do
             if [ -z "$mpath" ]; then
                 continue
             fi
-            dir="${mrdir:-$mdir}"
-            source="the module cache"
+            mreplace="$rpath${rversion:+ $rversion}"
+            dir="$mdir"
             if [ -z "$dir" ]; then
                 dir="vendor/$mpath"
                 source="$dir in the source tree"
+            elif [ -n "$rpath" ] && [ -z "$rversion" ]; then
+                source="the local directory $rpath"
+            else
+                source="the module cache"
             fi
             if [ ! -d "$dir" ]; then
                 echo "$name: no folder for module $mpath $mversion (looked for $dir)" >&2

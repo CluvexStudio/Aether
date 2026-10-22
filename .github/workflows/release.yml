@@ -157,7 +157,7 @@ jobs:
           dnf -y install \
             gcc gcc-c++ make cmake ninja-build golang nasm clang \
             perl perl-FindBin perl-IPC-Cmd \
-            curl git tar gzip xz unzip findutils which python3
+            curl git tar gzip xz unzip findutils which python3 diffutils
 
       - name: Checkout
         uses: actions/checkout@v4

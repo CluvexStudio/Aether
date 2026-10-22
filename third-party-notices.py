@@ -41,7 +41,9 @@ license-texts/ has no text for an identifier the expression names.
 The first entry is the Rust standard library, which rustc links into every
 binary: MIT OR Apache-2.0, with the texts from share/doc/rust in the
 toolchain's sysroot (`rustc --print sysroot`) when it has them and from
-license-texts/ when it does not.
+license-texts/ when it does not. The MIT text of a toolchain that follows
+REUSE, licenses/MIT.txt, is not used: it is the SPDX template, with a
+placeholder copyright line.
 
 On a checkout without symlinks (git's core.symlinks=false, as Git for
 Windows often has it), a symlinked license file is a small file that holds
@@ -101,10 +103,13 @@ SOURCE_COPYRIGHT = {
 }
 # The Rust standard library's license and where a toolchain keeps its texts
 # under share/doc/rust: licenses/ since the toolchain follows REUSE, the
-# LICENSE-* files before.
+# LICENSE-* files before. The REUSE licenses/MIT.txt is the SPDX template,
+# which opens with the placeholder line "Copyright (c) <year> <copyright
+# holders>", so the MIT text comes from LICENSE-MIT or, without it, from
+# license-texts/MIT.txt, which has no copyright line.
 STD_LICENSE = "MIT OR Apache-2.0"
 STD_TEXTS = (
-    ("MIT", ("licenses/MIT.txt", "LICENSE-MIT")),
+    ("MIT", ("LICENSE-MIT",)),
     ("Apache-2.0", ("licenses/Apache-2.0.txt", "LICENSE-APACHE")),
 )
 STD_COPYRIGHT_FILE = "COPYRIGHT-library.html"
