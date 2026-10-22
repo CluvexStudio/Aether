@@ -639,15 +639,15 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.2
+            Aether v2.3.3
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            Windows
+            License files
 
-            - `aether.exe` no longer needs the Microsoft Visual C++ Redistributable. The 2.3.1 build loaded `VCRUNTIME140.dll` and `MSVCP140.dll`, so on a PC without them Windows would not start it. The C runtime is now built into the program, which needs only the DLLs that come with Windows.
+            - Every archive now has a LICENSES folder next to aether. It holds the licenses of aether (AGPL-3.0), psiphon-tunnel-core and lyrebird; THIRD-PARTY-NOTICES.txt for the Rust crates and the Rust standard library linked into aether; and a third-party notice each for the Go modules and the Go standard library linked into psiphon-tunnel-core and lyrebird. Crates that publish no license file of their own get the standard text of the license they name.
 
-            Nothing else changed: commands, options and the other builds work as in 2.3.1. The changes since 2.3.0, including those that can break a command written for it, are in the 2.3.1 release notes.
+            Nothing else changed: the programs, their commands and their options work as in 2.3.2. The changes since 2.3.0 are in the 2.3.1 and 2.3.2 release notes.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
