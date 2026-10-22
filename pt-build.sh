@@ -5,9 +5,13 @@ goos="${1:-}"
 goarch="${2:-}"
 out="${3:-}"
 goarm="${4:-}"
+# With a licensedir, lyrebird's license files are copied there too, named
+# lyrebird-<file>, with .txt added to a name that has no extension. The
+# release archives carry them in LICENSES/.
+licensedir="${5:-}"
 
 if [ -z "$goos" ] || [ -z "$goarch" ] || [ -z "$out" ]; then
-    echo "usage: pt-build.sh <goos> <goarch> <outdir> [goarm]" >&2
+    echo "usage: pt-build.sh <goos> <goarch> <outdir> [goarm] [licensedir]" >&2
     exit 2
 fi
 
@@ -53,6 +57,26 @@ mkdir -p "$out"
     GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" CGO_ENABLED=0 \
         go build -trimpath -ldflags "-s -w" -o "$out/lyrebird$ext" ./cmd/lyrebird
 )
+
+if [ -n "$licensedir" ]; then
+    mkdir -p "$licensedir"
+    copied=""
+    for f in "$src"/LICENSE* "$src"/LICENCE* "$src"/COPYING* "$src"/NOTICE*; do
+        [ -f "$f" ] || continue
+        name="$(basename "$f")"
+        case "$name" in
+            *.*) ;;
+            *) name="$name.txt" ;;
+        esac
+        cp "$f" "$licensedir/lyrebird-$name"
+        copied="$copied lyrebird-$name"
+    done
+    if [ -z "$copied" ]; then
+        echo "pt-build: lyrebird's source has no license file" >&2
+        exit 1
+    fi
+    echo "pt-build: license files ->$copied"
+fi
 
 echo "pt-build: $goos/$goarch ->"
 ls -l "$out"
