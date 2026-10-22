@@ -492,6 +492,21 @@ def main():
     texts_folder = os.path.join(here, STANDARD_TEXTS)
     texts = standard_texts(texts_folder)
 
+    # Every standard text a crate without a license file needs, checked up
+    # front, so that a release leg names all the missing ones at once.
+    missing = {}
+    for package in crates:
+        if license_files(package):
+            continue
+        for name in expression_names(package["license"] or ""):
+            if name.casefold() not in texts:
+                missing.setdefault(name, []).append(f"{package['name']} {package['version']}")
+    if missing:
+        fail("no license file in their package and no standard text in "
+             f"{STANDARD_TEXTS}/ for: "
+             + "; ".join(f"{name} ({', '.join(users)})" for name, users in sorted(missing.items()))
+             + f"; add each text as {STANDARD_TEXTS}/README.md says")
+
     given = {}
     std_entry, std_version = rust_std_entry(args.manifest_path, texts, texts_folder, given)
     entries = [std_entry]
