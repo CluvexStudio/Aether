@@ -639,15 +639,23 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.3
+            Aether v2.3.4
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            License files
+            Ports held from the start
 
-            - Every archive now has a LICENSES folder next to aether. It holds the licenses of aether (AGPL-3.0), psiphon-tunnel-core and lyrebird; THIRD-PARTY-NOTICES.txt for the Rust crates and the Rust standard library linked into aether; and a third-party notice each for the Go modules and the Go standard library linked into psiphon-tunnel-core and lyrebird. Crates that publish no license file of their own get the standard text of the license they name.
+            - Aether now binds the ports you dial as it starts and keeps them until it ends: its SOCKS5 proxy (--bind) and HTTP proxy (--http-proxy), and those of Tor and Psiphon, inside the tunnel and on their own (--tor-bind, --tor-http, --psiphon-bind, --psiphon-http). Before, most were bound only once the tunnel, Tor or Psiphon was up, and Aether's own were let go whenever the tunnel dropped, so while Aether connected or reconnected another program could take one and receive what your browser or system proxy sent there. A client that connects before the tunnel is up now waits for it instead of being refused.
+            - Psiphon now listens on a private loopback port behind the port Aether holds for it. AETHER_PSIPHON_INTERFACE and a ListenInterface in --psiphon-config now apply only to --psiphon-reverse; with --psiphon and --psiphon-only, give the address to listen on with --psiphon-bind or --bind.
+            - When Tor or Psiphon inside the tunnel stops, Aether now ends with its error instead of running on without the proxy you dial. A held port that breaks ends it too.
 
-            Nothing else changed: the programs, their commands and their options work as in 2.3.2. The changes since 2.3.0 are in the 2.3.1 and 2.3.2 release notes.
+            Other changes
+
+            - An error about a port in use names the option that sets that port, such as --psiphon-bind, instead of always --bind.
+            - A proxy that runs short of sockets or buffers for a moment on Windows, or meets a connection that failed while it waited on Linux and Android, now tries again instead of stopping.
+            - Where a program runs Aether through its C library, Tor and Psiphon now stop when Aether does.
+
+            Commands and options are unchanged.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
