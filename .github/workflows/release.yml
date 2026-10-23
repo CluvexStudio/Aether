@@ -639,17 +639,15 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.5
+            Aether v2.3.6
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
             Fixed
 
-            - With Tor carrying the tunnel (--tor-reverse) and --tor-bind on port 0, which asks the system for a free port, Aether set port 0 as the tunnel's upstream proxy, set it aside as unusable, and dialled the tunnel, and a registration of keys, straight out instead of through Tor. It now dials Tor on the port the system gave it, and if the tunnel ever cannot be dialled through Tor or Psiphon around it, Aether ends rather than go around them.
-            - With Tor or Psiphon inside the tunnel (--tor, --psiphon) and --bind on port 0, Tor or Psiphon waited for Aether's proxy at port 0 and never reached it. It now dials the port the system gave.
-            - A listener on every address (0.0.0.0 or ::) is now dialled on the loopback address. Windows does not connect to an unspecified address, so before, Tor or Psiphon inside the tunnel, the tunnel through Tor or Psiphon around it, and the look at the exit location all failed there with such a listener.
+            - When --upstream (or AETHER_UPSTREAM) names a proxy Aether cannot dial through, such as one with no port, port 0, or a kind it does not speak, Aether now stops as it starts, with that error and the option named. Before, it set the setting aside with an error line and connected straight out, around the proxy you named.
 
-            Commands and options are unchanged. The changes of 2.3.4 are in its release notes.
+            Commands and options are unchanged. The changes of 2.3.5 and 2.3.4 are in their release notes.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
