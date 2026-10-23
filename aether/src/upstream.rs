@@ -88,6 +88,26 @@ pub fn configured() -> Option<Upstream> {
     remembered(&mut seen, raw)
 }
 
+/// Stops aether when AETHER_UPSTREAM, which --upstream sets, names a proxy it cannot dial through:
+/// [`configured`] sets such a setting aside, and every connection would then go straight out,
+/// around the proxy the user named. A blank setting names none.
+pub fn check_setting() -> Result<()> {
+    usable(&std::env::var("AETHER_UPSTREAM").unwrap_or_default())
+}
+
+/// Whether `raw`, a setting of AETHER_UPSTREAM, is blank or names a proxy aether can dial through.
+fn usable(raw: &str) -> Result<()> {
+    if raw.trim().is_empty() {
+        return Ok(());
+    }
+    Upstream::parse(raw).map(|_| ()).map_err(|e| {
+        AetherError::Other(format!(
+            "--upstream cannot be used: {}; aether ends rather than connect around it",
+            e.detail()
+        ))
+    })
+}
+
 /// The hold on AETHER_UPSTREAM of a test: the variable is the whole process's, and the tests run
 /// side by side, so each test that sets it, or that dials through the setting, holds it first.
 /// Let go, the hold clears the variable, which a test that failed half way may have left set.
@@ -911,6 +931,44 @@ async fn relay_address(bound: SocketAddr, host: &str, port: u16) -> Result<Socke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_setting_aether_can_dial_through_or_none_lets_it_start() {
+        for raw in [
+            "",
+            "   ",
+            "socks5://127.0.0.1:1080",
+            "socks5h://user:secret@[::1]:1080",
+            "http://proxy.example:8080",
+        ] {
+            assert!(usable(raw).is_ok(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_setting_aether_would_set_aside_stops_it_instead_of_going_around_it() {
+        for raw in [
+            "socks5://127.0.0.1:0",
+            "socks5://127.0.0.1",
+            "ftp://127.0.0.1:21",
+            "https://user:secret@proxy.example:443",
+        ] {
+            let error = usable(raw).unwrap_err().to_string();
+            assert!(
+                error.starts_with("other: --upstream cannot be used: ")
+                    && error.ends_with("aether ends rather than connect around it")
+                    && !error.contains("used: other: "),
+                "{raw}: {error}"
+            );
+            // The password a setting carries stays out of what aether prints.
+            assert!(!error.contains("secret"), "{error}");
+        }
+        assert_eq!(
+            usable("socks5://127.0.0.1:0").unwrap_err().to_string(),
+            "other: --upstream cannot be used: 127.0.0.1:0 is not a host and port an upstream \
+             proxy can live at; aether ends rather than connect around it"
+        );
+    }
 
     #[tokio::test]
     async fn a_task_through_a_proxy_of_its_own_leaves_the_rest_on_the_setting() {

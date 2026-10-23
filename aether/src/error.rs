@@ -39,4 +39,30 @@ pub enum AetherError {
     Other(String),
 }
 
+impl AetherError {
+    /// The error's words for a message that wraps them in words of its own: without the label
+    /// "other: ", which says nothing there, and with every other kind's label, which does.
+    pub fn detail(&self) -> String {
+        match self {
+            AetherError::Other(message) => message.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, AetherError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wrapped_error_keeps_its_words_and_the_label_of_its_kind_but_other() {
+        assert_eq!(AetherError::Other("no port".into()).detail(), "no port");
+        assert_eq!(
+            AetherError::Tls("bad cipher".into()).detail(),
+            "tls: bad cipher"
+        );
+        assert_eq!(AetherError::Cancelled.detail(), "cancelled");
+    }
+}
