@@ -129,6 +129,22 @@ pub(crate) fn warn_if_world_reachable(kind: &str, listen: SocketAddr) {
     );
 }
 
+/// Where aether dials a listener of its own, or of Tor or Psiphon, bound on `bound`: there, but a
+/// listener bound on every address (0.0.0.0 or ::) is dialled on the loopback address of its
+/// family, which every system answers there; Windows refuses to connect to an unspecified address.
+/// `bound` is the address the system gave, so a port 0 asked for is the port it picked.
+pub fn dialable(bound: SocketAddr) -> SocketAddr {
+    match bound.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => {
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), bound.port())
+        }
+        IpAddr::V6(ip) if ip.is_unspecified() => {
+            SocketAddr::new(Ipv6Addr::LOCALHOST.into(), bound.port())
+        }
+        _ => bound,
+    }
+}
+
 /// Binds the `kind` of listener on `listen`, which the option `flag` sets, as the hint of a failed
 /// bind says.
 pub async fn bind_listener(kind: &str, listen: SocketAddr, flag: &str) -> Result<TcpListener> {
@@ -1674,6 +1690,49 @@ fn build_udp_reply(src: SocketAddr, data: &[u8]) -> Vec<u8> {
     pkt.extend_from_slice(&src.port().to_be_bytes());
     pkt.extend_from_slice(data);
     pkt
+}
+
+#[cfg(test)]
+mod dialable_tests {
+    use super::*;
+
+    #[test]
+    fn a_listener_on_every_address_is_dialled_on_the_loopback_address_of_its_family() {
+        let any4: SocketAddr = "0.0.0.0:1819".parse().unwrap();
+        let any6: SocketAddr = "[::]:1819".parse().unwrap();
+        assert_eq!(
+            dialable(any4),
+            "127.0.0.1:1819".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(dialable(any6), "[::1]:1819".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn a_listener_on_one_address_is_dialled_there() {
+        for address in [
+            "127.0.0.1:1819",
+            "[::1]:1819",
+            "192.168.1.5:1819",
+            "127.0.0.2:1",
+        ] {
+            let address: SocketAddr = address.parse().unwrap();
+            assert_eq!(dialable(address), address);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_listener_on_port_0_is_dialled_on_the_port_the_system_gave() {
+        // Loopback, not every address: a test that listens on every address can make Windows ask
+        // about its firewall.
+        let listener = bind_listener("test", "127.0.0.1:0".parse().unwrap(), "--bind")
+            .await
+            .unwrap();
+        let dialled = dialable(listener.local_addr().unwrap());
+        assert_ne!(dialled.port(), 0);
+        let (connected, accepted) = tokio::join!(TcpStream::connect(dialled), listener.accept());
+        connected.unwrap();
+        accepted.unwrap();
+    }
 }
 
 #[cfg(test)]

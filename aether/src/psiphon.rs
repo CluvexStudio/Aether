@@ -896,6 +896,7 @@ pub async fn start(
 }
 
 fn announce(proxy: SocketAddr, what: &'static str) {
+    let proxy = crate::socks::dialable(proxy);
     tokio::spawn(async move {
         crate::exitloc::report_through_socks(proxy, what).await;
     });
@@ -1036,8 +1037,11 @@ pub async fn start_reverse(state: PathBuf) -> Result<(SocketAddr, tokio::task::A
 
     // The upstream is still the proxy aether was given: the caller points it at psiphon once psiphon is up.
     let mut running = start(&state, listen, http, upstream_url(), Placement::Dialled).await?;
-    let socks = running.socks;
-    log::info!("[+] psiphon is ready; the tunnel goes out through {socks}");
+    // Psiphon names the port it took; the tunnel dials it on the loopback address where Psiphon
+    // listens on every address.
+    let bound = running.socks;
+    let socks = crate::socks::dialable(bound);
+    log::info!("[+] psiphon is ready on {bound}; the tunnel goes out through {socks}");
     announce(socks, "psiphon");
 
     // Ended, it drops `running`, which stops the program.

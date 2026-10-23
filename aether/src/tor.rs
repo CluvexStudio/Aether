@@ -770,6 +770,7 @@ mod with_tor {
     }
 
     fn announce_exit(proxy: SocketAddr, what: &'static str) {
+        let proxy = crate::socks::dialable(proxy);
         tokio::spawn(async move {
             crate::exitloc::report_through_socks(proxy, what).await;
         });
@@ -905,14 +906,17 @@ mod with_tor {
         init_tracing();
         let listen = listen_address();
         let listener = crate::socks::bind_listener("tor socks5", listen, "--tor-bind").await?;
+        // Where the tunnel dials Tor: where its listener is bound, a port 0 asked for being the port
+        // the system picked.
+        let dialled = crate::socks::dialable(listener.local_addr().unwrap_or(listen));
 
         log::info!("[*] bootstrapping tor; the tunnel will be dialled through it");
         // The upstream is still the proxy aether was given: the caller points it at tor once tor is up.
         announce_upstream();
 
         let client = establish(&state, None, REVERSE_ATTEMPTS).await?;
-        log::info!("[+] tor is ready; the tunnel goes out through {listen}");
-        announce_exit(listen, "tor");
+        log::info!("[+] tor is ready; the tunnel goes out through {dialled}");
+        announce_exit(dialled, "tor");
 
         let serving = tokio::spawn(async move {
             let served = match bind_http().await {
@@ -924,7 +928,7 @@ mod with_tor {
             }
         });
 
-        Ok((listen, serving.abort_handle()))
+        Ok((dialled, serving.abort_handle()))
     }
 
     fn prepare_dir(path: &Path) -> Result<()> {

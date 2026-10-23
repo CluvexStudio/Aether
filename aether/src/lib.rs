@@ -187,9 +187,12 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     // as the core ends, Tor and Psiphon end with it, inside the tunnel or carrying it, letting go
     // of their listeners, also where the process goes on after it, as through the C API.
     let mut tor_and_psiphon = TaskGuard::new();
+    // Inside the tunnel, Tor or Psiphon dials the core's own listener: where it is bound, a port 0
+    // asked for being the port the system picked.
+    let held = crate::socks::dialable(listeners.socks.local_addr().unwrap_or(listen));
     match tor::mode() {
         tor::Mode::Chain => {
-            let through = listen;
+            let through = held;
             let state = tor::state_dir(&base_config);
             let chain = tokio::spawn(tor::run_chain(through, state));
             watch_chain("tor", chain, core_end.clone(), &mut tor_and_psiphon);
@@ -206,7 +209,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
             let (socks, carrier) = tor::start_reverse(tor::state_dir(&base_config)).await?;
             tor_and_psiphon.push(carrier);
-            std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+            std::env::set_var("AETHER_UPSTREAM", carrier_upstream("tor", socks)?);
             std::env::set_var("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through tor on the http/2 carrier");
         }
@@ -215,7 +218,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
     match psiphon::mode() {
         psiphon::Mode::Chain => {
-            let through = listen;
+            let through = held;
             let state = psiphon::state_dir(&base_config);
             let chain = tokio::spawn(psiphon::run_chain(through, state));
             watch_chain("psiphon", chain, core_end.clone(), &mut tor_and_psiphon);
@@ -232,7 +235,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
             let (socks, carrier) = psiphon::start_reverse(psiphon::state_dir(&base_config)).await?;
             tor_and_psiphon.push(carrier);
-            std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+            std::env::set_var("AETHER_UPSTREAM", carrier_upstream("psiphon", socks)?);
             std::env::set_var("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through psiphon on the http/2 carrier");
         }
@@ -1167,7 +1170,7 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
     let mut carried = TaskGuard::new();
     if let Some((name, (socks, carrier))) = carrier {
         carried.push(carrier);
-        std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+        std::env::set_var("AETHER_UPSTREAM", carrier_upstream(name, socks)?);
         log::info!("[+] the identities are registered through {name}");
     }
 
@@ -2762,6 +2765,20 @@ async fn run_wireguard_tunnel(
 
 type TunnelExit = tokio::task::JoinHandle<Result<()>>;
 
+/// The upstream setting that has the tunnel dialled through `name`, Tor or Psiphon around it, at
+/// `socks`. Checked as the setting is read: one set aside as unusable would have the tunnel, and
+/// a registration, dial out around the carrier, straight out, so it ends aether instead.
+fn carrier_upstream(name: &str, socks: SocketAddr) -> Result<String> {
+    let setting = format!("socks5://{socks}");
+    upstream::Upstream::parse(&setting).map_err(|e| {
+        AetherError::Other(format!(
+            "{name} listens on {socks}, which the tunnel cannot be dialled through ({e}); \
+             aether ends rather than dial around {name}"
+        ))
+    })?;
+    Ok(setting)
+}
+
 fn http_proxy_listen() -> Option<SocketAddr> {
     let raw = std::env::var("AETHER_HTTP_PROXY").ok()?;
     let trimmed = raw.trim();
@@ -3491,6 +3508,32 @@ async fn select_ip_version() -> prober::IpScan {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn the_tunnel_is_dialled_through_a_carrier_it_can_be_dialled_through() {
+        let tor: SocketAddr = "127.0.0.1:9050".parse().unwrap();
+        assert_eq!(
+            carrier_upstream("tor", tor).unwrap(),
+            "socks5://127.0.0.1:9050"
+        );
+        let psiphon: SocketAddr = "[::1]:1080".parse().unwrap();
+        assert_eq!(
+            carrier_upstream("psiphon", psiphon).unwrap(),
+            "socks5://[::1]:1080"
+        );
+    }
+
+    #[test]
+    fn a_carrier_the_tunnel_cannot_be_dialled_through_ends_aether() {
+        // Port 0, which an upstream setting cannot name: set aside, it would have the tunnel go
+        // around the carrier.
+        let unbound: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let error = carrier_upstream("tor", unbound).unwrap_err().to_string();
+        assert!(
+            error.contains("aether ends rather than dial around tor"),
+            "{error}"
+        );
+    }
 
     #[tokio::test]
     async fn a_session_ends_when_tor_or_psiphon_inside_the_tunnel_ends() {
