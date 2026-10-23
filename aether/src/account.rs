@@ -282,13 +282,24 @@ fn worth_retrying(status: reqwest::StatusCode) -> bool {
         || status.is_server_error()
 }
 
-fn api_host() -> &'static str {
-    consts::API_URL
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .unwrap_or("api.cloudflareclient.com")
+/// Whether `body` is a refusal of the WARP API itself: Cloudflare's JSON envelope, with its
+/// `success` and its `errors`, rather than a page of another server.
+fn is_api_envelope(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body).is_ok_and(|value| {
+        value
+            .get("success")
+            .is_some_and(serde_json::Value::is_boolean)
+            && value.get("errors").is_some_and(serde_json::Value::is_array)
+    })
+}
+
+/// The way after `way` that has not turned the call away, see `api_call_by`; `way` itself when
+/// every other one has.
+fn next_way(way: usize, turned_away: &[bool]) -> usize {
+    (1..=turned_away.len())
+        .map(|step| (way + step) % turned_away.len())
+        .find(|next| !turned_away[*next])
+        .unwrap_or(way)
 }
 
 fn front_headers(bearer: Option<&str>, jwt: Option<&str>) -> Vec<(String, String)> {
@@ -364,7 +375,10 @@ async fn api_ech() -> Result<Option<Vec<u8>>> {
     Ok(key)
 }
 
-fn describe_rejection(status: reqwest::StatusCode, body: &str) -> String {
+/// What `status` and `body`, a refusal by the WARP API, say, with a hint for a status that has one.
+/// `names_differ`: the server name of the call was not its host, which Cloudflare refuses with 403
+/// on any network.
+fn describe_rejection(status: reqwest::StatusCode, body: &str, names_differ: bool) -> String {
     let detail = extract_api_error(body).unwrap_or_else(|| {
         let trimmed = body.trim();
         if trimmed.is_empty() {
@@ -377,6 +391,10 @@ fn describe_rejection(status: reqwest::StatusCode, body: &str) -> String {
     });
 
     let hint = match status.as_u16() {
+        403 if names_differ => {
+            " (cloudflare refuses a call whose server name, --api-sni, and host, --api-host, \
+                differ; give them the same name)"
+        }
         403 => {
             " (cloudflare refused this network; the address looks flagged, \
                 try again later, switch network, or import an existing identity)"
@@ -418,33 +436,155 @@ fn extract_api_error(body: &str) -> Option<String> {
 
 /// --api-address (AETHER_API_ADDRESS): where the calls to the WARP API go, an IP address
 /// or a domain name and its port: 443 unless `:port` follows the address, an IPv6 one then in
-/// brackets; the API's name on 443 when it is not given. Only the connection goes there: the
-/// API's name stays the server name of the ClientHello and the HTTP host.
-fn api_address() -> Result<(String, u16)> {
+/// brackets; none when it is not given, see `api_routes_of`. Only the connection goes there.
+fn api_address() -> Result<Option<(String, u16)>> {
     let value = std::env::var("AETHER_API_ADDRESS").unwrap_or_default();
     let value = value.trim();
     if value.is_empty() {
-        return Ok((api_host().to_string(), 443));
+        return Ok(None);
     }
-    crate::dns::host_and_port(value, 443).ok_or_else(|| {
-        AetherError::Api(format!(
-            "--api-address: {value} is no IP address or domain name, with or without a port"
-        ))
-    })
+    crate::dns::host_and_port(value, 443)
+        .map(Some)
+        .ok_or_else(|| {
+            AetherError::Api(format!(
+                "--api-address: {value} is no IP address or domain name, with or without a port"
+            ))
+        })
 }
 
-/// Checks --api-address as the core starts: an address it cannot use stops it, with the
-/// option named.
-pub fn check_api_address() -> Result<()> {
-    api_address().map(drop)
+/// The name `value`, given to `flag`, --api-host or --api-sni, gives the calls to the WARP
+/// API: none when it is blank; else that domain name, without a trailing dot, as SNI has it
+/// (RFC 6066). An address or anything else that is no domain name is refused, rather than
+/// have the calls go by another name in its place.
+fn api_name_of(flag: &str, value: &str) -> Result<Option<String>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let name = value.strip_suffix('.').unwrap_or(value);
+    if name.ends_with('.')
+        || name.parse::<std::net::IpAddr>().is_ok()
+        || !crate::dns::valid_domain(name)
+    {
+        return Err(AetherError::Api(format!(
+            "{flag}: {value} is no domain name"
+        )));
+    }
+    Ok(Some(name.to_string()))
 }
 
-/// A call to the WARP API: to --api-address, the API's name on port 443 unless it names
-/// another address or port, with the API's name for the server name and the HTTP host, over
-/// BoringSSL with the
-/// core's TLS fingerprint (see `https`), offering the ECH key of --ech when it is given, through
-/// the upstream proxy when there is one. Retried on a transient answer, after as long as the API
-/// asks to wait when it does.
+/// --api-host (AETHER_API_HOST): the HTTP host of the calls to the WARP API, of their Host or
+/// :authority, see `api_name_of`.
+fn api_host() -> Result<Option<String>> {
+    api_name_of(
+        "--api-host",
+        &std::env::var("AETHER_API_HOST").unwrap_or_default(),
+    )
+}
+
+/// --api-sni (AETHER_API_SNI): the server name of the ClientHello of the calls to the WARP API,
+/// see `api_name_of`.
+fn api_sni() -> Result<Option<String>> {
+    api_name_of(
+        "--api-sni",
+        &std::env::var("AETHER_API_SNI").unwrap_or_default(),
+    )
+}
+
+/// Checks --api-address, --api-sni and --api-host as the core starts: a value the calls to the
+/// WARP API cannot use stops it, with its option named.
+pub fn check_api_settings() -> Result<()> {
+    api_address()?;
+    api_sni()?;
+    api_host()?;
+    Ok(())
+}
+
+/// One way a call to the WARP API goes: the HTTP host it names, the server name of its
+/// ClientHello, and where its connection goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApiRoute {
+    host: String,
+    sni: String,
+    address: String,
+    port: u16,
+}
+
+/// The ways a call to the WARP API goes, in the order its attempts take them: by the HTTP host
+/// `host`, of --api-host, by default `consts::API_HOST`; with the server name `sni`, of
+/// --api-sni, by default that host; to `address`, of --api-address, by default that server name
+/// on 443. Cloudflare refuses a call whose server name is not its host, so each follows the one
+/// it defaults to. Without --api-host and --api-sni there is a second way, by
+/// `consts::API_FALLBACK_HOST` alike, which an attempt the first way did not serve takes next;
+/// once the API itself has answered one of the two in this run, `answered`, the calls go that
+/// way first, with the other still behind it.
+fn api_routes_of(
+    host: Option<String>,
+    sni: Option<String>,
+    address: Option<(String, u16)>,
+    answered: Option<&str>,
+) -> Vec<ApiRoute> {
+    let route = |host: String, sni: String| {
+        let (address, port) = address.clone().unwrap_or_else(|| (sni.clone(), 443));
+        ApiRoute {
+            host,
+            sni,
+            address,
+            port,
+        }
+    };
+    if host.is_some() || sni.is_some() {
+        let host = host.unwrap_or_else(|| consts::API_HOST.to_string());
+        let sni = sni.unwrap_or_else(|| host.clone());
+        return vec![route(host, sni)];
+    }
+    let mut names = [consts::API_HOST, consts::API_FALLBACK_HOST];
+    if answered == Some(consts::API_FALLBACK_HOST) {
+        names.reverse();
+    }
+    names
+        .into_iter()
+        .map(|name| route(name.to_string(), name.to_string()))
+        .collect()
+}
+
+/// The ways of the calls to the WARP API, as the options and this run have them, see
+/// `api_routes_of`.
+fn api_routes() -> Result<Vec<ApiRoute>> {
+    Ok(api_routes_of(
+        api_host()?,
+        api_sni()?,
+        api_address()?,
+        answered_api_host().as_deref(),
+    ))
+}
+
+/// The name the WARP API itself answered last in this run when the calls go by the default
+/// names: the later calls of the run go by it first, see `api_routes_of`.
+static API_ANSWERED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn answered_api_host() -> Option<String> {
+    API_ANSWERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn remember_answered_api_host(host: &str) {
+    *API_ANSWERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(host.to_string());
+}
+
+/// Forgets which name of the WARP API answered, as a run of the core starts: a run of the
+/// library after another tries both names again.
+pub fn forget_answered_api_host() {
+    *API_ANSWERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+/// A call to the WARP API, the ways `api_routes` gives, see `api_call_by`.
 async fn api_call(
     label: &str,
     method: &str,
@@ -453,41 +593,66 @@ async fn api_call(
     bearer: Option<&str>,
     jwt: Option<&str>,
 ) -> Result<AccountData> {
-    let (address, port) = api_address()?;
+    let routes = api_routes()?;
+    api_call_by(&routes, label, method, path, body, bearer, jwt).await
+}
+
+/// A call to the WARP API by the first of `routes`, see `ApiRoute`, over BoringSSL with the
+/// core's TLS fingerprint (see `https`), offering the ECH key of --ech when it is given, through
+/// the upstream proxy when there is one. Retried on a transient answer, after as long as the API
+/// asks to wait when it does. An attempt that gets no answer at all, as where a network blocks
+/// that way, has the next attempt go the next of `routes`. With more than one, so does a refusal
+/// of another server than the API, such as an error page of the edge or of a middlebox, or a
+/// front of the user's own that knows the other name only; once every way has turned the call
+/// away with such an answer that is not worth asking again, the call ends. A success, or a
+/// refusal of the API itself, keeps the call on its way, as with one way. The way the API
+/// answers goes first in the later calls of the run, see `api_routes_of`.
+async fn api_call_by(
+    routes: &[ApiRoute],
+    label: &str,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    bearer: Option<&str>,
+    jwt: Option<&str>,
+) -> Result<AccountData> {
     // The system resolver looks a name up outside the socket mark; through the upstream proxy,
     // the proxy looks it up and only the marked connection to the proxy leaves.
-    if crate::egress::mark() != 0
-        && crate::upstream::configured().is_none()
-        && address.parse::<std::net::IpAddr>().is_err()
-    {
-        return Err(AetherError::Api(format!(
-            "{label}: {address} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --api-address an IP address"
-        )));
+    if crate::egress::mark() != 0 && crate::upstream::configured().is_none() {
+        if let Some(route) = routes
+            .iter()
+            .find(|route| route.address.parse::<std::net::IpAddr>().is_err())
+        {
+            return Err(AetherError::Api(format!(
+                "{label}: {} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --api-address an IP address",
+                route.address
+            )));
+        }
     }
+    let Some(first) = routes.first() else {
+        return Err(AetherError::Api(format!("{label}: no way to the API")));
+    };
 
     let mut ech = api_ech().await?;
     let fingerprint = crate::tls::Fingerprint::configured();
     let fragment = api_fragment();
     let headers = front_headers(bearer, jwt);
-    let request = crate::https::Request {
-        method,
-        // The API's name on 443, which Host and :authority leave out, whatever port the
-        // connection goes to.
-        host: api_host(),
-        port: 443,
-        address: Some((address.as_str(), port)),
-        sni: None,
-        path,
-        headers: &headers,
-        body,
-    };
+    let mut way = 0;
+    // The ways another server than the API answered for, with an answer not worth asking again.
+    let mut turned_away = vec![false; routes.len()];
     let mut last_error = AetherError::Api(format!("{label}: no attempt was made"));
 
     for attempt in 0..API_ATTEMPTS {
+        let route = &routes[way];
         if attempt > 0 {
             let wait = backoff_delay(attempt - 1);
+            let by = if routes.len() > 1 {
+                format!(" by {}", route.host)
+            } else {
+                String::new()
+            };
             log::warn!(
-                "[!] {label} retry {}/{} in {:.1}s: {last_error}",
+                "[!] {label} retry {}/{}{by} in {:.1}s: {last_error}",
                 attempt,
                 API_ATTEMPTS - 1,
                 wait.as_secs_f32()
@@ -495,6 +660,18 @@ async fn api_call(
             tokio::time::sleep(wait).await;
         }
 
+        let request = crate::https::Request {
+            method,
+            // The host on 443, which Host and :authority leave out, whatever port the
+            // connection goes to.
+            host: &route.host,
+            port: 443,
+            address: Some((route.address.as_str(), route.port)),
+            sni: Some(&route.sni),
+            path,
+            headers: &headers,
+            body,
+        };
         let sent = crate::https::send_fragmented(
             &request,
             &fingerprint,
@@ -511,30 +688,90 @@ async fn api_call(
             Ok(response) => response,
             Err(error) => {
                 last_error = AetherError::Api(format!("{label}: {error}"));
+                // No answer this way: the next attempt goes the next one.
+                way = next_way(way, &turned_away);
                 continue;
             }
         };
 
-        let status = reqwest::StatusCode::from_u16(response.status)
-            .map_err(|_| AetherError::Api(format!("{label}: status {}", response.status)))?;
+        let Ok(status) = reqwest::StatusCode::from_u16(response.status) else {
+            last_error = AetherError::Api(format!("{label}: status {}", response.status));
+            // No status of HTTP's: another server than the API, which the other name may pass by.
+            if routes.len() > 1 {
+                turned_away[way] = true;
+                if !turned_away.iter().all(|turned| *turned) {
+                    way = next_way(way, &turned_away);
+                    continue;
+                }
+            }
+            return Err(last_error);
+        };
         let cooldown = retry_after(&response.headers);
         let body = String::from_utf8_lossy(&response.body);
+        // An answer of the API itself: a success, or a refusal in its JSON envelope.
+        let from_api = status.is_success() || is_api_envelope(&body);
+        if routes.len() > 1 && from_api {
+            // The API answered by this name: the later calls of the run go by it first.
+            if route.host != first.host
+                && answered_api_host().as_deref() != Some(route.host.as_str())
+            {
+                log::info!(
+                    "[*] the warp api answered by {} where {} did not; the later calls of this run go by {} first",
+                    route.host,
+                    first.host,
+                    route.host
+                );
+            }
+            remember_answered_api_host(&route.host);
+        }
 
         if status.is_success() {
             if ech.is_some() {
                 log::info!("[+] {label} went over ECH");
             }
+            // A success settles the call, as before there were two names: a registration the API
+            // made, but this core cannot read, is not made once more by the other name.
             return serde_json::from_str::<AccountData>(&body).map_err(|e| {
                 AetherError::Api(format!("{label} decode: {e} ({} byte answer)", body.len()))
             });
         }
 
-        let described = format!("{label}: {}", describe_rejection(status, &body));
-        last_error = if refuses_identity(status) {
+        let described = format!(
+            "{label}: {}",
+            describe_rejection(status, &body, route.sni != route.host)
+        );
+        // The API refuses an identity in its envelope. A 404 page of another server, as a front
+        // that knows only the other name gives, says nothing of the identity while the call has
+        // another way; a 401 or a 410 counts whoever sends it, as before there were two names.
+        last_error = if refuses_identity(status)
+            && (from_api || routes.len() == 1 || status != reqwest::StatusCode::NOT_FOUND)
+        {
             AetherError::IdentityRefused(described)
         } else {
             AetherError::Api(described)
         };
+
+        if routes.len() > 1 && !from_api {
+            // Another server answered for the API by this name: the other name may serve the call,
+            // after as long as that server asked to wait, when it is worth asking again.
+            if worth_retrying(status) {
+                if let Some(wait) = retry_after_wait(attempt, cooldown) {
+                    log::warn!(
+                        "[!] {label}: {} asked us to wait {}s",
+                        route.host,
+                        wait.as_secs()
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+            } else {
+                turned_away[way] = true;
+                if turned_away.iter().all(|turned| *turned) {
+                    return Err(last_error);
+                }
+            }
+            way = next_way(way, &turned_away);
+            continue;
+        }
 
         if !worth_retrying(status) {
             return Err(last_error);
@@ -976,7 +1213,7 @@ mod tests {
     #[test]
     fn a_long_rejection_in_any_script_is_cut_without_panicking() {
         let body = format!("{}{}", "x".repeat(219), "é".repeat(200));
-        let described = describe_rejection(reqwest::StatusCode::BAD_REQUEST, &body);
+        let described = describe_rejection(reqwest::StatusCode::BAD_REQUEST, &body, false);
         assert!(described.contains('…'));
     }
 
@@ -1062,6 +1299,7 @@ mod tests {
         let message = describe_rejection(
             reqwest::StatusCode::TOO_MANY_REQUESTS,
             "{\"success\":false,\"errors\":[{\"code\":1015,\"message\":\"rate limited\"}]}",
+            false,
         );
         assert!(message.contains("rate limited"));
         assert!(message.contains("code 1015"));
@@ -1070,8 +1308,25 @@ mod tests {
 
     #[test]
     fn a_forbidden_rejection_mentions_the_flagged_address() {
-        let message = describe_rejection(reqwest::StatusCode::FORBIDDEN, "");
+        let message = describe_rejection(reqwest::StatusCode::FORBIDDEN, "", false);
         assert!(message.contains("flagged"));
+    }
+
+    #[test]
+    fn a_forbidden_call_whose_server_name_is_not_its_host_says_so() {
+        // What Cloudflare answers whatever the network, as it did to api.devices.cloudflare.com
+        // with the Host api.cloudflareclient.com.
+        let body = "<html><head><title>403 Forbidden</title></head><body><center><h1>403 \
+                    Forbidden</h1></center><hr><center>cloudflare</center></body></html>";
+        let message = describe_rejection(reqwest::StatusCode::FORBIDDEN, body, true);
+        assert!(
+            message.contains("--api-sni") && message.contains("--api-host"),
+            "{message}"
+        );
+        assert!(!message.contains("flagged"), "{message}");
+        // Any other refusal of such a call says what it said before.
+        let message = describe_rejection(reqwest::StatusCode::TOO_MANY_REQUESTS, "", true);
+        assert!(message.contains("wait a few minutes"), "{message}");
     }
 
     #[test]
@@ -1155,8 +1410,56 @@ mod tests {
         assert!(retry_after(&headers).is_none());
     }
 
+    /// The variables of --api-address, --api-sni and --api-host.
+    const API_SETTINGS: [&str; 3] = ["AETHER_API_ADDRESS", "AETHER_API_SNI", "AETHER_API_HOST"];
+
+    /// A hold on --api-address, --api-sni and --api-host, which the whole process shares, for a
+    /// test that sets them: they start out clear, and are cleared again as it ends.
+    struct ApiSettingsHeld(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for ApiSettingsHeld {
+        fn drop(&mut self) {
+            for variable in API_SETTINGS {
+                std::env::remove_var(variable);
+            }
+        }
+    }
+
+    fn hold_api_settings() -> ApiSettingsHeld {
+        static SETTINGS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let held = SETTINGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for variable in API_SETTINGS {
+            std::env::remove_var(variable);
+        }
+        ApiSettingsHeld(held)
+    }
+
+    /// A hold on the name of the API that answered, which the whole process shares, for a test
+    /// that sets it or calls the API more than one way: it starts out clear, and is cleared again
+    /// as the test ends.
+    struct AnsweredHeld(#[allow(dead_code)] tokio::sync::MutexGuard<'static, ()>);
+
+    impl Drop for AnsweredHeld {
+        fn drop(&mut self) {
+            forget_answered_api_host();
+        }
+    }
+
+    async fn hold_answered() -> AnsweredHeld {
+        static ANSWERED: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let held = ANSWERED
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        forget_answered_api_host();
+        AnsweredHeld(held)
+    }
+
     #[test]
     fn an_api_address_is_an_ip_address_or_a_domain_name_with_or_without_a_port() {
+        let _held = hold_api_settings();
         let address = |value: Option<&str>| {
             match value {
                 Some(value) => std::env::set_var("AETHER_API_ADDRESS", value),
@@ -1164,11 +1467,12 @@ mod tests {
             }
             api_address().map_err(|e| e.to_string())
         };
-        let at = |host: &str, port: u16| -> std::result::Result<(String, u16), String> {
-            Ok((host.to_string(), port))
+        let at = |host: &str, port: u16| -> std::result::Result<Option<(String, u16)>, String> {
+            Ok(Some((host.to_string(), port)))
         };
-        assert_eq!(address(None), at("api.cloudflareclient.com", 443));
-        assert_eq!(address(Some("  ")), at("api.cloudflareclient.com", 443));
+        // Not given, the calls go to their server name, see api_routes_of.
+        assert_eq!(address(None), Ok(None));
+        assert_eq!(address(Some("  ")), Ok(None));
         assert_eq!(address(Some(" 188.114.97.6 ")), at("188.114.97.6", 443));
         assert_eq!(address(Some("188.114.97.6:443")), at("188.114.97.6", 443));
         assert_eq!(address(Some("188.114.97.6:2053")), at("188.114.97.6", 2053));
@@ -1206,15 +1510,512 @@ mod tests {
                     "api: --api-address: {refused} is no IP address or domain name, with or without a port"
                 )
             );
-            assert!(check_api_address().is_err());
+            assert!(check_api_settings().is_err());
         }
         std::env::remove_var("AETHER_API_ADDRESS");
-        assert!(check_api_address().is_ok());
+        assert!(check_api_settings().is_ok());
+    }
+
+    #[test]
+    fn an_api_name_is_a_domain_name() {
+        let name = |value: &str| api_name_of("--api-host", value).map_err(|e| e.to_string());
+        let named = |value: &str| -> std::result::Result<Option<String>, String> {
+            Ok(Some(value.to_string()))
+        };
+        assert_eq!(name(""), Ok(None));
+        assert_eq!(name("  "), Ok(None));
+        assert_eq!(
+            name(" api.devices.cloudflare.com "),
+            named("api.devices.cloudflare.com")
+        );
+        // A trailing dot is left out, as SNI has the name.
+        assert_eq!(
+            name("api.devices.cloudflare.com."),
+            named("api.devices.cloudflare.com")
+        );
+        for refused in [
+            "162.159.137.105",
+            "2606:4700:7::a29f:8969",
+            "[2606:4700:7::a29f:8969]",
+            "api.devices.cloudflare.com..",
+            "https://api.devices.cloudflare.com",
+            "api.devices.cloudflare.com:443",
+            "api devices.cloudflare.com",
+            "api..cloudflare.com",
+        ] {
+            assert_eq!(
+                name(refused),
+                Err(format!("api: --api-host: {refused} is no domain name")),
+                "{refused}"
+            );
+        }
+
+        // As the core starts, the option that is wrong is named.
+        let _held = hold_api_settings();
+        assert!(check_api_settings().is_ok());
+        std::env::set_var("AETHER_API_SNI", "162.159.137.105");
+        assert_eq!(
+            check_api_settings().map_err(|e| e.to_string()),
+            Err("api: --api-sni: 162.159.137.105 is no domain name".to_string())
+        );
+        std::env::remove_var("AETHER_API_SNI");
+        std::env::set_var("AETHER_API_HOST", "https://api.example.com");
+        assert_eq!(
+            check_api_settings().map_err(|e| e.to_string()),
+            Err("api: --api-host: https://api.example.com is no domain name".to_string())
+        );
+        std::env::set_var("AETHER_API_HOST", "api.example.com");
+        std::env::set_var("AETHER_API_SNI", "front.example.com");
+        assert!(check_api_settings().is_ok());
+        assert_eq!(
+            api_routes().map_err(|e| e.to_string()),
+            Ok(vec![ApiRoute {
+                host: "api.example.com".to_string(),
+                sni: "front.example.com".to_string(),
+                address: "front.example.com".to_string(),
+                port: 443,
+            }])
+        );
+    }
+
+    #[test]
+    fn the_calls_go_by_the_new_name_then_the_old_one_unless_a_name_is_given() {
+        let way = |host: &str, sni: &str, address: &str, port: u16| ApiRoute {
+            host: host.to_string(),
+            sni: sni.to_string(),
+            address: address.to_string(),
+            port,
+        };
+        let named = |value: &str| Some(value.to_string());
+        let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
+        assert_eq!(new, "api.devices.cloudflare.com");
+        assert_eq!(old, "api.cloudflareclient.com");
+
+        // Nothing given: the new name, then the old one, each to where its name is.
+        assert_eq!(
+            api_routes_of(None, None, None, None),
+            vec![way(new, new, new, 443), way(old, old, old, 443)]
+        );
+        // --api-address takes both names there.
+        let address = Some(("162.159.137.105".to_string(), 443));
+        assert_eq!(
+            api_routes_of(None, None, address, None),
+            vec![
+                way(new, new, "162.159.137.105", 443),
+                way(old, old, "162.159.137.105", 443)
+            ]
+        );
+        // The name the API answered by goes first, with the other still behind it.
+        assert_eq!(
+            api_routes_of(None, None, None, Some(old)),
+            vec![way(old, old, old, 443), way(new, new, new, 443)]
+        );
+        assert_eq!(
+            api_routes_of(None, None, None, Some(new)),
+            vec![way(new, new, new, 443), way(old, old, old, 443)]
+        );
+        // --api-host: the server name and the address follow it, with no other way.
+        assert_eq!(
+            api_routes_of(named(old), None, None, Some(new)),
+            vec![way(old, old, old, 443)]
+        );
+        // --api-sni: the address follows it; the host stays the new name.
+        assert_eq!(
+            api_routes_of(None, named("front.example.com"), None, None),
+            vec![way(new, "front.example.com", "front.example.com", 443)]
+        );
+        // All three, each as given.
+        assert_eq!(
+            api_routes_of(
+                named("api.example.com"),
+                named("front.example.com"),
+                Some(("192.0.2.1".to_string(), 8443)),
+                None
+            ),
+            vec![way(
+                "api.example.com",
+                "front.example.com",
+                "192.0.2.1",
+                8443
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn forgetting_the_name_the_api_answered_by_brings_the_new_name_first_again() {
+        let _answered = hold_answered().await;
+        let first = || {
+            api_routes_of(None, None, None, answered_api_host().as_deref())[0]
+                .host
+                .clone()
+        };
+        remember_answered_api_host(consts::API_FALLBACK_HOST);
+        assert_eq!(first(), consts::API_FALLBACK_HOST);
+        forget_answered_api_host();
+        assert_eq!(answered_api_host(), None);
+        assert_eq!(first(), consts::API_HOST);
+    }
+
+    #[test]
+    fn only_the_apis_own_envelope_counts_as_its_answer() {
+        assert!(is_api_envelope(NOT_FOUND));
+        assert!(is_api_envelope(BUSY));
+        for other in [
+            "",
+            "forbidden",
+            "<html><head><title>403 Forbidden</title></head></html>",
+            "{}",
+            r#"{"errors":[]}"#,
+            r#"{"success":"no","errors":[]}"#,
+            r#"{"success":false,"errors":"none"}"#,
+        ] {
+            assert!(!is_api_envelope(other), "{other}");
+        }
+        // The way after one turns the call away is the next that has not.
+        assert_eq!(next_way(0, &[false, false]), 1);
+        assert_eq!(next_way(1, &[false, false]), 0);
+        assert_eq!(next_way(1, &[true, false]), 1);
+        assert_eq!(next_way(0, &[false]), 0);
+    }
+
+    /// What Cloudflare answers a device it does not know.
+    const NOT_FOUND: &str = r#"{"result":null,"success":false,"errors":[{"code":1006,"message":"Registration not found"}],"messages":[]}"#;
+
+    /// A refusal of the API worth asking again.
+    const BUSY: &str = r#"{"result":null,"success":false,"errors":[{"code":1000,"message":"busy"}],"messages":[]}"#;
+
+    /// What a server that is not the API answers, such as a page of the edge or of a front.
+    const PAGE: &str =
+        "<html><head><title>403 Forbidden</title></head><body>cloudflare</body></html>";
+
+    /// What an API on this machine does with a connection by a server name: drops it after the
+    /// handshake, as a network that blocks that way does, or answers its request, asking to wait
+    /// that many seconds with Retry-After for `ReplyAfter`.
+    enum Answer {
+        Drop,
+        Reply(u16, &'static str),
+        ReplyAfter(u16, &'static str, u64),
+    }
+
+    /// The server name of each connection an API on this machine took, in order, with the
+    /// :authority of its request when it answered one.
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+    /// An API on this machine, on the port it gives, that does with each connection what `plan`
+    /// says for its server name, one answer after another; one it has no answer left for is
+    /// dropped.
+    async fn api_server(plan: Vec<(&'static str, Vec<Answer>)>) -> (u16, Seen) {
+        let (address, listener, acceptor) = crate::https::test_server(b"\x02h2").await;
+        let mut plan: std::collections::HashMap<String, std::collections::VecDeque<Answer>> = plan
+            .into_iter()
+            .map(|(name, answers)| (name.to_string(), answers.into()))
+            .collect();
+        let seen: Seen = Default::default();
+        let kept = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let Ok(tls) = tokio_boring::accept(&acceptor, tcp).await else {
+                    continue;
+                };
+                let name = tls
+                    .ssl()
+                    .servername(boring::ssl::NameType::HOST_NAME)
+                    .unwrap_or_default()
+                    .to_string();
+                let answer = plan.get_mut(&name).and_then(|answers| answers.pop_front());
+                let (status, body, wait) = match answer {
+                    Some(Answer::Reply(status, body)) => (status, body, None),
+                    Some(Answer::ReplyAfter(status, body, wait)) => (status, body, Some(wait)),
+                    Some(Answer::Drop) | None => {
+                        kept.lock().expect("what was seen").push((name, None));
+                        continue;
+                    }
+                };
+                let mut connection = h2::server::handshake(tls).await.expect("h2");
+                let (request, mut respond) = connection
+                    .accept()
+                    .await
+                    .expect("a request")
+                    .expect("a whole request");
+                let authority = request.uri().authority().expect("an authority").to_string();
+                kept.lock()
+                    .expect("what was seen")
+                    .push((name, Some(authority)));
+                let mut answer = http::Response::builder().status(status);
+                if let Some(wait) = wait {
+                    answer = answer.header("retry-after", wait.to_string());
+                }
+                let mut stream = respond
+                    .send_response(answer.body(()).unwrap(), false)
+                    .expect("an answer");
+                stream
+                    .send_data(bytes::Bytes::from_static(body.as_bytes()), true)
+                    .expect("its body");
+                // Drives the connection until the client goes away.
+                tokio::spawn(async move { while let Some(Ok(_)) = connection.accept().await {} });
+            }
+        });
+        (address.port(), seen)
+    }
+
+    /// A call the core makes for a device, as `api_call` makes it, by the ways the options give.
+    async fn refresh() -> Result<AccountData> {
+        let path = format!("/{}/reg/a-device", consts::API_VERSION);
+        api_call("device refresh", "GET", &path, None, Some("a-token"), None).await
+    }
+
+    /// `name` asked, with its own server name and host, or dropped when `answered` is false.
+    fn asked(name: &str, answered: bool) -> (String, Option<String>) {
+        (name.to_string(), answered.then(|| name.to_string()))
+    }
+
+    #[tokio::test]
+    async fn an_attempt_without_an_answer_goes_by_the_other_name_which_goes_first_after() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
+        let (port, seen) = api_server(vec![
+            (new, vec![Answer::Drop, Answer::Reply(404, NOT_FOUND)]),
+            (
+                old,
+                vec![
+                    Answer::Reply(404, NOT_FOUND),
+                    Answer::Reply(404, NOT_FOUND),
+                    Answer::Drop,
+                ],
+            ),
+        ])
+        .await;
+        // Both names to the API on this machine, which tells them apart by the server name.
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+
+        let said = refresh().await.expect_err("the device is gone");
+        // The API's answer, not the way that gave none.
+        assert!(matches!(said, AetherError::IdentityRefused(_)), "{said}");
+        assert!(
+            said.to_string().contains("Registration not found"),
+            "{said}"
+        );
+        assert_eq!(answered_api_host().as_deref(), Some(old));
+
+        // The next call goes by the name the API answered by first; when that one goes silent,
+        // the new name is still behind it.
+        refresh().await.expect_err("the device is still gone");
+        refresh()
+            .await
+            .expect_err("the device is gone by either name");
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![
+                asked(new, false),
+                asked(old, true),
+                asked(old, true),
+                asked(old, false),
+                asked(new, true)
+            ]
+        );
+        assert_eq!(answered_api_host().as_deref(), Some(new));
+    }
+
+    #[tokio::test]
+    async fn a_single_way_takes_a_404_page_for_a_refusal_as_before() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (port, seen) =
+            api_server(vec![("api.example.com", vec![Answer::Reply(404, PAGE)])]).await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        std::env::set_var("AETHER_API_HOST", "api.example.com");
+
+        // A name given: one way, which a 404 of any server ends, as before there were two names.
+        let said = refresh().await.expect_err("refused");
+        assert!(matches!(said, AetherError::IdentityRefused(_)), "{said}");
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![asked("api.example.com", true)]
+        );
+        assert_eq!(answered_api_host(), None);
+    }
+
+    #[tokio::test]
+    async fn a_success_settles_the_call_even_one_this_core_cannot_read() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
+        let (port, seen) = api_server(vec![
+            (new, vec![Answer::Reply(200, "not an account")]),
+            (old, vec![Answer::Reply(200, "not an account")]),
+        ])
+        .await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+
+        // A registration the API made is not made once more by the other name.
+        let said = refresh().await.expect_err("no account");
+        assert!(said.to_string().contains("decode"), "{said}");
+        assert_eq!(*seen.lock().expect("what was seen"), vec![asked(new, true)]);
+    }
+
+    #[tokio::test]
+    async fn a_page_that_asks_to_wait_is_waited_out_before_the_other_name() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
+        let (port, seen) = api_server(vec![
+            (new, vec![Answer::ReplyAfter(429, "error code: 1015", 1)]),
+            (old, vec![Answer::Reply(404, NOT_FOUND)]),
+        ])
+        .await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+
+        let started = std::time::Instant::now();
+        let said = refresh().await.expect_err("the device is gone");
+        assert!(matches!(said, AetherError::IdentityRefused(_)), "{said}");
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![asked(new, true), asked(old, true)]
+        );
+        // The second asked to wait a second, beside the backoff of under one.
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(1200),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_but_404_counts_by_whoever_it_comes_from_both_names() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
+        let (port, seen) = api_server(vec![
+            (new, vec![Answer::Reply(401, PAGE)]),
+            (old, vec![Answer::Reply(401, PAGE)]),
+        ])
+        .await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+
+        // A 401 without the API's envelope still counts, as before there were two names, once
+        // the other name has said the same.
+        let said = refresh().await.expect_err("refused");
+        assert!(matches!(said, AetherError::IdentityRefused(_)), "{said}");
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![asked(new, true), asked(old, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_another_server_than_the_api_goes_by_the_other_name() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
+        let (port, seen) = api_server(vec![
+            (new, vec![Answer::Reply(403, PAGE)]),
+            (old, vec![Answer::Reply(404, NOT_FOUND)]),
+        ])
+        .await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+
+        let said = refresh().await.expect_err("the device is gone");
+        assert!(matches!(said, AetherError::IdentityRefused(_)), "{said}");
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![asked(new, true), asked(old, true)]
+        );
+        assert_eq!(answered_api_host().as_deref(), Some(old));
+    }
+
+    #[tokio::test]
+    async fn pages_of_other_servers_by_both_names_end_the_call_without_blaming_the_identity() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
+        let (port, seen) = api_server(vec![
+            (new, vec![Answer::Reply(404, PAGE)]),
+            (old, vec![Answer::Reply(404, PAGE)]),
+        ])
+        .await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+
+        let said = refresh().await.expect_err("no API answered");
+        // A 404 page of another server is no refusal of the identity, which would be replaced.
+        assert!(matches!(said, AetherError::Api(_)), "{said}");
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![asked(new, true), asked(old, true)]
+        );
+        assert_eq!(answered_api_host(), None);
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_the_api_worth_asking_again_is_asked_again_the_same_way() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
+        let (port, seen) = api_server(vec![
+            (
+                new,
+                vec![Answer::Reply(503, BUSY), Answer::Reply(404, NOT_FOUND)],
+            ),
+            (old, vec![]),
+        ])
+        .await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+
+        let said = refresh().await.expect_err("the device is gone");
+        assert!(matches!(said, AetherError::IdentityRefused(_)), "{said}");
+        // The API answered by the new name; the old one is never asked.
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![asked(new, true), asked(new, true)]
+        );
+        assert_eq!(answered_api_host().as_deref(), Some(new));
+    }
+
+    #[tokio::test]
+    async fn a_call_sends_its_server_name_and_its_host_each_as_given() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let (port, seen) =
+            api_server(vec![("front.example.com", vec![Answer::Reply(403, PAGE)])]).await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        std::env::set_var("AETHER_API_SNI", "front.example.com");
+        std::env::set_var("AETHER_API_HOST", "api.example.com");
+
+        let said = refresh().await.expect_err("refused");
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![(
+                "front.example.com".to_string(),
+                Some("api.example.com".to_string())
+            )]
+        );
+        // One way only: a 403 to names that differ says why, rather than blame the network,
+        // and the call goes no other way.
+        assert!(said.to_string().contains("--api-sni"), "{said}");
+        assert_eq!(answered_api_host(), None);
     }
 
     #[test]
     fn a_run_starts_without_the_api_key_of_the_run_before() {
-        // No other test calls the WARP API, so none sees the key change here.
+        // No other test offers the calls to the API an ECH key, so none sees the key change here.
         remember_api_ech(vec![1, 2, 3]);
         assert_eq!(api_ech_in_use(), Some(vec![1, 2, 3]));
         forget_api_ech();

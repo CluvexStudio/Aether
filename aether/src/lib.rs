@@ -99,14 +99,16 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
     install_netstack_panic_guard();
     // A cipher string or a group list BoringSSL does not take, a --masque-sni that is no domain
-    // name, an address the calls to the WARP API cannot use, or an --upstream aether cannot dial
-    // through, stops the core here, with its option named.
+    // name, an --api-address, --api-sni or --api-host the calls to the WARP API cannot use, or an
+    // --upstream aether cannot dial through, stops the core here, with its option named.
     tls::check_tls_options()?;
     quic::masque_sni()?;
-    account::check_api_address()?;
+    account::check_api_settings()?;
     upstream::check_setting()?;
-    // The key of the WARP API calls of an earlier run of the library is not this run's.
+    // The key of the WARP API calls of an earlier run of the library is not this run's, and
+    // neither is the name of the API that answered them.
     account::forget_api_ech();
+    account::forget_answered_api_host();
 
     let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 

@@ -1,4 +1,10 @@
-pub const API_URL: &str = "https://api.cloudflareclient.com";
+/// The name the calls to the WARP API go by unless --api-host or --api-sni names another: the one
+/// the Cloudflare One client calls since its 2026.6.0, on addresses of its own.
+pub const API_HOST: &str = "api.devices.cloudflare.com";
+/// The API's other name, on Cloudflare's shared addresses, which the WARP clients called before:
+/// an attempt API_HOST does not serve, with no answer or with a refusal of another server than the
+/// API, goes by this one next.
+pub const API_FALLBACK_HOST: &str = "api.cloudflareclient.com";
 pub const API_VERSION: &str = "v0a4471";
 
 pub const CONNECT_SNI: &str = "consumer-masque.cloudflareclient.com";

@@ -316,10 +316,20 @@ Config files:
                            where the calls to the WARP API, which register and
                            enroll the keys, go: port 443 unless one follows the
                            address, an IPv6 one then in brackets, e.g.
-                           188.114.97.6:443 or [2606:4700::1]:8443 (default
-                           api.cloudflareclient.com); the server name and the
-                           HTTP host stay api.cloudflareclient.com. With --mark
+                           162.159.137.105 or [2606:4700:7::a29f:8969]:443
+                           (default: the --api-sni name, on 443). With --mark
                            and no --upstream, an IP address only
+  --api-sni <name>         the server name the ClientHello of those calls sends
+                           (default: the --api-host name); with --ech, the name
+                           inside the encrypted ClientHello
+  --api-host <name>        the HTTP host of those calls, their Host or :authority
+                           (default api.devices.cloudflare.com). With neither
+                           --api-sni nor --api-host, an attempt that gets no
+                           answer by that name, or a refusal of another server
+                           than the API, goes by api.cloudflareclient.com next, and
+                           the name the API answers by goes first for the rest
+                           of the run. Cloudflare refuses a call whose server
+                           name and host differ
 
 Advanced:
   --perf <low|medium|high> force a resource profile instead of auto-detecting from cpu/ram
@@ -430,6 +440,8 @@ Environment variables:
   AETHER_MASQUE_CONFIG             --masque-config
   AETHER_REGISTER                  --register
   AETHER_API_ADDRESS               --api-address
+  AETHER_API_SNI                   --api-sni
+  AETHER_API_HOST                  --api-host
   AETHER_PERF_PROFILE              --perf
   AETHER_LOG_LEVEL                 --log-level
 
@@ -628,6 +640,8 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--masque-config" => set("AETHER_MASQUE_CONFIG", next_value!()),
             "--register" => set("AETHER_REGISTER", next_value!()),
             "--api-address" => set("AETHER_API_ADDRESS", next_value!()),
+            "--api-sni" => set("AETHER_API_SNI", next_value!()),
+            "--api-host" => set("AETHER_API_HOST", next_value!()),
 
             "--team" | "--organization" => set("AETHER_TEAM", next_value!()),
             "--access-id" => set("AETHER_ACCESS_CLIENT_ID", next_value!()),

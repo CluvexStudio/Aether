@@ -570,19 +570,49 @@ not discard an identity.
 ### Where the WARP API is asked
 
 Registering a device, enrolling its MASQUE key and refreshing a profile are calls
-to the WARP API, `api.cloudflareclient.com`, made as described under TLS above.
-`--api-address` sends them to another address, an IP address or a domain name,
-on port 443 unless a port follows it, an IPv6 address then in brackets:
-`188.114.97.6`, `188.114.97.6:2053`, `[2606:4700::1]:8443`. Only the connection goes
-there: the API's name stays the server name of the ClientHello and the HTTP host,
-which carries no port. A name is looked up first, by the proxy with `--upstream`
-and by the system resolver otherwise; with `--mark` and no `--upstream` only an IP
-address is taken, since that lookup would leave outside the mark and loop back into
-the tunnel. With `--ech` the API's name goes only inside the encrypted ClientHello,
-and an IP address for `--api-address` keeps it out of the DNS lookup as well.
+to the WARP API, made as described under TLS above. Three options say how they go,
+and each one left out follows the one before it:
+
+- `--api-host` is the HTTP host, the `Host` header or the HTTP/2 `:authority`, which
+  carries no port. It is `api.devices.cloudflare.com` by default: the name the
+  Cloudflare One client calls since its 2026.6.0, on addresses of its own,
+  162.159.137.105 and 162.159.138.105.
+- `--api-sni` is the server name of the ClientHello, the `--api-host` name by
+  default. With `--ech` it goes only inside the encrypted ClientHello.
+- `--api-address` is where the connection goes: an IP address or a domain name, on
+  port 443 unless a port follows it, an IPv6 address then in brackets, such as
+  `162.159.137.105`, `188.114.97.6:2053` or `[2606:4700:7::a29f:8969]:443`. It is the
+  `--api-sni` name on port 443 by default.
+
+Cloudflare answers 403 to a call whose server name and host differ, even between
+its own names, which is why the server name follows the host. Set `--api-sni` apart
+only for a front of your own that takes another name.
+
+With neither `--api-sni` nor `--api-host`, an attempt that `api.devices.cloudflare.com`
+does not serve goes by `api.cloudflareclient.com` next: the name the WARP clients
+called before, on Cloudflare's shared addresses, which serves the same API to the
+same requests. An attempt counts as not served when it gets no answer, or a refusal
+of another server than the API, such as an error page of the edge or of a
+middlebox; a success, or a refusal of the API itself, keeps the call on that name,
+where a busy API is asked again. The address follows the name unless
+`--api-address` is given, and the name the API answers by goes first for the rest
+of the run, with the other one still behind it.
+
+With `--api-address` alone, the calls also go by the new name first, then by the
+old one. A front of your own that knows only `api.cloudflareclient.com` keeps
+working through that fallback; `--api-host api.cloudflareclient.com` sends every
+call by the old name, as before 2.3.7.
+
+A domain name in `--api-address`, or the server name in its place, is looked up
+first, by the proxy with `--upstream` and by the system resolver otherwise. With
+`--mark` and no `--upstream` only an IP address is taken, since that lookup would
+leave outside the mark and loop back into the tunnel. An IP address for
+`--api-address` also keeps the name out of the DNS lookup, which matters with
+`--ech`.
 
 ```sh
-aether --register all --ech auto --api-address 141.101.113.10
+aether --register all --api-address 162.159.137.105
+aether --register all --api-host api.cloudflareclient.com
 ```
 
 ## Using Aether as a library
@@ -663,6 +693,8 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_REPROVISION` | replace an identity Cloudflare refuses |
 | `AETHER_CONFIG`, `AETHER_WG_CONFIG`, `AETHER_MASQUE_CONFIG` | identity paths |
 | `AETHER_API_ADDRESS` | where the calls to the WARP API go |
+| `AETHER_API_SNI` | the server name of those calls |
+| `AETHER_API_HOST` | the HTTP host of those calls |
 | `AETHER_TLS_GROUPS` | TLS groups (see TLS) |
 | `AETHER_TLS_CIPHERS` | TLS 1.2 cipher suites (see TLS) |
 | `AETHER_DISABLE_GREASE` | `1` leaves GREASE out (see TLS) |
