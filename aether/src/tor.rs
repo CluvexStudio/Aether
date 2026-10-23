@@ -201,7 +201,11 @@ pub async fn run_chain(_through: SocketAddr, _state: PathBuf) -> Result<()> {
 }
 
 #[cfg(not(feature = "tor"))]
-pub async fn run_only(_listen: SocketAddr, _state: PathBuf) -> Result<()> {
+pub async fn run_only(
+    _listener: tokio::net::TcpListener,
+    _listen: SocketAddr,
+    _state: PathBuf,
+) -> Result<()> {
     Err(unsupported())
 }
 
@@ -864,6 +868,7 @@ mod with_tor {
         // Both held from the start, as the core holds its own: the user dials them while the
         // tunnel and Tor come up, and no other program may take them meanwhile.
         let listener = crate::socks::bind_listener("tor socks5", listen, "--tor-bind").await?;
+        let listen = listener.local_addr().unwrap_or(listen);
         let http = bind_http().await?;
 
         wait_for_proxy(through).await;
@@ -876,9 +881,13 @@ mod with_tor {
         serve(listener, http, client, "tor socks5").await
     }
 
-    pub async fn run_only(listen: SocketAddr, state: PathBuf) -> Result<()> {
+    /// Tor with no tunnel underneath it, serving `listener`, which the core holds on `listen` from
+    /// its start; its http proxy is held from the start as well.
+    pub async fn run_only(listener: TcpListener, listen: SocketAddr, state: PathBuf) -> Result<()> {
         init_tracing();
-        let listener = crate::socks::bind_listener("tor socks5", listen, "--bind").await?;
+        // The port the system gave, where --bind names port 0.
+        let listen = listener.local_addr().unwrap_or(listen);
+        let http = bind_http().await?;
 
         log::info!("[*] bootstrapping tor with no tunnel underneath it");
         announce_upstream();
@@ -887,7 +896,6 @@ mod with_tor {
         log::info!("[+] tor is ready; {listen} leaves through tor");
         announce_exit(listen, "tor");
 
-        let http = bind_http().await?;
         serve(listener, http, client, "tor socks5").await
     }
 

@@ -299,13 +299,14 @@ pub(crate) async fn until_answered(address: SocketAddr, pause: Duration, waiting
 /// Passes every client of `listener` on to `to`, byte for byte, until it fails or is aborted: a
 /// proxy that listens on `to`, a port of its own choosing, is reached on `listener`'s address, which
 /// the caller held before that proxy was up. A client `to` does not take is closed. The bytes are
-/// not counted here: what that proxy sends on goes through the core's own socks5 server, which
-/// counts it.
+/// not counted here, as that proxy's own were not before it was reached this way: inside the
+/// tunnel, what it sends on goes through the core's own socks5 server, which counts it.
 pub(crate) async fn forward<L: Borrow<TcpListener>>(
     listener: L,
     kind: &'static str,
     to: SocketAddr,
 ) -> Result<()> {
+    warn_if_world_reachable(kind, listener.borrow().local_addr()?);
     accept_clients(
         listener,
         kind,

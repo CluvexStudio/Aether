@@ -124,15 +124,15 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     let (core_end, core_ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
     let listeners = Listeners::bind(listen, core_end.clone()).await?;
 
-    // Tor or Psiphon alone serves this listener itself, from its start on.
+    // Tor or Psiphon alone serves the socks5 listener the core holds, from its start on.
     if tor::mode() == tor::Mode::Only {
-        drop(listeners);
-        return tor::run_only(listen, tor::state_dir(&base_config)).await;
+        let state = tor::state_dir(&base_config);
+        return tor::run_only(listeners.into_socks(), listen, state).await;
     }
 
     if psiphon::mode() == psiphon::Mode::Only {
-        drop(listeners);
-        return psiphon::run_only(listen, psiphon::state_dir(&base_config)).await;
+        let state = psiphon::state_dir(&base_config);
+        return psiphon::run_only(listeners.into_socks(), listen, state).await;
     }
 
     if tor::mode() == tor::Mode::Reverse && psiphon::mode() == psiphon::Mode::Reverse {
@@ -159,13 +159,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     };
 
     if tor::mode() == tor::Mode::Only {
-        drop(listeners);
-        return tor::run_only(listen, tor::state_dir(&base_config)).await;
+        let state = tor::state_dir(&base_config);
+        return tor::run_only(listeners.into_socks(), listen, state).await;
     }
 
     if psiphon::mode() == psiphon::Mode::Only {
-        drop(listeners);
-        return psiphon::run_only(listen, psiphon::state_dir(&base_config)).await;
+        let state = psiphon::state_dir(&base_config);
+        return psiphon::run_only(listeners.into_socks(), listen, state).await;
     }
 
     if protocol != Protocol::WarpInWarp && !pinned_wiw.is_empty() {
@@ -381,6 +381,12 @@ impl Listeners {
             http: bind_http_proxy().await?,
             broken,
         })
+    }
+
+    /// The socks5 listener alone, for Tor or Psiphon alone to serve. The http proxy has no part in
+    /// those, and its port is let go at once.
+    fn into_socks(self) -> tokio::net::TcpListener {
+        self.socks
     }
 
     /// Serves both through `stack`, the tunnel's, for as long as that tunnel runs. The servers run
@@ -3713,6 +3719,31 @@ mod tests {
         }
         // Neither listener broke, so nothing would end the core.
         assert!(breaks.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn tor_or_psiphon_alone_keeps_the_socks5_listener_and_frees_the_http_proxy() {
+        let (broken, _breaks) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let listeners = Listeners {
+            socks: socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap(), "--bind")
+                .await
+                .unwrap(),
+            http: Some(
+                socks::bind_listener("http proxy", "127.0.0.1:0".parse().unwrap(), "--http-proxy")
+                    .await
+                    .unwrap(),
+            ),
+            broken,
+        };
+        let socks_at = listeners.socks.local_addr().unwrap();
+        let http_at = listeners.http.as_ref().unwrap().local_addr().unwrap();
+
+        let socks = listeners.into_socks();
+        assert_eq!(socks.local_addr().unwrap(), socks_at);
+        // Still held, as Tor or Psiphon alone serves it.
+        assert!(std::net::TcpListener::bind(socks_at).is_err());
+        // No alone mode serves the core's own http proxy: its port is free again at once.
+        assert!(std::net::TcpListener::bind(http_at).is_ok());
     }
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

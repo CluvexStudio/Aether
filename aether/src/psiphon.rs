@@ -614,6 +614,18 @@ fn build_config(
         // Not even one that a config of the user's own names, written in any case: Psiphon reads
         // the keys of its config regardless of case.
         Placement::BehindHeld => {
+            let named = std::env::var("AETHER_PSIPHON_INTERFACE")
+                .is_ok_and(|name| !name.trim().is_empty())
+                || map
+                    .keys()
+                    .any(|key| key.eq_ignore_ascii_case("ListenInterface"));
+            if named {
+                log::warn!(
+                    "[-] psiphon listens on loopback behind aether's own listener here, so the \
+                     interface AETHER_PSIPHON_INTERFACE or --psiphon-config names is not used; give \
+                     the address to listen on with --bind (--psiphon-only) or --psiphon-bind"
+                );
+            }
             map.retain(|key, _| !key.eq_ignore_ascii_case("ListenInterface"));
         }
     }
@@ -900,21 +912,30 @@ fn upstream_url() -> Option<String> {
     Some(proxy.psiphon_url())
 }
 
-pub async fn run_only(listen: SocketAddr, state: PathBuf) -> Result<()> {
-    let http = http_listen_address();
+/// Psiphon with no tunnel underneath it, reached on `listener`, which the core holds on `listen`
+/// from its start, as it does Psiphon's http proxy; Psiphon listens behind them.
+pub async fn run_only(
+    listener: tokio::net::TcpListener,
+    listen: SocketAddr,
+    state: PathBuf,
+) -> Result<()> {
+    // The port the system gave, where --bind names port 0.
+    let listen = listener.local_addr().unwrap_or(listen);
+    let http = bind_http().await?;
     log::info!("[*] starting psiphon with no tunnel underneath it");
 
-    let mut running = start(&state, listen, http, upstream_url(), Placement::Dialled).await?;
-    log::info!(
-        "[+] psiphon is ready; {} leaves through psiphon",
-        running.socks
-    );
-    if let Some(address) = running.http {
-        log::info!("[+] psiphon http proxy on {address}");
-    }
+    let running = start(
+        &state,
+        BEHIND_HELD,
+        http.as_ref().map(|_| BEHIND_HELD),
+        upstream_url(),
+        Placement::BehindHeld,
+    )
+    .await?;
+    log::info!("[+] psiphon is ready; {listen} leaves through psiphon");
     announce(running.socks, "psiphon");
 
-    running.wait().await
+    relay_to(running, listen, listener, http).await
 }
 
 pub async fn run_chain(through: SocketAddr, state: PathBuf) -> Result<()> {
@@ -922,48 +943,65 @@ pub async fn run_chain(through: SocketAddr, state: PathBuf) -> Result<()> {
     // once the tunnel is up.
     binary().ok_or_else(|| AetherError::Other(install_hint()))?;
     let listen = listen_address();
-    let http = http_listen_address();
     // Held from the start, as the core holds its own: the user dials Psiphon's listener while the
     // tunnel and Psiphon come up, and no other program may take it meanwhile. Psiphon listens on
     // ports of its own choosing behind them, and what comes in is passed on to it.
     let socks_listener =
         crate::socks::bind_listener("psiphon socks5", listen, "--psiphon-bind").await?;
-    let http_listener = match http {
-        Some(address) => Some(
-            crate::socks::bind_listener("psiphon http proxy", address, "--psiphon-http").await?,
-        ),
-        None => None,
-    };
+    let listen = socks_listener.local_addr().unwrap_or(listen);
+    let http = bind_http().await?;
 
     wait_for_proxy(through).await;
     log::info!("[*] starting psiphon through the tunnel at {through}");
 
-    let mut running = start(
+    let running = start(
         &state,
         BEHIND_HELD,
-        http.map(|_| BEHIND_HELD),
+        http.as_ref().map(|_| BEHIND_HELD),
         Some(format!("socks5://{through}")),
         Placement::BehindHeld,
     )
     .await?;
-    let (behind_socks, behind_http) = (running.socks, running.http);
     log::info!("[+] psiphon is ready; {listen} leaves through psiphon, carried by the tunnel");
-    announce(behind_socks, "psiphon through the tunnel");
+    announce(running.socks, "psiphon through the tunnel");
 
-    // The relays run inside this future: when it ends, or is dropped as the core ends, so do they,
-    // letting go of the listeners.
-    let socks_relay = crate::socks::forward(socks_listener, "psiphon socks5", behind_socks);
-    // The http proxy failing leaves Psiphon's listener serving, as Tor's does; its port is let go.
+    relay_to(running, listen, socks_listener, http).await
+}
+
+/// Binds Psiphon's http proxy when one is asked for, with --psiphon-http, to be held for it: the
+/// listener and the address it got.
+async fn bind_http() -> Result<Option<(SocketAddr, tokio::net::TcpListener)>> {
+    let Some(address) = http_listen_address() else {
+        return Ok(None);
+    };
+    let listener =
+        crate::socks::bind_listener("psiphon http proxy", address, "--psiphon-http").await?;
+    Ok(Some((listener.local_addr().unwrap_or(address), listener)))
+}
+
+/// Passes what comes in on the listeners held for Psiphon, `socks_listener` on `listen` and the
+/// http proxy's when there is one, on to Psiphon, which listens behind them where `running` says,
+/// until Psiphon or that socks5 relay ends. The relays run inside this future: when it ends, or is
+/// dropped as the core ends, so do they, letting go of the listeners. The http proxy failing
+/// leaves the socks5 one serving, as Tor's does; its port is let go.
+async fn relay_to(
+    mut running: Running,
+    listen: SocketAddr,
+    socks_listener: tokio::net::TcpListener,
+    http: Option<(SocketAddr, tokio::net::TcpListener)>,
+) -> Result<()> {
+    let socks_relay = crate::socks::forward(socks_listener, "psiphon socks5", running.socks);
+    let behind_http = running.http;
     let http_relay = async {
-        match (http_listener, http, behind_http) {
-            (Some(listener), Some(address), Some(behind)) if behind.port() != 0 => {
+        match (http, behind_http) {
+            (Some((address, listener)), Some(behind)) if behind.port() != 0 => {
                 log::info!("[+] psiphon http proxy on {address}");
                 if let Err(e) = crate::socks::forward(listener, "psiphon http proxy", behind).await
                 {
                     log::error!("[-] psiphon's http proxy on {address} stopped: {e}");
                 }
             }
-            (Some(listener), Some(address), _) => {
+            (Some((address, listener)), _) => {
                 drop(listener);
                 log::warn!(
                     "[-] psiphon did not say where its http proxy is; {address} stays closed"
