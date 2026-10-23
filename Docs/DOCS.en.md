@@ -125,7 +125,7 @@ Cloudflare answers on many edge addresses and a filtered network usually blocks
 some of them, so Aether does not ship a single fixed address. It sweeps the
 documented ranges, verifies candidates, and keeps the one that carries real
 traffic. A handshake alone is not enough: a candidate has to pass an end-to-end
-data check before the proxy opens.
+data check before the proxy starts serving.
 
 | Mode | Behaviour |
 | --- | --- |

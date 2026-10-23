@@ -35,7 +35,7 @@ Connection:
                            without --upstream the calls to the WARP API take an IP
                            address only, see --api-address
   --exit-loc <spec>        refuse a tunnel whose exit country is not wanted, checked
-                           through the finished tunnel before socks5 opens and again
+                           through the finished tunnel before socks5 serves and again
                            every minute after: !IR,AZ,RU blocks those, DE,SE allows
                            only those. Off unless you pass this flag: without it
                            nothing is looked up and no tunnel is refused

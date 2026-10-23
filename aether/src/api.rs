@@ -558,24 +558,33 @@ pub async fn connect(
         Some(listen) => std::env::set_var("AETHER_HTTP_PROXY", listen.to_string()),
         None => std::env::remove_var("AETHER_HTTP_PROXY"),
     }
-    // Held for this one tunnel, from before it comes up until it ends.
-    let listeners = crate::Listeners::bind(spec.socks).await?;
-
-    match spec.transport {
-        Transport::Masque => {
-            let attempt = crate::run_masque_tunnel(identity, peer, spec.ech.clone(), &listeners);
-            guard(cancel, attempt).await
+    // Held for this one tunnel, from before it comes up until it ends; a cancel lets them go at once,
+    // so the next tunnel can bind them as soon as this call returns. One that breaks ends it.
+    let attempt = async {
+        let (broken, mut breaks) = tokio::sync::mpsc::unbounded_channel();
+        let listeners = crate::Listeners::bind(spec.socks, broken).await?;
+        let tunnel = async {
+            match spec.transport {
+                Transport::Masque => {
+                    crate::run_masque_tunnel(identity, peer, spec.ech.clone(), &listeners).await
+                }
+                Transport::WireGuard => {
+                    crate::run_wireguard_tunnel(
+                        identity.clone(),
+                        peer,
+                        spec.aethernoize.clone(),
+                        &listeners,
+                    )
+                    .await
+                }
+            }
+        };
+        tokio::select! {
+            result = tunnel => result,
+            Some(e) = breaks.recv() => Err(e),
         }
-        Transport::WireGuard => {
-            let attempt = crate::run_wireguard_tunnel(
-                identity.clone(),
-                peer,
-                spec.aethernoize.clone(),
-                &listeners,
-            );
-            guard(cancel, attempt).await
-        }
-    }
+    };
+    guard(cancel, attempt).await
 }
 
 #[cfg(test)]

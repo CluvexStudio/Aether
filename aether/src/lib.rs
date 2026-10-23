@@ -36,7 +36,6 @@ pub mod zerotrust;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::time::Instant;
 
 use error::{AetherError, Result};
@@ -110,7 +109,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
     let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 
-    // A registration serves no proxy, so it needs none of the listeners checked below.
+    // A registration serves no proxy, so it needs none of the listeners bound below.
     if let Some(wanted) = register_request()? {
         return register_identities(wanted, &base_config).await;
     }
@@ -120,7 +119,10 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| "127.0.0.1:1819".parse().unwrap());
 
-    let listeners = Listeners::bind(listen).await?;
+    // What ends the core on its own, with its error, while its tunnels come and go: a listener the
+    // user dials breaking, or Tor or Psiphon inside the tunnel ending.
+    let (core_end, core_ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+    let listeners = Listeners::bind(listen, core_end.clone()).await?;
 
     // Tor or Psiphon alone serves this listener itself, from its start on.
     if tor::mode() == tor::Mode::Only {
@@ -181,14 +183,16 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     }
 
     // Tor or Psiphon inside the tunnel serves the listener the user dials. Its end leaves nothing
-    // behind that port, so the core ends with it, saying why, rather than run on without it.
-    let (chain_end, chain_ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+    // behind that port, so the core ends with it, saying why, rather than run on without it. And
+    // as the core ends, Tor and Psiphon end with it, inside the tunnel or carrying it, letting go
+    // of their listeners, also where the process goes on after it, as through the C API.
+    let mut tor_and_psiphon = TaskGuard::new();
     match tor::mode() {
         tor::Mode::Chain => {
             let through = listen;
             let state = tor::state_dir(&base_config);
             let chain = tokio::spawn(tor::run_chain(through, state));
-            watch_chain("tor", chain, chain_end.clone());
+            watch_chain("tor", chain, core_end.clone(), &mut tor_and_psiphon);
         }
         tor::Mode::Reverse => {
             if needs_udp_to_warp(protocol, gool_classic()) {
@@ -200,7 +204,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 )));
             }
 
-            let socks = tor::start_reverse(tor::state_dir(&base_config)).await?;
+            let (socks, carrier) = tor::start_reverse(tor::state_dir(&base_config)).await?;
+            tor_and_psiphon.push(carrier);
             std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
             std::env::set_var("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through tor on the http/2 carrier");
@@ -213,7 +218,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             let through = listen;
             let state = psiphon::state_dir(&base_config);
             let chain = tokio::spawn(psiphon::run_chain(through, state));
-            watch_chain("psiphon", chain, chain_end.clone());
+            watch_chain("psiphon", chain, core_end.clone(), &mut tor_and_psiphon);
         }
         psiphon::Mode::Reverse => {
             if needs_udp_to_warp(protocol, gool_classic()) {
@@ -225,14 +230,15 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
                 )));
             }
 
-            let socks = psiphon::start_reverse(psiphon::state_dir(&base_config)).await?;
+            let (socks, carrier) = psiphon::start_reverse(psiphon::state_dir(&base_config)).await?;
+            tor_and_psiphon.push(carrier);
             std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
             std::env::set_var("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through psiphon on the http/2 carrier");
         }
         psiphon::Mode::Only | psiphon::Mode::Off => {}
     }
-    drop(chain_end);
+    drop(core_end);
 
     let session = async {
         match protocol {
@@ -310,39 +316,46 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             }
         }
     };
-    until_chain_end(session, chain_ended).await
+    until_core_end(session, core_ended).await
 }
 
 /// Watches `chain`, the task of Tor or Psiphon (`name`) inside the tunnel, and reports its end on
-/// `chain_end` however it ends: with its error, which is logged as "[-] tor: ..." or "[-] psiphon:
-/// ..." from here, the crate's root, as the apps that run the core read it; or by a panic, which
-/// tokio would otherwise keep to itself while the core ran on without that listener.
+/// `core_end` however it ends: with its error, which is logged as "[-] tor: ..." or "[-] psiphon:
+/// ..." under the target "aether", as the apps that run the core read it; or by a panic, which
+/// tokio would otherwise keep to itself while the core ran on without that listener. `guard` ends
+/// this watch and then the chain as the core ends, and a chain ended so is not reported as one
+/// that ended by itself.
 fn watch_chain(
     name: &'static str,
     chain: tokio::task::JoinHandle<Result<()>>,
-    chain_end: tokio::sync::mpsc::UnboundedSender<AetherError>,
+    core_end: tokio::sync::mpsc::UnboundedSender<AetherError>,
+    guard: &mut TaskGuard,
 ) {
-    tokio::spawn(async move {
+    let chain_task = chain.abort_handle();
+    let watch = tokio::spawn(async move {
         let e = match chain.await {
             Ok(Err(e)) => e,
             Ok(Ok(())) => AetherError::Other(format!("{name} inside the tunnel stopped")),
+            // Ended with the core: nothing to report.
+            Err(failed) if failed.is_cancelled() => return,
             Err(failed) => AetherError::Other(format!("{name} inside the tunnel failed: {failed}")),
         };
-        log::error!("[-] {name}: {e}");
-        let _ = chain_end.send(e);
+        log::error!(target: "aether", "[-] {name}: {e}");
+        let _ = core_end.send(e);
     });
+    guard.push(watch.abort_handle());
+    guard.push(chain_task);
 }
 
-/// Runs `session` until it ends, or until Tor or Psiphon inside the tunnel reports its end on
-/// `chain_ended`, which ends the session with that error. With neither inside, every sender is
-/// gone at once and the session alone decides.
-async fn until_chain_end(
+/// Runs `session` until it ends, or until something the core cannot go on without reports its end
+/// on `core_ended`, which ends the session with that error.
+async fn until_core_end(
     session: impl std::future::Future<Output = Result<()>>,
-    mut chain_ended: tokio::sync::mpsc::UnboundedReceiver<AetherError>,
+    mut core_ended: tokio::sync::mpsc::UnboundedReceiver<AetherError>,
 ) -> Result<()> {
     tokio::select! {
         result = session => result,
-        Some(e) = chain_ended.recv() => Err(e),
+        Some(e) = core_ended.recv() => Err(e),
     }
 }
 
@@ -351,18 +364,46 @@ async fn until_chain_end(
 /// up in its place serve them in turn, so their ports never come free while the core reconnects,
 /// where the user goes on dialling them and another program could take them; a client that comes
 /// meanwhile waits for the next tunnel.
-#[derive(Clone)]
 struct Listeners {
-    socks: Arc<tokio::net::TcpListener>,
-    http: Option<Arc<tokio::net::TcpListener>>,
+    socks: tokio::net::TcpListener,
+    http: Option<tokio::net::TcpListener>,
+    /// Where a listener that breaks is reported, to end the core.
+    broken: tokio::sync::mpsc::UnboundedSender<AetherError>,
 }
 
 impl Listeners {
-    async fn bind(listen: SocketAddr) -> Result<Self> {
+    async fn bind(
+        listen: SocketAddr,
+        broken: tokio::sync::mpsc::UnboundedSender<AetherError>,
+    ) -> Result<Self> {
         Ok(Self {
-            socks: Arc::new(socks::bind_listener("socks5", listen).await?),
-            http: bind_http_proxy().await?.map(Arc::new),
+            socks: socks::bind_listener("socks5", listen, "--bind").await?,
+            http: bind_http_proxy().await?,
+            broken,
         })
+    }
+
+    /// Serves both through `stack`, the tunnel's, for as long as that tunnel runs. The servers run
+    /// inside this future, so a tunnel that ends, or is dropped, leaves none behind on them. A
+    /// server stops only when its listener itself is broken (see `socks::accept_backoff`), which
+    /// no tunnel could serve again: that is reported on `broken`, to end the core with it, rather
+    /// than end one tunnel after another on it and blame their peers.
+    async fn serve(&self, stack: &netstack::StackHandle) -> std::convert::Infallible {
+        let http = async {
+            match &self.http {
+                Some(listener) => socks::serve_http(listener, stack.clone()).await,
+                None => std::future::pending().await,
+            }
+        };
+        let (what, stopped) = tokio::select! {
+            stopped = socks::serve(&self.socks, stack.clone()) => ("socks5 server", stopped),
+            stopped = http => ("http proxy", stopped),
+        };
+        let _ = self.broken.send(AetherError::Other(match stopped {
+            Err(e) => format!("the {what} stopped: {e}"),
+            Ok(()) => format!("the {what} stopped"),
+        }));
+        std::future::pending().await
     }
 }
 
@@ -1116,7 +1157,10 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
         )),
         _ => None,
     };
-    if let Some((name, socks)) = carrier {
+    // The carrier ends as the registration does.
+    let mut carried = TaskGuard::new();
+    if let Some((name, (socks, carrier))) = carrier {
+        carried.push(carrier);
         std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
         log::info!("[+] the identities are registered through {name}");
     }
@@ -1837,29 +1881,11 @@ async fn run_masque_tunnel(
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&hop.stack, &policy, "masque").await?;
 
-    let socks_listener = Arc::clone(&listeners.socks);
-    let http_listener = listeners.http.clone();
-
-    let mut tasks = TaskGuard::new();
-
-    let socks_stack = hop.stack.clone();
-    let socks_task = tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
-    tasks.push(socks_task.abort_handle());
-
-    let http_task = spawn_http_proxy(http_listener, &hop.stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
-
     let tunnel_result = tokio::select! {
         result = &mut hop.exit => result,
         reason = exit_policy_guard(&hop.stack, &policy) => return Err(reason),
+        never = listeners.serve(&hop.stack) => match never {},
     };
-
-    if let Some(task) = &http_task {
-        task.abort();
-    }
-    socks_task.abort();
 
     match tunnel_result {
         Ok(Ok(())) => Ok(()),
@@ -2158,34 +2184,19 @@ async fn run_masque_in_masque(
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&inner.stack, &policy, "masque-in-masque").await?;
 
-    let socks_listener = Arc::clone(&listeners.socks);
-    let http_listener = listeners.http.clone();
-
-    let mut tasks = TaskGuard::new();
-    let http_task = spawn_http_proxy(http_listener, &inner.stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
-
-    let socks_stack = inner.stack.clone();
-    let mut socks_task =
-        tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
-    tasks.push(socks_task.abort_handle());
-
     log::info!("[+] masque-in-masque ready: {peer} (outer) and {inner_peer} (inner)");
 
     #[derive(PartialEq)]
     enum Winner {
         Outer,
         Inner,
-        Socks,
         Policy,
     }
 
     let (outcome, winner) = tokio::select! {
         result = &mut outer.exit => (join_outcome("outer masque tunnel", result), Winner::Outer),
         result = &mut inner.exit => (join_outcome("inner masque tunnel", result), Winner::Inner),
-        result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
+        never = listeners.serve(&inner.stack) => match never {},
         reason = exit_policy_guard(&inner.stack, &policy) => (Err(reason), Winner::Policy),
     };
 
@@ -2196,10 +2207,6 @@ async fn run_masque_in_masque(
     if winner != Winner::Inner {
         inner.exit.abort();
         let _ = (&mut inner.exit).await;
-    }
-    if winner != Winner::Socks {
-        socks_task.abort();
-        let _ = (&mut socks_task).await;
     }
 
     outcome
@@ -2697,7 +2704,7 @@ async fn run_wireguard_tunnel(
         .parse()
         .map_err(|_| AetherError::Other("invalid ipv4".into()))?;
 
-    log::info!("[*] validating WireGuard tunnel with {peer} (handshake + data-plane) before exposing socks5...");
+    log::info!("[*] validating WireGuard tunnel with {peer} (handshake + data-plane) before serving socks5...");
     let (_, session) = wireguard::verify_endpoint_keep_session(
         peer,
         private_key,
@@ -2710,7 +2717,7 @@ async fn run_wireguard_tunnel(
     )
     .await
     .map_err(|e| AetherError::Other(format!("tunnel failed validation: {e}")))?;
-    log::info!("[+] wireguard tunnel validated (end-to-end data confirmed); exposing socks5");
+    log::info!("[+] wireguard tunnel validated (end-to-end data confirmed); serving socks5");
 
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(sysprofile::channel_capacity());
     let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(sysprofile::channel_capacity());
@@ -2730,34 +2737,14 @@ async fn run_wireguard_tunnel(
         outbound_tx,
     )?;
 
-    let mut tasks = TaskGuard::new();
-
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&stack, &policy, "wireguard").await?;
-
-    let socks_listener = Arc::clone(&listeners.socks);
-    let http_listener = listeners.http.clone();
-
-    let socks_stack = stack.clone();
-    let socks_task = tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
-    tasks.push(socks_task.abort_handle());
-
-    let http_task = spawn_http_proxy(http_listener, &stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
 
     let tunnel_result = tokio::select! {
         result = tunnel.run(outbound_rx) => result,
         reason = exit_policy_guard(&stack, &policy) => return Err(reason),
+        never = listeners.serve(&stack) => match never {},
     };
-
-    if let Some(task) = &http_task {
-        task.abort();
-    }
-
-    socks_task.abort();
-    let _ = socks_task.await;
 
     drop(stack);
 
@@ -2786,20 +2773,11 @@ fn http_proxy_listen() -> Option<SocketAddr> {
 
 async fn bind_http_proxy() -> Result<Option<tokio::net::TcpListener>> {
     match http_proxy_listen() {
-        Some(listen) => Ok(Some(socks::bind_listener("http proxy", listen).await?)),
+        Some(listen) => Ok(Some(
+            socks::bind_listener("http proxy", listen, "--http-proxy").await?,
+        )),
         None => Ok(None),
     }
-}
-
-fn spawn_http_proxy(
-    listener: Option<Arc<tokio::net::TcpListener>>,
-    stack: &netstack::StackHandle,
-) -> Option<TunnelExit> {
-    let listener = listener?;
-    let stack = stack.clone();
-    Some(tokio::spawn(async move {
-        socks::serve_http(listener, stack).await
-    }))
 }
 
 async fn establish_wg(
@@ -2966,37 +2944,20 @@ async fn run_warp_in_warp(
 
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&inner_stack, &policy, "warp-in-warp").await?;
-    let policy_stack = inner_stack.clone();
-
-    let socks_listener = Arc::clone(&listeners.socks);
-    let http_listener = listeners.http.clone();
-
-    let http_task = spawn_http_proxy(http_listener, &inner_stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
-    let mut socks_task =
-        tokio::spawn(async move { socks::serve(socks_listener, inner_stack).await });
-    tasks.push(socks_task.abort_handle());
 
     #[derive(PartialEq)]
     enum Winner {
         Outer,
         Inner,
-        Socks,
         Policy,
     }
 
     let (outcome, winner) = tokio::select! {
         result = &mut outer_exit => (join_outcome("outer wireguard tunnel", result), Winner::Outer),
         result = &mut inner_exit => (join_outcome("inner wireguard tunnel", result), Winner::Inner),
-        result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
-        reason = exit_policy_guard(&policy_stack, &policy) => (Err(reason), Winner::Policy),
+        never = listeners.serve(&inner_stack) => match never {},
+        reason = exit_policy_guard(&inner_stack, &policy) => (Err(reason), Winner::Policy),
     };
-
-    if let Some(task) = &http_task {
-        task.abort();
-    }
 
     if winner != Winner::Outer {
         outer_exit.abort();
@@ -3006,11 +2967,8 @@ async fn run_warp_in_warp(
         inner_exit.abort();
         let _ = inner_exit.await;
     }
-    if winner != Winner::Socks {
-        socks_task.abort();
-        let _ = socks_task.await;
-    }
 
+    drop(inner_stack);
     drop(outer_stack);
 
     outcome
@@ -3063,7 +3021,7 @@ async fn gool_inner_identity(
         return Ok(identity);
     }
 
-    let listener = socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap()).await?;
+    let listener = socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap(), "--bind").await?;
     let through = listener.local_addr()?;
     let stack = outer.clone();
     let socks_task = tokio::spawn(async move { socks::serve(listener, stack).await });
@@ -3194,20 +3152,6 @@ async fn run_gool_tunnel(
 
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&inner_stack, &policy, "gool").await?;
-    let policy_stack = inner_stack.clone();
-
-    let socks_listener = Arc::clone(&listeners.socks);
-    let http_listener = listeners.http.clone();
-
-    let mut tasks = TaskGuard::new();
-    let http_task = spawn_http_proxy(http_listener, &inner_stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
-    let socks_stack = inner_stack.clone();
-    let mut socks_task =
-        tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
-    tasks.push(socks_task.abort_handle());
 
     log::info!("[+] gool ready: masque {peer} carries wireguard {inner_peer}");
 
@@ -3215,15 +3159,14 @@ async fn run_gool_tunnel(
     enum Winner {
         Outer,
         Inner,
-        Socks,
         Policy,
     }
 
     let (outcome, winner) = tokio::select! {
         result = &mut outer.exit => (join_outcome("outer masque tunnel", result), Winner::Outer),
         result = &mut inner_exit => (join_outcome("inner wireguard tunnel", result), Winner::Inner),
-        result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
-        reason = exit_policy_guard(&policy_stack, &policy) => (Err(reason), Winner::Policy),
+        never = listeners.serve(&inner_stack) => match never {},
+        reason = exit_policy_guard(&inner_stack, &policy) => (Err(reason), Winner::Policy),
     };
 
     if winner != Winner::Outer {
@@ -3233,10 +3176,6 @@ async fn run_gool_tunnel(
     if winner != Winner::Inner {
         inner_exit.abort();
         let _ = (&mut inner_exit).await;
-    }
-    if winner != Winner::Socks {
-        socks_task.abort();
-        let _ = (&mut socks_task).await;
     }
 
     outcome
@@ -3549,13 +3488,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_ends_when_tor_or_psiphon_inside_the_tunnel_ends() {
-        // Neither inside: the senders are gone at once, and the session alone decides.
+        // Nothing reports an end: the session alone decides, also when no sender is left.
         let (end, ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
         drop(end);
-        assert!(until_chain_end(async { Ok(()) }, ended).await.is_ok());
-        let (end, ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
-        drop(end);
-        let failed = until_chain_end(async { Err(AetherError::Cancelled) }, ended).await;
+        assert!(until_core_end(async { Ok(()) }, ended).await.is_ok());
+        let (_end, ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let failed = until_core_end(async { Err(AetherError::Cancelled) }, ended).await;
         assert!(matches!(failed, Err(AetherError::Cancelled)));
 
         // One inside ends while the tunnel runs on: the session ends with its error.
@@ -3569,7 +3507,7 @@ mod tests {
         let session = std::future::pending::<Result<()>>();
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            until_chain_end(session, ended),
+            until_core_end(session, ended),
         )
         .await
         .expect("the end of Tor or Psiphon inside ends the session");
@@ -3580,15 +3518,60 @@ mod tests {
         report.await.unwrap();
     }
 
+    /// The error records logged while the tests run, as (target, message): the lines the apps
+    /// that run the core read.
+    static LOGGED_ERRORS: std::sync::Mutex<Vec<(String, String)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    struct ErrorCapture;
+
+    impl log::Log for ErrorCapture {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() == log::Level::Error
+        }
+
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                LOGGED_ERRORS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((record.target().to_string(), record.args().to_string()));
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// Keeps the error records from here on, in [`LOGGED_ERRORS`]; no other test sets a logger.
+    fn capture_errors() {
+        static CAPTURE: ErrorCapture = ErrorCapture;
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            log::set_logger(&CAPTURE).expect("no other logger is set in the tests");
+            log::set_max_level(log::LevelFilter::Error);
+        });
+    }
+
+    fn logged_errors() -> Vec<(String, String)> {
+        LOGGED_ERRORS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     #[tokio::test]
     async fn the_end_of_tor_or_psiphon_inside_is_reported_however_it_ends() {
-        let next = |chain: tokio::task::JoinHandle<Result<()>>| async move {
+        capture_errors();
+        let next = |name: &'static str, chain: tokio::task::JoinHandle<Result<()>>| async move {
             let (end, mut ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
-            watch_chain("tor", chain, end);
-            tokio::time::timeout(std::time::Duration::from_secs(2), ended.recv())
+            let mut chains = TaskGuard::new();
+            watch_chain(name, chain, end, &mut chains);
+            let reported = tokio::time::timeout(std::time::Duration::from_secs(2), ended.recv())
                 .await
                 .expect("the end is reported")
-                .expect("with its reason")
+                .expect("with its reason");
+            drop(chains);
+            reported
         };
 
         let failed = tokio::spawn(async {
@@ -3596,9 +3579,26 @@ mod tests {
                 "the tor socks5 listener cannot use 127.0.0.1:1".into(),
             ))
         });
-        let reported = next(failed).await;
+        let reported = next("tor", failed).await;
         assert!(
             matches!(&reported, AetherError::Other(why) if why.starts_with("the tor socks5 listener")),
+            "{reported:?}"
+        );
+        // The line the apps read: an error, under the target "aether", "[-] tor: " and the words.
+        let line = format!("[-] tor: {reported}");
+        assert!(
+            logged_errors()
+                .iter()
+                .any(|(target, message)| target == "aether" && *message == line),
+            "{line} is not among {:?}",
+            logged_errors()
+        );
+
+        // One that returns without an error has ended all the same.
+        let returned = tokio::spawn(async { Ok(()) });
+        let reported = next("psiphon", returned).await;
+        assert!(
+            matches!(&reported, AetherError::Other(why) if why == "psiphon inside the tunnel stopped"),
             "{reported:?}"
         );
 
@@ -3609,11 +3609,110 @@ mod tests {
             }
             Ok(())
         });
-        let reported = next(panicked).await;
+        let reported = next("tor", panicked).await;
         assert!(
             matches!(&reported, AetherError::Other(why) if why.starts_with("tor inside the tunnel failed")),
             "{reported:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_chain_ends_with_the_core_and_is_not_reported_as_ended_by_itself() {
+        capture_errors();
+        let (alive, gone) = tokio::sync::oneshot::channel::<()>();
+        let chain = tokio::spawn(async move {
+            let _alive = alive;
+            std::future::pending::<Result<()>>().await
+        });
+        let (end, mut ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let mut chains = TaskGuard::new();
+        watch_chain("ended-with-the-core", chain, end, &mut chains);
+
+        // The core ends.
+        drop(chains);
+        tokio::time::timeout(std::time::Duration::from_secs(2), gone)
+            .await
+            .expect("the chain is ended, letting go of what it held")
+            .expect_err("dropped, not finished");
+        let report = tokio::time::timeout(std::time::Duration::from_secs(2), ended.recv())
+            .await
+            .expect("the watch is ended as well");
+        assert!(report.is_none(), "{report:?}");
+        assert!(
+            !logged_errors()
+                .iter()
+                .any(|(_, message)| message.contains("ended-with-the-core")),
+            "{:?}",
+            logged_errors()
+        );
+    }
+
+    /// Whether the http proxy on `address` answers, here a request it cannot carry.
+    async fn http_answers(address: SocketAddr) -> bool {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let Ok(mut sock) = tokio::net::TcpStream::connect(address).await else {
+            return false;
+        };
+        if sock.write_all(b"NOT A REQUEST\r\n\r\n").await.is_err() {
+            return false;
+        }
+        let mut head = [0u8; 12];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sock.read_exact(&mut head),
+        )
+        .await;
+        matches!(read, Ok(Ok(_))) && head.starts_with(b"HTTP/1.1 400")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_listeners_answer_while_a_tunnel_serves_them_and_stay_held_between_tunnels() {
+        let (_to_stack, stack_in) = tokio::sync::mpsc::channel(8);
+        let (stack_out, _from_stack) = tokio::sync::mpsc::channel(8);
+        let stack = netstack::spawn(
+            "172.16.0.2",
+            "2606:4700:110:8a36::1",
+            1280,
+            stack_in,
+            stack_out,
+        )
+        .expect("a stack");
+        let (broken, mut breaks) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let listeners = Listeners {
+            socks: socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap(), "--bind")
+                .await
+                .unwrap(),
+            http: Some(
+                socks::bind_listener("http proxy", "127.0.0.1:0".parse().unwrap(), "--http-proxy")
+                    .await
+                    .unwrap(),
+            ),
+            broken,
+        };
+        let socks_at = listeners.socks.local_addr().unwrap();
+        let http_at = listeners.http.as_ref().unwrap().local_addr().unwrap();
+
+        for tunnel in 1..=2 {
+            // A tunnel serves them: both answer.
+            tokio::select! {
+                never = listeners.serve(&stack) => match never {},
+                () = async {
+                    assert!(
+                        socks::answers(socks_at, std::time::Duration::from_secs(2)).await,
+                        "tunnel {tunnel}: the socks5 server"
+                    );
+                    assert!(http_answers(http_at).await, "tunnel {tunnel}: the http proxy");
+                } => {}
+            }
+            // That tunnel has ended: both stay held, so no other program binds them, and the
+            // socks5 one says nothing until the next tunnel serves it.
+            assert!(std::net::TcpListener::bind(socks_at).is_err());
+            assert!(std::net::TcpListener::bind(http_at).is_err());
+            assert!(!socks::answers(socks_at, std::time::Duration::from_millis(300)).await);
+        }
+        // Neither listener broke, so nothing would end the core.
+        assert!(breaks.try_recv().is_err());
     }
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

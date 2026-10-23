@@ -475,7 +475,21 @@ fn listen_interface(socks: SocketAddr) -> Option<String> {
     None
 }
 
-fn effective_ip(socks: SocketAddr) -> std::net::IpAddr {
+/// Where Psiphon itself listens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// On the addresses the user dials, which Psiphon binds itself, on the interface that those
+    /// addresses, or AETHER_PSIPHON_INTERFACE, name.
+    Dialled,
+    /// Behind listeners the core holds on the addresses the user dials: on the loopback address
+    /// alone, whatever interface is asked for, so that nothing but the core reaches it there.
+    BehindHeld,
+}
+
+fn effective_ip(socks: SocketAddr, placement: Placement) -> std::net::IpAddr {
+    if placement == Placement::BehindHeld {
+        return std::net::Ipv4Addr::LOCALHOST.into();
+    }
     match listen_interface(socks) {
         Some(name) if name == "any" => std::net::Ipv4Addr::UNSPECIFIED.into(),
         Some(_) => socks.ip(),
@@ -488,6 +502,7 @@ fn build_config(
     socks: SocketAddr,
     http: Option<SocketAddr>,
     upstream: Option<String>,
+    placement: Placement,
 ) -> Result<String> {
     let mut map = serde_json::Map::new();
 
@@ -590,8 +605,17 @@ fn build_config(
         serde_json::Value::from(false),
     );
 
-    if let Some(name) = listen_interface(socks) {
-        map.insert("ListenInterface".into(), serde_json::Value::from(name));
+    match placement {
+        Placement::Dialled => {
+            if let Some(name) = listen_interface(socks) {
+                map.insert("ListenInterface".into(), serde_json::Value::from(name));
+            }
+        }
+        // Not even one that a config of the user's own names, written in any case: Psiphon reads
+        // the keys of its config regardless of case.
+        Placement::BehindHeld => {
+            map.retain(|key, _| !key.eq_ignore_ascii_case("ListenInterface"));
+        }
     }
 
     match http {
@@ -723,13 +747,14 @@ pub async fn start(
     socks: SocketAddr,
     http: Option<SocketAddr>,
     upstream: Option<String>,
+    placement: Placement,
 ) -> Result<Running> {
     let exe = binary().ok_or_else(|| AetherError::Other(install_hint()))?;
 
     std::fs::create_dir_all(state)
         .map_err(|e| AetherError::Other(format!("psiphon state dir {}: {e}", state.display())))?;
 
-    let config = build_config(state, socks, http, upstream)?;
+    let config = build_config(state, socks, http, upstream, placement)?;
     let config_path = state.join("aether-psiphon.json");
     std::fs::write(&config_path, config)
         .map_err(|e| AetherError::Other(format!("psiphon config could not be saved: {e}")))?;
@@ -842,7 +867,7 @@ pub async fn start(
         }
     }
 
-    let bound = effective_ip(socks);
+    let bound = effective_ip(socks, placement);
     let socks = SocketAddr::new(bound, socks_port.unwrap_or(socks.port()));
     let http = http.map(|address| SocketAddr::new(bound, http_port.unwrap_or(address.port())));
 
@@ -879,7 +904,7 @@ pub async fn run_only(listen: SocketAddr, state: PathBuf) -> Result<()> {
     let http = http_listen_address();
     log::info!("[*] starting psiphon with no tunnel underneath it");
 
-    let mut running = start(&state, listen, http, upstream_url()).await?;
+    let mut running = start(&state, listen, http, upstream_url(), Placement::Dialled).await?;
     log::info!(
         "[+] psiphon is ready; {} leaves through psiphon",
         running.socks
@@ -893,14 +918,20 @@ pub async fn run_only(listen: SocketAddr, state: PathBuf) -> Result<()> {
 }
 
 pub async fn run_chain(through: SocketAddr, state: PathBuf) -> Result<()> {
+    // Without the program nothing would ever serve the listener the user dials: say so now, not
+    // once the tunnel is up.
+    binary().ok_or_else(|| AetherError::Other(install_hint()))?;
     let listen = listen_address();
     let http = http_listen_address();
     // Held from the start, as the core holds its own: the user dials Psiphon's listener while the
     // tunnel and Psiphon come up, and no other program may take it meanwhile. Psiphon listens on
     // ports of its own choosing behind them, and what comes in is passed on to it.
-    let socks_listener = crate::socks::bind_listener("psiphon socks5", listen).await?;
+    let socks_listener =
+        crate::socks::bind_listener("psiphon socks5", listen, "--psiphon-bind").await?;
     let http_listener = match http {
-        Some(address) => Some(crate::socks::bind_listener("psiphon http proxy", address).await?),
+        Some(address) => Some(
+            crate::socks::bind_listener("psiphon http proxy", address, "--psiphon-http").await?,
+        ),
         None => None,
     };
 
@@ -912,85 +943,82 @@ pub async fn run_chain(through: SocketAddr, state: PathBuf) -> Result<()> {
         BEHIND_HELD,
         http.map(|_| BEHIND_HELD),
         Some(format!("socks5://{through}")),
+        Placement::BehindHeld,
     )
     .await?;
+    let (behind_socks, behind_http) = (running.socks, running.http);
     log::info!("[+] psiphon is ready; {listen} leaves through psiphon, carried by the tunnel");
-    let mut socks_relay = tokio::spawn(crate::socks::forward(
-        socks_listener,
-        "psiphon socks5",
-        running.socks,
-    ));
-    let http_relay = match (http_listener, http, running.http) {
-        (Some(listener), Some(address), Some(behind)) if behind.port() != 0 => {
-            log::info!("[+] psiphon http proxy on {address}");
-            Some(tokio::spawn(crate::socks::forward(
-                listener,
-                "psiphon http proxy",
-                behind,
-            )))
-        }
-        (Some(_), Some(address), _) => {
-            log::warn!("[-] psiphon did not say where its http proxy is; {address} stays closed");
-            None
-        }
-        _ => None,
-    };
-    announce(running.socks, "psiphon through the tunnel");
+    announce(behind_socks, "psiphon through the tunnel");
 
-    let ended = tokio::select! {
-        ended = running.wait() => ended,
-        relayed = &mut socks_relay => Err(AetherError::Other(match relayed {
-            Ok(Err(e)) => format!("psiphon's listener {listen} stopped: {e}"),
-            _ => format!("psiphon's listener {listen} stopped"),
-        })),
+    // The relays run inside this future: when it ends, or is dropped as the core ends, so do they,
+    // letting go of the listeners.
+    let socks_relay = crate::socks::forward(socks_listener, "psiphon socks5", behind_socks);
+    // The http proxy failing leaves Psiphon's listener serving, as Tor's does; its port is let go.
+    let http_relay = async {
+        match (http_listener, http, behind_http) {
+            (Some(listener), Some(address), Some(behind)) if behind.port() != 0 => {
+                log::info!("[+] psiphon http proxy on {address}");
+                if let Err(e) = crate::socks::forward(listener, "psiphon http proxy", behind).await
+                {
+                    log::error!("[-] psiphon's http proxy on {address} stopped: {e}");
+                }
+            }
+            (Some(listener), Some(address), _) => {
+                drop(listener);
+                log::warn!(
+                    "[-] psiphon did not say where its http proxy is; {address} stays closed"
+                );
+            }
+            _ => {}
+        }
+        std::future::pending::<std::convert::Infallible>().await
     };
-    socks_relay.abort();
-    if let Some(relay) = http_relay {
-        relay.abort();
+
+    tokio::select! {
+        ended = running.wait() => ended,
+        relayed = socks_relay => Err(AetherError::Other(match relayed {
+            Err(e) => format!("psiphon's listener {listen} stopped: {e}"),
+            Ok(()) => format!("psiphon's listener {listen} stopped"),
+        })),
+        never = http_relay => match never {},
     }
-    ended
 }
 
 /// Where Psiphon listens behind a listener held for it: on the loopback address alone, whatever
 /// address the held one has, on a port the system picks.
-const BEHIND_HELD: SocketAddr = SocketAddr::new(
-    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-    0,
-);
+const BEHIND_HELD: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
-pub async fn start_reverse(state: PathBuf) -> Result<SocketAddr> {
+/// Starts Psiphon for the tunnel to be dialled through: its socks5 address, and the handle that ends
+/// it with the core.
+pub async fn start_reverse(state: PathBuf) -> Result<(SocketAddr, tokio::task::AbortHandle)> {
     let listen = listen_address();
     let http = http_listen_address();
     log::info!("[*] starting psiphon; the tunnel will be dialled through it");
 
     // The upstream is still the proxy aether was given: the caller points it at psiphon once psiphon is up.
-    let mut running = start(&state, listen, http, upstream_url()).await?;
+    let mut running = start(&state, listen, http, upstream_url(), Placement::Dialled).await?;
     let socks = running.socks;
     log::info!("[+] psiphon is ready; the tunnel goes out through {socks}");
     announce(socks, "psiphon");
 
-    tokio::spawn(async move {
+    // Ended, it drops `running`, which stops the program.
+    let waiting = tokio::spawn(async move {
         if let Err(e) = running.wait().await {
             log::error!("[-] psiphon: {e}");
         }
     });
 
-    Ok(socks)
+    Ok((socks, waiting.abort_handle()))
 }
 
+/// Waits for the core's socks5 server on `through`: the core holds its listener from its start
+/// and answers once a tunnel serves it.
 async fn wait_for_proxy(through: SocketAddr) {
-    let mut announced = false;
-    loop {
-        // The core holds its listener from its start; it answers once a tunnel serves it.
-        if crate::socks::answers(through).await {
-            return;
-        }
-        if !announced {
-            log::info!("[*] psiphon is waiting for the tunnel on {through}");
-            announced = true;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    crate::socks::until_answered(through, Duration::from_millis(500), || {
+        log::info!("[*] psiphon is waiting for the tunnel on {through}")
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1016,6 +1044,7 @@ mod tests {
             "AETHER_PSIPHON_CDN_SNI",
             "AETHER_PSIPHON_CDN_SETS",
             "AETHER_PSIPHON_SERVER_ENTRIES",
+            "AETHER_PSIPHON_CONFIG",
         ] {
             std::env::remove_var(name);
         }
@@ -1136,6 +1165,7 @@ mod tests {
             "127.0.0.1:1821".parse().expect("an address"),
             None,
             None,
+            Placement::Dialled,
         )
         .expect("a config");
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
@@ -1162,6 +1192,7 @@ mod tests {
             "127.0.0.1:1821".parse().expect("an address"),
             None,
             None,
+            Placement::Dialled,
         )
         .expect("a config");
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
@@ -1185,6 +1216,7 @@ mod tests {
             "127.0.0.1:1821".parse().expect("an address"),
             None,
             Some("socks5://127.0.0.1:1819".to_string()),
+            Placement::Dialled,
         )
         .expect("a config");
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
@@ -1220,6 +1252,7 @@ mod tests {
             "127.0.0.1:1821".parse().expect("an address"),
             None,
             None,
+            Placement::Dialled,
         )
         .expect("a config");
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
@@ -1303,7 +1336,10 @@ mod tests {
         clear();
         assert!(listen_interface("127.0.0.1:1821".parse().expect("an address")).is_none());
         assert_eq!(
-            effective_ip("127.0.0.1:1821".parse().expect("an address")),
+            effective_ip(
+                "127.0.0.1:1821".parse().expect("an address"),
+                Placement::Dialled
+            ),
             std::net::Ipv4Addr::LOCALHOST
         );
 
@@ -1319,7 +1355,11 @@ mod tests {
             listen_interface("0.0.0.0:1821".parse().expect("an address")).as_deref(),
             Some("any")
         );
-        assert!(effective_ip("0.0.0.0:1821".parse().expect("an address")).is_unspecified());
+        assert!(effective_ip(
+            "0.0.0.0:1821".parse().expect("an address"),
+            Placement::Dialled
+        )
+        .is_unspecified());
 
         clear();
     }
@@ -1335,6 +1375,63 @@ mod tests {
             Some("eth0")
         );
         std::env::remove_var("AETHER_PSIPHON_INTERFACE");
+
+        clear();
+    }
+
+    #[test]
+    fn behind_a_held_listener_psiphon_listens_on_loopback_alone() {
+        let _held = hold();
+
+        clear();
+        // Another interface is asked for both ways: by name, and in a config of the user's own,
+        // where Psiphon reads a key whatever its case.
+        std::env::set_var("AETHER_PSIPHON_INTERFACE", "eth0");
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("aether-psi-behind-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"{"ListenInterface": "wlan0", "listenInterface": "any"}"#,
+        )
+        .expect("write");
+        std::env::set_var("AETHER_PSIPHON_CONFIG", &path);
+
+        let text = build_config(
+            &dir,
+            BEHIND_HELD,
+            Some(BEHIND_HELD),
+            Some("socks5://127.0.0.1:1819".to_string()),
+            Placement::BehindHeld,
+        )
+        .expect("a config");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        let named = parsed
+            .as_object()
+            .expect("an object")
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case("ListenInterface"));
+        assert!(!named, "{parsed}");
+        assert_eq!(parsed["LocalSocksProxyPort"], 0);
+        assert_eq!(parsed["LocalHttpProxyPort"], 0);
+        assert_eq!(
+            effective_ip(BEHIND_HELD, Placement::BehindHeld),
+            std::net::Ipv4Addr::LOCALHOST
+        );
+
+        // Psiphon on the addresses the user dials still listens where it is asked to.
+        let text = build_config(
+            &dir,
+            "127.0.0.1:1821".parse().expect("an address"),
+            None,
+            None,
+            Placement::Dialled,
+        )
+        .expect("a config");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        assert_eq!(parsed["ListenInterface"], "eth0");
+
+        std::env::remove_var("AETHER_PSIPHON_CONFIG");
+        let _ = std::fs::remove_file(&path);
 
         clear();
     }

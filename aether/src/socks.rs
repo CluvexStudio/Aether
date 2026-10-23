@@ -129,36 +129,38 @@ pub(crate) fn warn_if_world_reachable(kind: &str, listen: SocketAddr) {
     );
 }
 
-pub async fn bind_listener(kind: &str, listen: SocketAddr) -> Result<TcpListener> {
+/// Binds the `kind` of listener on `listen`, which the option `flag` sets, as the hint of a failed
+/// bind says.
+pub async fn bind_listener(kind: &str, listen: SocketAddr, flag: &str) -> Result<TcpListener> {
     TcpListener::bind(listen).await.map_err(|error| {
         AetherError::Other(format!(
             "the {kind} listener cannot use {listen}: {error}{}",
-            bind_hint(&error)
+            bind_hint(&error, flag)
         ))
     })
 }
 
-fn bind_hint(error: &std::io::Error) -> &'static str {
+fn bind_hint(error: &std::io::Error, flag: &str) -> String {
     match error.kind() {
-        std::io::ErrorKind::AddrInUse => {
-            "; another program already listens there, so stop it or choose another port with --bind"
-        }
-        std::io::ErrorKind::PermissionDenied if cfg!(windows) => {
+        std::io::ErrorKind::AddrInUse => format!(
+            "; another program already listens there, so stop it or choose another port with {flag}"
+        ),
+        std::io::ErrorKind::PermissionDenied if cfg!(windows) => format!(
             "; Windows reserves some port ranges for Hyper-V and WSL (see `netsh interface ipv4 show \
-             excludedportrange protocol=tcp`), so choose a port outside them with --bind"
-        }
+             excludedportrange protocol=tcp`), so choose a port outside them with {flag}"
+        ),
         std::io::ErrorKind::PermissionDenied => {
-            "; ports below 1024 need extra privileges, so choose a higher one with --bind"
+            format!("; ports below 1024 need extra privileges, so choose a higher one with {flag}")
         }
         std::io::ErrorKind::AddrNotAvailable => {
-            "; that address does not belong to this machine"
+            "; that address does not belong to this machine".to_string()
         }
-        _ => "",
+        _ => String::new(),
     }
 }
 
-/// Serves socks5 clients of `listener` through `stack` until it fails or is aborted. The listener may
-/// be one the caller holds beyond this serving (an `Arc`): it stays bound when the task ends.
+/// Serves socks5 clients of `listener` through `stack` until it fails or is dropped. The listener may
+/// be one the caller holds beyond this serving (lent to it): it stays bound when the serving ends.
 pub async fn serve<L: Borrow<TcpListener>>(listener: L, stack: StackHandle) -> Result<()> {
     let listen = listener.borrow().local_addr()?;
     log::info!("[+] socks5 server listening on {listen}");
@@ -257,29 +259,48 @@ where
     }
 }
 
-/// How long [`answers`] waits for a socks5 server's reply to its greeting.
+/// How long [`until_answered`] first waits for a reply: a socks5 server that is up answers at once.
 const ANSWER_WAIT: Duration = Duration::from_secs(2);
 
-/// Whether a socks5 server answers on `address` now: it takes the connection and replies to the
-/// greeting. A listener that is held but not served yet, as the core's own between two tunnels,
-/// takes the connection and says nothing, so it does not count until it does.
-pub(crate) async fn answers(address: SocketAddr) -> bool {
+/// How long each later greeting of [`until_answered`] may wait in the queue of a held listener.
+const QUEUED_WAIT: Duration = Duration::from_secs(60);
+
+/// Whether a socks5 server answers on `address` within `wait`: it takes the connection and accepts
+/// the greeting, which offers no authentication, as the core's own server does. A listener that is
+/// held but not served yet, as the core's own between two tunnels, takes the connection and says
+/// nothing, so it does not count until it does; nor does a peer that sends back anything else, as
+/// a connection to itself echoes the greeting.
+pub(crate) async fn answers(address: SocketAddr, wait: Duration) -> bool {
     let greeting = async {
         let mut sock = TcpStream::connect(address).await.ok()?;
         sock.write_all(&[VER, 1, 0x00]).await.ok()?;
         let mut reply = [0u8; 2];
         sock.read_exact(&mut reply).await.ok()?;
-        Some(reply[0] == VER)
+        Some(reply == [VER, 0x00])
     };
-    matches!(
-        tokio::time::timeout(ANSWER_WAIT, greeting).await,
-        Ok(Some(true))
-    )
+    matches!(tokio::time::timeout(wait, greeting).await, Ok(Some(true)))
+}
+
+/// Waits until the socks5 server on `address` answers, and calls `waiting` once if it does not at
+/// once. A held listener that no server takes yet keeps a greeting in its queue and has it answered
+/// as soon as one does, so after the first look each greeting may wait there long: short ones, one
+/// after another, would each leave a dead connection in that queue. Between two greetings that go
+/// unanswered or are refused, it pauses for `pause`.
+pub(crate) async fn until_answered(address: SocketAddr, pause: Duration, waiting: impl FnOnce()) {
+    if answers(address, ANSWER_WAIT).await {
+        return;
+    }
+    waiting();
+    while !answers(address, QUEUED_WAIT).await {
+        tokio::time::sleep(pause).await;
+    }
 }
 
 /// Passes every client of `listener` on to `to`, byte for byte, until it fails or is aborted: a
 /// proxy that listens on `to`, a port of its own choosing, is reached on `listener`'s address, which
-/// the caller held before that proxy was up. A client `to` does not take is closed.
+/// the caller held before that proxy was up. A client `to` does not take is closed. The bytes are
+/// not counted here: what that proxy sends on goes through the core's own socks5 server, which
+/// counts it.
 pub(crate) async fn forward<L: Borrow<TcpListener>>(
     listener: L,
     kind: &'static str,
@@ -291,7 +312,7 @@ pub(crate) async fn forward<L: Borrow<TcpListener>>(
         client_limit(),
         move |sock, peer| async move {
             match TcpStream::connect(to).await {
-                Ok(remote) => relay_generic(sock, remote, half_close_linger()).await,
+                Ok(remote) => relay_uncounted(sock, remote, half_close_linger()).await,
                 Err(e) => log::debug!("{kind} client {peer}: {to} did not take it: {e}"),
             }
         },
@@ -335,6 +356,10 @@ fn enable_keepalive(sock: &TcpStream) {
     }
 }
 
+/// Whether an accept that failed with `error` leaves the listener usable, and how long to pause
+/// before the next one: a client that went away, or failed while it waited to be taken, and a
+/// process or system short of descriptors or buffers for a moment are retried; anything else means
+/// the listener itself is broken.
 pub fn accept_backoff(error: &std::io::Error) -> Option<std::time::Duration> {
     use std::io::ErrorKind;
     use std::time::Duration;
@@ -352,11 +377,51 @@ pub fn accept_backoff(error: &std::io::Error) -> Option<std::time::Duration> {
         return Some(Duration::ZERO);
     }
 
-    match error.raw_os_error() {
-        Some(libc::EMFILE) | Some(libc::ENFILE) | Some(libc::ENOBUFS) | Some(libc::ENOMEM) => {
-            Some(Duration::from_millis(100))
-        }
-        _ => None,
+    let code = error.raw_os_error()?;
+    if out_of_resources(code) {
+        return Some(Duration::from_millis(100));
+    }
+    failed_while_queued(code).then_some(Duration::ZERO)
+}
+
+/// Error codes of an accept for a process or system short of descriptors or buffers for a moment.
+/// Windows' sockets report codes of their own, not the C runtime's.
+fn out_of_resources(code: i32) -> bool {
+    #[cfg(windows)]
+    {
+        // WSAEMFILE and WSAENOBUFS.
+        matches!(code, 10024 | 10055)
+    }
+    #[cfg(not(windows))]
+    {
+        matches!(
+            code,
+            libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM
+        )
+    }
+}
+
+/// Error codes that Linux passes on from a connection that failed while it waited to be taken,
+/// which accept(2) says to retry as it would EAGAIN: the listener itself is fine.
+fn failed_while_queued(code: i32) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        matches!(
+            code,
+            libc::ENETDOWN
+                | libc::EPROTO
+                | libc::ENOPROTOOPT
+                | libc::EHOSTDOWN
+                | libc::ENONET
+                | libc::EHOSTUNREACH
+                | libc::EOPNOTSUPP
+                | libc::ENETUNREACH
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = code;
+        false
     }
 }
 
@@ -1189,17 +1254,27 @@ pub(crate) async fn relay_tunneled(
 }
 
 async fn relay_direct(client: TcpStream, remote: TcpStream, linger: Duration) {
+    relay_tcp(client, remote, linger, Way::Up, Way::Down).await;
+}
+
+/// Relays as [`relay_direct`] does, without adding the bytes to the traffic totals, for bytes the
+/// core counts further on.
+async fn relay_uncounted(client: TcpStream, remote: TcpStream, linger: Duration) {
+    relay_tcp(client, remote, linger, Way::Uncounted, Way::Uncounted).await;
+}
+
+async fn relay_tcp(client: TcpStream, remote: TcpStream, linger: Duration, up: Way, down: Way) {
     let (mut client_rd, mut client_wr) = client.into_split();
     let (mut remote_rd, mut remote_wr) = remote.into_split();
     let activity = Activity::new();
 
     let upload = async {
-        let _ = pump(&mut client_rd, &mut remote_wr, &activity, Way::Up).await;
+        let _ = pump(&mut client_rd, &mut remote_wr, &activity, up).await;
         let _ = remote_wr.shutdown().await;
     };
 
     let download = async {
-        if pump(&mut remote_rd, &mut client_wr, &activity, Way::Down)
+        if pump(&mut remote_rd, &mut client_wr, &activity, down)
             .await
             .is_ok()
         {
@@ -1210,10 +1285,13 @@ async fn relay_direct(client: TcpStream, remote: TcpStream, linger: Duration) {
     relay_halves(upload, download, &activity, linger).await;
 }
 
+/// The traffic total that the bytes a pump moves count toward.
 #[derive(Clone, Copy)]
 enum Way {
     Up,
     Down,
+    /// None: they are counted elsewhere.
+    Uncounted,
 }
 
 async fn pump<R, W>(from: &mut R, to: &mut W, activity: &Activity, way: Way) -> std::io::Result<()>
@@ -1232,6 +1310,7 @@ where
         match way {
             Way::Up => crate::stats::add_up(n),
             Way::Down => crate::stats::add_down(n),
+            Way::Uncounted => {}
         }
         activity.touch();
     }
@@ -1764,47 +1843,25 @@ mod relay_tests {
         server.abort();
     }
 
-    #[tokio::test]
-    async fn a_held_listener_stays_bound_between_two_servings() {
-        // As the listener the app dials is held while one tunnel ends and the next comes up.
-        let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
-        let address = listener.local_addr().unwrap();
-        let (served_tx, mut served) = mpsc::unbounded_channel::<u8>();
-        let serving = |round: u8| {
-            let served_tx = served_tx.clone();
-            tokio::spawn(accept_clients(
-                Arc::clone(&listener),
-                "test",
-                4,
-                move |_sock, _peer| {
-                    let served_tx = served_tx.clone();
-                    async move {
-                        let _ = served_tx.send(round);
-                    }
-                },
-            ))
-        };
-        let first = serving(1);
-        let _a = TcpStream::connect(address).await.unwrap();
-        let round = tokio::time::timeout(Duration::from_secs(2), served.recv()).await;
-        assert_eq!(round.ok().flatten(), Some(1));
-        first.abort();
-        let _ = first.await;
-
-        // No one serves the port now, yet it stays bound: no other program can take it.
-        assert!(std::net::TcpListener::bind(address).is_err());
-        // A client that comes meanwhile waits for the next serving.
-        let _b = TcpStream::connect(address).await.unwrap();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), served.recv())
-                .await
-                .is_err()
-        );
-
-        let second = serving(2);
-        let round = tokio::time::timeout(Duration::from_secs(2), served.recv()).await;
-        assert_eq!(round.ok().flatten(), Some(2));
-        second.abort();
+    /// Serves `listener` with a stand-in socks5 server that answers each greeting with `reply`.
+    fn greeted_with(
+        listener: &Arc<TcpListener>,
+        reply: Option<[u8; 2]>,
+    ) -> tokio::task::JoinHandle<Result<()>> {
+        tokio::spawn(accept_clients(
+            Arc::clone(listener),
+            "test",
+            4,
+            move |mut sock, _peer| async move {
+                let mut greeting = [0u8; 3];
+                if sock.read_exact(&mut greeting).await.is_ok() {
+                    // None: send the greeting back, as a connection to itself does.
+                    let _ = sock
+                        .write_all(&reply.unwrap_or([greeting[0], greeting[1]]))
+                        .await;
+                }
+            },
+        ))
     }
 
     #[tokio::test]
@@ -1812,27 +1869,52 @@ mod relay_tests {
         let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
         let address = listener.local_addr().unwrap();
         // Held, but no one serves it: the connection is taken, the greeting goes unanswered.
-        assert!(!answers(address).await);
+        assert!(!answers(address, Duration::from_millis(300)).await);
 
-        let server = tokio::spawn(accept_clients(
-            Arc::clone(&listener),
-            "test",
-            4,
-            |mut sock, _peer| async move {
-                let mut greeting = [0u8; 3];
-                if sock.read_exact(&mut greeting).await.is_ok() {
-                    let _ = sock.write_all(&[VER, 0x00]).await;
-                }
-            },
-        ));
-        assert!(answers(address).await);
+        let server = greeted_with(&listener, Some([VER, 0x00]));
+        assert!(answers(address, Duration::from_secs(2)).await);
         server.abort();
+        let _ = server.await;
+
+        // A peer that sends the greeting back is no socks5 server.
+        let echo = greeted_with(&listener, None);
+        assert!(!answers(address, Duration::from_secs(2)).await);
+        echo.abort();
 
         // A port nothing listens on.
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let closed_address = closed.local_addr().unwrap();
         drop(closed);
-        assert!(!answers(closed_address).await);
+        assert!(!answers(closed_address, Duration::from_secs(2)).await);
+    }
+
+    #[tokio::test]
+    async fn a_greeting_queued_on_a_held_listener_is_answered_as_soon_as_it_is_served() {
+        let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let address = listener.local_addr().unwrap();
+        let (told, mut waiting_told) = mpsc::unbounded_channel::<()>();
+        // A pause far longer than the test: the wait must not end by trying again.
+        let waiting = tokio::spawn(until_answered(
+            address,
+            Duration::from_secs(600),
+            move || {
+                let _ = told.send(());
+            },
+        ));
+        tokio::time::timeout(ANSWER_WAIT * 3, waiting_told.recv())
+            .await
+            .expect("the first look goes unanswered and the wait is told")
+            .expect("told once");
+        // The next greeting waits in the queue meanwhile.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!waiting.is_finished());
+
+        let server = greeted_with(&listener, Some([VER, 0x00]));
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("answered as soon as a server takes the queue")
+            .unwrap();
+        server.abort();
     }
 
     #[tokio::test]
@@ -1864,6 +1946,24 @@ mod relay_tests {
         forwarder.abort();
         echo.abort();
     }
+
+    #[tokio::test]
+    async fn a_port_in_use_is_told_with_the_option_that_sets_it() {
+        let taken = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = taken.local_addr().unwrap();
+        let error = bind_listener("psiphon socks5", address, "--psiphon-bind")
+            .await
+            .expect_err("the port is taken")
+            .to_string();
+        assert!(
+            error.contains(&format!("the psiphon socks5 listener cannot use {address}")),
+            "{error}"
+        );
+        assert!(
+            error.ends_with("choose another port with --psiphon-bind"),
+            "{error}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1891,7 +1991,12 @@ mod accept_tests {
 
     #[test]
     fn running_out_of_descriptors_backs_off_instead_of_spinning() {
-        for code in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+        // Windows' sockets say so with codes of their own: WSAEMFILE and WSAENOBUFS.
+        #[cfg(windows)]
+        let codes = [10024, 10055];
+        #[cfg(not(windows))]
+        let codes = [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM];
+        for code in codes {
             let delay = accept_backoff(&Error::from_raw_os_error(code))
                 .expect("resource exhaustion should be survivable");
             assert!(
@@ -1901,8 +2006,35 @@ mod accept_tests {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_client_that_failed_while_it_waited_does_not_take_the_listener_down() {
+        for code in [
+            libc::ENETDOWN,
+            libc::EPROTO,
+            libc::ENOPROTOOPT,
+            libc::EHOSTDOWN,
+            libc::ENONET,
+            libc::EHOSTUNREACH,
+            libc::EOPNOTSUPP,
+            libc::ENETUNREACH,
+        ] {
+            assert_eq!(
+                accept_backoff(&Error::from_raw_os_error(code)),
+                Some(std::time::Duration::ZERO),
+                "os error {code} should be retried at once"
+            );
+        }
+    }
+
     #[test]
     fn a_broken_listener_is_still_fatal() {
+        // WSAENOTSOCK on Windows.
+        #[cfg(windows)]
+        let broken = 10038;
+        #[cfg(not(windows))]
+        let broken = libc::EBADF;
+        assert!(accept_backoff(&Error::from_raw_os_error(broken)).is_none());
         for kind in [ErrorKind::InvalidInput, ErrorKind::AddrNotAvailable] {
             assert!(
                 accept_backoff(&Error::from(kind)).is_none(),
@@ -2360,7 +2492,7 @@ mod tests {
 const HTTP_HEAD_LIMIT: usize = 16 * 1024;
 
 /// Serves http proxy clients of `listener` through `stack`; the listener may be one the caller holds
-/// beyond this serving, as for [`serve`].
+/// beyond this serving, lent to it, as for [`serve`].
 pub async fn serve_http<L: Borrow<TcpListener>>(listener: L, stack: StackHandle) -> Result<()> {
     let listen = listener.borrow().local_addr()?;
     log::info!("[+] http proxy listening on {listen}");
