@@ -639,15 +639,20 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.6
+            Aether v2.3.7
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            Fixed
+            Changed
 
-            - When --upstream (or AETHER_UPSTREAM) names a proxy Aether cannot dial through, such as one with no port, port 0, or a kind it does not speak, Aether now stops as it starts, with that error and the option named. Before, it set the setting aside with an error line and connected straight out, around the proxy you named.
+            - The calls to the WARP API, which register devices and enroll their keys, now go by api.devices.cloudflare.com, the name Cloudflare's own client has called since its version 2026.6.0, on addresses of its own (162.159.137.105 and 162.159.138.105). An attempt that gets no answer there, or a refusal of another server than the API, such as an error page, goes by api.cloudflareclient.com next, the name used before. The name the API answers by goes first for the rest of the run, with the other one still behind it.
+            - This holds with --api-address as well: the calls go to that address by the new name first. --api-host api.cloudflareclient.com sends every call by the old name, as before.
 
-            Commands and options are unchanged. The changes of 2.3.5 and 2.3.4 are in their release notes.
+            New
+
+            - --api-host sets the HTTP host of those calls and --api-sni the server name of their ClientHello, next to --api-address, which sets where they connect. The address follows the server name unless given, and the server name follows the host. Cloudflare refuses a call whose server name and host differ, with a 403 that the error message now explains.
+
+            Other commands and options are unchanged. The changes of 2.3.6, 2.3.5 and 2.3.4 are in their release notes.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
