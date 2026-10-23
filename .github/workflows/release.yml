@@ -639,23 +639,17 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.4
+            Aether v2.3.5
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            Ports held from the start
+            Fixed
 
-            - Aether now binds the ports you dial as it starts and keeps them until it ends: its SOCKS5 proxy (--bind) and HTTP proxy (--http-proxy), and those of Tor and Psiphon, inside the tunnel and on their own (--tor-bind, --tor-http, --psiphon-bind, --psiphon-http). Before, most were bound only once the tunnel, Tor or Psiphon was up, and Aether's own were let go whenever the tunnel dropped, so while Aether connected or reconnected another program could take one and receive what your browser or system proxy sent there. A client that connects before the tunnel is up now waits for it instead of being refused.
-            - Psiphon now listens on a private loopback port behind the port Aether holds for it. AETHER_PSIPHON_INTERFACE and a ListenInterface in --psiphon-config now apply only to --psiphon-reverse; with --psiphon and --psiphon-only, give the address to listen on with --psiphon-bind or --bind.
-            - When Tor or Psiphon inside the tunnel stops, Aether now ends with its error instead of running on without the proxy you dial. A held port that breaks ends it too.
+            - With Tor carrying the tunnel (--tor-reverse) and --tor-bind on port 0, which asks the system for a free port, Aether set port 0 as the tunnel's upstream proxy, set it aside as unusable, and dialled the tunnel, and a registration of keys, straight out instead of through Tor. It now dials Tor on the port the system gave it, and if the tunnel ever cannot be dialled through Tor or Psiphon around it, Aether ends rather than go around them.
+            - With Tor or Psiphon inside the tunnel (--tor, --psiphon) and --bind on port 0, Tor or Psiphon waited for Aether's proxy at port 0 and never reached it. It now dials the port the system gave.
+            - A listener on every address (0.0.0.0 or ::) is now dialled on the loopback address. Windows does not connect to an unspecified address, so before, Tor or Psiphon inside the tunnel, the tunnel through Tor or Psiphon around it, and the look at the exit location all failed there with such a listener.
 
-            Other changes
-
-            - An error about a port in use names the option that sets that port, such as --psiphon-bind, instead of always --bind.
-            - A proxy that runs short of sockets or buffers for a moment on Windows, or meets a connection that failed while it waited on Linux and Android, now tries again instead of stopping.
-            - Where a program runs Aether through its C library, Tor and Psiphon now stop when Aether does.
-
-            Commands and options are unchanged.
+            Commands and options are unchanged. The changes of 2.3.4 are in its release notes.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
