@@ -1,6 +1,6 @@
 # Aether
 
-![Aether](Docs/Aether.png)
+![Aether](Docs/Aether_ar.png)
 
 ### اینترنت آزاد برای همه :))
 
