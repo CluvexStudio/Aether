@@ -639,20 +639,27 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.11
+            Aether v2.4.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
+
+            Added
+
+            - The calls that register a device and fetch its WARP key have a third way behind their two names: the same name on a Cloudflare edge of its own, 104.24.4.6 and then 104.18.0.6, whose ClientHello goes out in pieces whether --fragment is given or not. A network that answers for the API's own addresses but lets an edge through no longer keeps aether from getting a key. --api-address still names where the calls go, and then they go there alone.
+
+            Fixed
+
+            - Psiphon dialled through a proxy, as --psiphon inside the tunnel is, no longer takes tactics from its servers: they had it attach a BPF program to every TCP dial, which needs root, so without it each dial of the chain failed with "operation not permitted" and the chain took a long way around to come up.
 
             Changed
 
             - Without --team, the MASQUE scan over IPv4 tries 297 gateways and no other address: 75 of 162.159.198.0/24 and 222 of 162.159.199.0/24, those of their 256 that completed a TCP handshake on port 443. It tries each of them on every MASQUE port, 443 first, then 500, 1701, 4500, 4443, 8443 and 8095; before, the scan swept the ranges, and only ten known gateways went past port 443. WARP's own gateways, 162.159.198.1 and 162.159.198.2, are not among the 297; --peer still names any gateway.
             - With --team, the MASQUE scan is as it was: its known gateways, then the ranges, 162.159.197.0/24 first. The IPv6 scan is unchanged.
-
-            Other commands and options are unchanged. The changes of 2.3.10, 2.3.9, 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes, and those of 2.3.9 hold the changes of 2.3.8.
+            - The calls to the WARP API go by api.devices.cloudflare.com, the name the Cloudflare One client calls, with api.cloudflareclient.com behind it; --api-sni and --api-host name another. The Android builds are for Android 10 (API 29) and later, the Windows build carries the C runtime, and every release archive ships a LICENSES folder with the license texts of what it links.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
-            See README.md and the Docs directory for transport selection, obfuscation profiles, and the full environment-variable reference. The install commands and the Docker image named there are upstream's (CluvexStudio/Aether), not this release.
+            See README.md and the Docs directory for transport selection, obfuscation profiles, and the full environment-variable reference.
 
   # ------------------------------------------------------------------
   # Build and push the Docker image to GitHub Container Registry (GHCR)
