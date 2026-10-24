@@ -639,16 +639,16 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.12
+            Aether v2.3.13
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
             Changed
 
-            - Without --team, the MASQUE scan over IPv6 tries 2606:4700:103::1, WARP's own gateway, first and on every MASQUE port, then samples 2606:4700:103::/48 alone, as many addresses as it took from each range before. It no longer tries 2606:4700:d0::/48, 2606:4700:d1::/48 or 2606:4700:102::/48, nor the four known gateways in them; --peer still names any gateway.
-            - With --team, the IPv6 scan is as it was: its known gateways, then every range, 2606:4700:102::/48 first. The IPv4 scan is as in 2.3.11.
+            - The Docker image builds with the latest stable release of Rust, as the release archives already did, in place of the 1.99 line.
+            - The crate no longer declares a minimum Rust version (it declared 1.98); the README asks for the latest stable release to build from source.
 
-            Other commands and options are unchanged. The changes of 2.3.11, 2.3.10, 2.3.9, 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes, and those of 2.3.9 hold the changes of 2.3.8.
+            Commands, options and the scans are as in 2.3.12. The changes of 2.3.12, 2.3.11, 2.3.10, 2.3.9, 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes, and those of 2.3.9 hold the changes of 2.3.8.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 

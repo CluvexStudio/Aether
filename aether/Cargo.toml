@@ -1,6 +1,6 @@
 [package]
 name = "aether"
-version = "2.3.12"
+version = "2.3.13"
 edition = "2021"
 authors = ["CluvexStudio"]
 license = "AGPL-3.0-only"
