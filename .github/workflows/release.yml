@@ -639,16 +639,16 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.11
+            Aether v2.3.12
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
             Changed
 
-            - Without --team, the MASQUE scan over IPv4 tries 297 gateways and no other address: 75 of 162.159.198.0/24 and 222 of 162.159.199.0/24, those of their 256 that completed a TCP handshake on port 443. It tries each of them on every MASQUE port, 443 first, then 500, 1701, 4500, 4443, 8443 and 8095; before, the scan swept the ranges, and only ten known gateways went past port 443. WARP's own gateways, 162.159.198.1 and 162.159.198.2, are not among the 297; --peer still names any gateway.
-            - With --team, the MASQUE scan is as it was: its known gateways, then the ranges, 162.159.197.0/24 first. The IPv6 scan is unchanged.
+            - Without --team, the MASQUE scan over IPv6 tries 2606:4700:103::1, WARP's own gateway, first and on every MASQUE port, then samples 2606:4700:103::/48 alone, as many addresses as it took from each range before. It no longer tries 2606:4700:d0::/48, 2606:4700:d1::/48 or 2606:4700:102::/48, nor the four known gateways in them; --peer still names any gateway.
+            - With --team, the IPv6 scan is as it was: its known gateways, then every range, 2606:4700:102::/48 first. The IPv4 scan is as in 2.3.11.
 
-            Other commands and options are unchanged. The changes of 2.3.10, 2.3.9, 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes, and those of 2.3.9 hold the changes of 2.3.8.
+            Other commands and options are unchanged. The changes of 2.3.11, 2.3.10, 2.3.9, 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes, and those of 2.3.9 hold the changes of 2.3.8.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
