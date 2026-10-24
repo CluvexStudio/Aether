@@ -551,9 +551,7 @@ fn build_config(
                 "LimitTunnelProtocols".into(),
                 serde_json::json!(chained_protocols(chosen)),
             );
-            if chosen != Shape::Auto {
-                map.insert("DisableTactics".into(), serde_json::Value::from(true));
-            }
+            map.insert("DisableTactics".into(), serde_json::Value::from(true));
         }
         (false, Shape::Auto) => {
             map.insert(
@@ -662,7 +660,7 @@ fn build_config(
     log::info!(
         "[*] psiphon shape: {chosen:?}{}",
         if through_proxy {
-            ", dialled through a proxy so only tcp protocols are offered"
+            ", dialled through a proxy so only tcp protocols are offered and its tactics are off"
         } else {
             ""
         }
@@ -1219,6 +1217,34 @@ mod tests {
             .is_some_and(|key| key.len() > 100));
         assert_eq!(parsed["LocalSocksProxyPort"], 1821);
         assert_eq!(parsed["DisableLocalHTTPProxy"], true);
+
+        clear();
+    }
+
+    #[test]
+    fn a_psiphon_behind_a_proxy_leaves_its_tactics_off() {
+        let _held = hold();
+
+        clear();
+        let dir = std::env::temp_dir();
+        let through = |upstream: Option<String>| {
+            let text = build_config(
+                &dir,
+                "127.0.0.1:1821".parse().expect("an address"),
+                None,
+                upstream,
+                Placement::BehindHeld,
+            )
+            .expect("a config");
+            serde_json::from_str::<serde_json::Value>(&text).expect("valid json")
+        };
+
+        let chained = through(Some("socks5://127.0.0.1:1080".to_string()));
+        assert_eq!(chained["DisableTactics"], true);
+        assert_eq!(chained["UpstreamProxyURL"], "socks5://127.0.0.1:1080");
+
+        let alone = through(None);
+        assert_eq!(alone["DisableTactics"], serde_json::Value::Null);
 
         clear();
     }

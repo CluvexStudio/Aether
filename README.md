@@ -1,6 +1,6 @@
 # Aether
 
-![Aether](Docs/Aether.png)
+![Aether](Docs/Aether_ar.png)
 
 ### اینترنت آزاد برای همه:))
 **[راهنمای فارسی](README.fa.md)** · **[English Guide](Docs/DOCS.en.md)** · **[راهنمای کامل فارسی](Docs/DOCS.fa.md)**
@@ -89,6 +89,8 @@ aether --config /etc/aether/aether.toml
 Keep `--config` on persistent storage such as `/etc/aether`: `/tmp` is wiped at every reboot, and a lost identity means a new device registration on each boot, which Cloudflare rate limits. To share the proxy with your LAN, bind it to the router's LAN address, for example `--bind 192.168.1.1:1819`; it has no authentication, so never expose it on the WAN. If `wget` reports an SSL error, run `opkg update && opkg install ca-bundle`, or copy the file over with `scp`.
 
 If the router also sends its own traffic into a tun front end (hev-socks5-tunnel, tun2socks), start Aether with `--mark 0xff` so every socket it opens to the internet carries that firewall mark, and let marked packets bypass the tun, for example with `ip rule add fwmark 0xff lookup main priority 100`. Setting a mark needs root.
+
+To run the same HTTP/2 setup PattNG uses on Android, and to start it on boot, see [OpenWrt as a service](Docs/OPENWRT.en.md). A release whose `aether help` does not list `--masque-sni`, including v2.3.0, still uses the older server name. That guide builds a current binary and installs the service.
 
 ## Build
 

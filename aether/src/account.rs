@@ -508,6 +508,7 @@ struct ApiRoute {
     sni: String,
     address: String,
     port: u16,
+    front: bool,
 }
 
 /// The ways a call to the WARP API goes, in the order its attempts take them: by the HTTP host
@@ -531,6 +532,7 @@ fn api_routes_of(
             sni,
             address,
             port,
+            front: false,
         }
     };
     if host.is_some() || sni.is_some() {
@@ -542,10 +544,21 @@ fn api_routes_of(
     if answered == Some(consts::API_FALLBACK_HOST) {
         names.reverse();
     }
-    names
+    let mut routes: Vec<ApiRoute> = names
         .into_iter()
         .map(|name| route(name.to_string(), name.to_string()))
-        .collect()
+        .collect();
+    if address.is_none() {
+        let name = names[0];
+        routes.extend(consts::API_FRONT_ADDRESSES.map(|edge| ApiRoute {
+            host: name.to_string(),
+            sni: name.to_string(),
+            address: edge.to_string(),
+            port: 443,
+            front: true,
+        }));
+    }
+    routes
 }
 
 /// The ways of the calls to the WARP API, as the options and this run have them, see
@@ -635,7 +648,7 @@ async fn api_call_by(
 
     let mut ech = api_ech().await?;
     let fingerprint = crate::tls::Fingerprint::configured();
-    let fragment = api_fragment();
+    let named_fragment = api_fragment();
     let headers = front_headers(bearer, jwt);
     let mut way = 0;
     // The ways another server than the API answered for, with an answer not worth asking again.
@@ -660,6 +673,18 @@ async fn api_call_by(
             tokio::time::sleep(wait).await;
         }
 
+        let fragment = if route.front {
+            front_fragment()
+        } else {
+            named_fragment
+        };
+        if route.front {
+            log::info!(
+                "[*] {label} goes by {} on the cloudflare edge {}, its ClientHello in pieces",
+                route.host,
+                route.address
+            );
+        }
         let request = crate::https::Request {
             method,
             // The host on 443, which Host and :authority leave out, whatever port the
@@ -789,6 +814,12 @@ async fn api_call_by(
     Err(last_error)
 }
 
+fn front_fragment() -> crate::fragment::FragmentConfig {
+    let mut fragment = crate::fragment::FragmentConfig::from_env();
+    fragment.enabled = true;
+    fragment
+}
+
 /// `--fragment`: the ClientHello of the calls to the WARP API goes out in pieces as on MASQUE over
 /// HTTP/2, sized and spaced by the same `--fragment-size` and `--fragment-delay`, for networks that
 /// filter the name of the API. Without `--fragment` it goes whole.
@@ -876,7 +907,15 @@ pub async fn enable_warp(device_id: &str, token: &str) -> Result<()> {
     let path = format!("/{}/reg/{}", consts::API_VERSION, device_id);
     let body = serde_json::to_vec(&serde_json::json!({ "warp_enabled": true }))
         .map_err(|e| AetherError::Api(format!("encode: {e}")))?;
-    api_call("enabling warp", "PATCH", &path, Some(&body), Some(token), None).await?;
+    api_call(
+        "enabling warp",
+        "PATCH",
+        &path,
+        Some(&body),
+        Some(token),
+        None,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1574,8 +1613,19 @@ mod tests {
                 sni: "front.example.com".to_string(),
                 address: "front.example.com".to_string(),
                 port: 443,
+                front: false,
             }])
         );
+    }
+
+    #[test]
+    fn a_call_by_an_edge_cuts_its_clienthello_up_without_the_option() {
+        let _settings = hold_api_settings();
+        std::env::remove_var("AETHER_MASQUE_H2_FRAGMENT");
+        assert!(!api_fragment().enabled);
+        let fragment = front_fragment();
+        assert!(fragment.enabled);
+        assert!(fragment.size_max >= fragment.size_min && fragment.size_min >= 1);
     }
 
     #[test]
@@ -1585,6 +1635,19 @@ mod tests {
             sni: sni.to_string(),
             address: address.to_string(),
             port,
+            front: false,
+        };
+        let edge = |name: &str, address: &str| ApiRoute {
+            host: name.to_string(),
+            sni: name.to_string(),
+            address: address.to_string(),
+            port: 443,
+            front: true,
+        };
+        let edges = |name: &str| {
+            consts::API_FRONT_ADDRESSES
+                .map(|address| edge(name, address))
+                .to_vec()
         };
         let named = |value: &str| Some(value.to_string());
         let (new, old) = (consts::API_HOST, consts::API_FALLBACK_HOST);
@@ -1594,7 +1657,11 @@ mod tests {
         // Nothing given: the new name, then the old one, each to where its name is.
         assert_eq!(
             api_routes_of(None, None, None, None),
-            vec![way(new, new, new, 443), way(old, old, old, 443)]
+            [
+                vec![way(new, new, new, 443), way(old, old, old, 443)],
+                edges(new)
+            ]
+            .concat()
         );
         // --api-address takes both names there.
         let address = Some(("162.159.137.105".to_string(), 443));
@@ -1608,11 +1675,19 @@ mod tests {
         // The name the API answered by goes first, with the other still behind it.
         assert_eq!(
             api_routes_of(None, None, None, Some(old)),
-            vec![way(old, old, old, 443), way(new, new, new, 443)]
+            [
+                vec![way(old, old, old, 443), way(new, new, new, 443)],
+                edges(old)
+            ]
+            .concat()
         );
         assert_eq!(
             api_routes_of(None, None, None, Some(new)),
-            vec![way(new, new, new, 443), way(old, old, old, 443)]
+            [
+                vec![way(new, new, new, 443), way(old, old, old, 443)],
+                edges(new)
+            ]
+            .concat()
         );
         // --api-host: the server name and the address follow it, with no other way.
         assert_eq!(
