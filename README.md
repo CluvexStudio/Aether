@@ -90,6 +90,8 @@ Keep `--config` on persistent storage such as `/etc/aether`: `/tmp` is wiped at 
 
 If the router also sends its own traffic into a tun front end (hev-socks5-tunnel, tun2socks), start Aether with `--mark 0xff` so every socket it opens to the internet carries that firewall mark, and let marked packets bypass the tun, for example with `ip rule add fwmark 0xff lookup main priority 100`. Setting a mark needs root.
 
+To run the same HTTP/2 setup PattNG uses on Android, and to start it on boot, see [OpenWrt as a service](Docs/OPENWRT.en.md). A release whose `aether help` does not list `--masque-sni`, including v2.3.0, still uses the older server name. That guide builds a current binary and installs the service.
+
 ## Build
 
 ### Requirements
