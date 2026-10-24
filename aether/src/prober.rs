@@ -22,6 +22,9 @@ pub const MASQUE_CIDRS_V4: &[&str] = &[
     "162.159.204.0/24",
     "162.159.197.0/24",
     "162.159.198.0/24",
+    // Where Cloudflare serves MASQUE to WARP+, as 162.159.198.0/24 to WARP and
+    // 162.159.197.0/24 to Zero Trust.
+    "162.159.199.0/24",
     "172.65.251.0/24",
     "188.114.96.0/24",
     "188.114.97.0/24",
@@ -40,6 +43,9 @@ pub const MASQUE_SEEDS: &[&str] = &[
     "162.159.198.2",
     "162.159.198.1",
     "162.159.193.1",
+    // The MASQUE gateways of WARP+ and of Zero Trust, as 162.159.198.2 is WARP's.
+    "162.159.199.2",
+    "162.159.197.2",
 ];
 
 pub const MASQUE_VERIFIED_GATEWAYS: &[&str] = &[
@@ -57,6 +63,8 @@ pub const MASQUE_CIDRS_V6: &[&str] = &[
     "2606:4700:d0::/48",
     "2606:4700:102::/48",
     "2606:4700:d1::/48",
+    // WARP's MASQUE over IPv6, where the WARP client's own gateway is 2606:4700:103::1.
+    "2606:4700:103::/48",
 ];
 
 pub const MASQUE_ZT_CIDRS_V4: &[&str] = &["162.159.197.0/24"];
@@ -96,7 +104,11 @@ pub fn masque_cidrs_v6() -> Vec<&'static str> {
     prioritize(MASQUE_CIDRS_V6, MASQUE_ZT_CIDRS_V6)
 }
 
+/// The IPv6 gateways tried first. The scan's other IPv6 addresses carry an IPv4 address of the
+/// ranges in their last 32 bits, so 2606:4700:103::1, the WARP client's own MASQUE gateway,
+/// is here or nowhere.
 pub const MASQUE_SEEDS_V6: &[&str] = &[
+    "2606:4700:103::1",
     "2606:4700:d0::a29f:c602",
     "2606:4700:d1::a29f:c602",
     "2606:4700:d0::a29f:c601",
@@ -689,6 +701,42 @@ mod tests {
     fn the_documented_zero_trust_masque_ingress_range_is_scanned() {
         assert!(MASQUE_CIDRS_V4.contains(&"162.159.197.0/24"));
         assert!(MASQUE_CIDRS_V6.contains(&"2606:4700:102::/48"));
+    }
+
+    #[test]
+    fn the_masque_gateways_of_warp_and_warp_plus_are_scanned() {
+        // WARP's MASQUE over IPv4 and IPv6, and WARP+'s, as the WARP client's own log of 2024
+        // and Xray's notes have them: 162.159.198.0/24 with 2606:4700:103::1, and
+        // 162.159.199.0/24, beside Zero Trust's 162.159.197.0/24.
+        assert!(MASQUE_CIDRS_V4.contains(&"162.159.198.0/24"));
+        assert!(MASQUE_CIDRS_V4.contains(&"162.159.199.0/24"));
+        assert!(MASQUE_CIDRS_V6.contains(&"2606:4700:103::/48"));
+        let st = ScanMode::Thorough.strategy();
+        let v4 = build_candidates(&st, MASQUE_PORTS, IpScan::V4);
+        for host in 1..=254u8 {
+            let ip = IpAddr::V4(Ipv4Addr::new(162, 159, 199, host));
+            assert!(v4.contains(&(ip, 443)), "{ip}");
+        }
+        // The gateways of WARP+ and Zero Trust on every port, as WARP's.
+        for gateway in ["162.159.199.2", "162.159.197.2", "162.159.198.2"] {
+            let ip: IpAddr = gateway.parse().expect("an address");
+            for &port in MASQUE_PORTS {
+                assert!(v4.contains(&(ip, port)), "{ip}:{port}");
+            }
+        }
+        // 2606:4700:103::1 first among the IPv6 ones, and on every port; the others of its range
+        // carry an IPv4 address of the ranges in their last 32 bits, which ::1 cannot be.
+        let v6 = build_candidates(&st, MASQUE_PORTS, IpScan::V6);
+        let gateway: IpAddr = "2606:4700:103::1".parse().expect("an address");
+        assert_eq!(v6.first(), Some(&(gateway, 443)));
+        for &port in MASQUE_PORTS {
+            assert!(v6.contains(&(gateway, port)), "{port}");
+        }
+        assert!(v6.iter().any(|(ip, _)| match ip {
+            IpAddr::V6(address) =>
+                address.segments()[..3] == [0x2606, 0x4700, 0x103] && *ip != gateway,
+            IpAddr::V4(_) => false,
+        }));
     }
 
     #[test]
