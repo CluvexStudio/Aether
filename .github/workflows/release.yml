@@ -646,16 +646,20 @@ jobs:
             Added
 
             - The calls that register a device and fetch its WARP key have a third way behind their two names: the same name on a Cloudflare edge of its own, 104.24.4.6 and then 104.18.0.6, whose ClientHello goes out in pieces whether --fragment is given or not. A network that answers for the API's own addresses but lets an edge through no longer keeps aether from getting a key. --api-address still names where the calls go, and then they go there alone.
+            - Two guides. Docs/OPENWRT.en.md, linked from the README, runs aether on an OpenWrt router as a service that starts on boot, from a current build. A section of Docs/DOCS.fa.md runs it in Termux inside tmux, so it outlives the terminal, and shares its proxy with other devices on the network through --bind 0.0.0.0:1819.
 
             Fixed
 
+            - With --team, the TLS of every MASQUE handshake, over HTTP/3 and HTTP/2, is verified by default: the gateway's certificate has to match one of the pinned Cloudflare keys, one more of which joins them. A middlebox that answers with a certificate of its own can no longer stand in for the gateway. AETHER_TLS_VERIFY=0 turns the check off; without --team it stays off unless --tls-verify turns it on.
             - Psiphon dialled through a proxy, as --psiphon inside the tunnel is, no longer takes tactics from its servers: they had it attach a BPF program to every TCP dial, which needs root, so without it each dial of the chain failed with "operation not permitted" and the chain took a long way around to come up.
 
             Changed
 
             - Without --team, the MASQUE scan over IPv4 tries 297 gateways and no other address: 75 of 162.159.198.0/24 and 222 of 162.159.199.0/24, those of their 256 that completed a TCP handshake on port 443. It tries each of them on every MASQUE port, 443 first, then 500, 1701, 4500, 4443, 8443 and 8095; before, the scan swept the ranges, and only ten known gateways went past port 443. WARP's own gateways, 162.159.198.1 and 162.159.198.2, are not among the 297; --peer still names any gateway.
-            - With --team, the MASQUE scan is as it was: its known gateways, then the ranges, 162.159.197.0/24 first. The IPv6 scan is unchanged.
+            - Without --team, the MASQUE scan over IPv6 tries 2606:4700:103::1, WARP's own gateway, first and on every MASQUE port, then samples 2606:4700:103::/48 alone, as many addresses as it took from each range before. It no longer tries 2606:4700:d0::/48, 2606:4700:d1::/48 or 2606:4700:102::/48, nor the four known gateways in them.
+            - With --team, the MASQUE scan is as it was, over IPv4 and IPv6: its known gateways, then the ranges, 162.159.197.0/24 and 2606:4700:102::/48 first.
             - The calls to the WARP API go by api.devices.cloudflare.com, the name the Cloudflare One client calls, with api.cloudflareclient.com behind it; --api-sni and --api-host name another. The Android builds are for Android 10 (API 29) and later, the Windows build carries the C runtime, and every release archive ships a LICENSES folder with the license texts of what it links.
+            - Every release archive and the Docker image build with the latest stable release of Rust, and the crate no longer declares a minimum Rust version (it declared 1.98); the README asks for the latest stable release to build from source.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
