@@ -94,7 +94,7 @@ If the router also sends its own traffic into a tun front end (hev-socks5-tunnel
 
 ### Requirements
 
-- Rust 1.98 or newer
+- Rust, the latest stable release
 - C/C++ compiler
 - CMake
 

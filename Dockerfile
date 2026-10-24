@@ -1,4 +1,5 @@
-FROM rust:1.99-bookworm AS builder
+# The latest stable Rust, on Debian 12 (bookworm) like the image the binary runs in.
+FROM rust:bookworm AS builder
 
 ARG GO_VERSION=1.22.12
 

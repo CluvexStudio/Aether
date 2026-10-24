@@ -126,7 +126,7 @@ jobs:
   # x86_64 builds on an x86_64 runner and arm64 on a native arm64
   # runner, both using fedora:latest so binaries link against a fresh
   # Fedora toolchain. Rust is installed via rustup to guarantee the
-  # latest stable (>= 1.98 required by the crate).
+  # latest stable, as every other job builds with.
   # ------------------------------------------------------------------
   linux:
     name: Build ${{ matrix.archive }}

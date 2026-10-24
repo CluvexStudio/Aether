@@ -2,7 +2,6 @@
 name = "aether"
 version = "2.3.12"
 edition = "2021"
-rust-version = "1.98"
 authors = ["CluvexStudio"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/CluvexStudio/aether"
