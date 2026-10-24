@@ -7,6 +7,8 @@ pub const API_HOST: &str = "api.devices.cloudflare.com";
 pub const API_FALLBACK_HOST: &str = "api.cloudflareclient.com";
 pub const API_VERSION: &str = "v0a4471";
 
+pub const API_FRONT_ADDRESSES: [&str; 2] = ["104.24.4.6", "104.18.0.6"];
+
 pub const CONNECT_SNI: &str = "consumer-masque.cloudflareclient.com";
 /// The server name the MASQUE handshakes send unless --masque-sni names another, in place of
 /// CONNECT_SNI, the one the WARP client sends.
