@@ -48,6 +48,88 @@ pub const MASQUE_SEEDS: &[&str] = &[
     "162.159.197.2",
 ];
 
+/// The addresses the IPv4 scan tries without a team, each on every MASQUE port, fastest first
+/// as measured: regular WARP's MASQUE connects on 162.159.198.0/24 and on no other range, and of
+/// its 256 addresses on these 75 alone, the ones that completed a TCP handshake on port 443.
+/// With a team, the scan tries `MASQUE_SEEDS` and sweeps the ranges instead.
+pub const MASQUE_GATEWAYS_V4: &[&str] = &[
+    "162.159.198.183",
+    "162.159.198.206",
+    "162.159.198.226",
+    "162.159.198.125",
+    "162.159.198.72",
+    "162.159.198.89",
+    "162.159.198.198",
+    "162.159.198.131",
+    "162.159.198.245",
+    "162.159.198.114",
+    "162.159.198.31",
+    "162.159.198.60",
+    "162.159.198.4",
+    "162.159.198.65",
+    "162.159.198.33",
+    "162.159.198.86",
+    "162.159.198.244",
+    "162.159.198.123",
+    "162.159.198.233",
+    "162.159.198.69",
+    "162.159.198.255",
+    "162.159.198.176",
+    "162.159.198.186",
+    "162.159.198.63",
+    "162.159.198.37",
+    "162.159.198.169",
+    "162.159.198.147",
+    "162.159.198.120",
+    "162.159.198.135",
+    "162.159.198.54",
+    "162.159.198.234",
+    "162.159.198.109",
+    "162.159.198.175",
+    "162.159.198.231",
+    "162.159.198.219",
+    "162.159.198.216",
+    "162.159.198.64",
+    "162.159.198.250",
+    "162.159.198.184",
+    "162.159.198.74",
+    "162.159.198.241",
+    "162.159.198.213",
+    "162.159.198.232",
+    "162.159.198.75",
+    "162.159.198.77",
+    "162.159.198.172",
+    "162.159.198.145",
+    "162.159.198.36",
+    "162.159.198.124",
+    "162.159.198.80",
+    "162.159.198.192",
+    "162.159.198.82",
+    "162.159.198.137",
+    "162.159.198.141",
+    "162.159.198.48",
+    "162.159.198.71",
+    "162.159.198.227",
+    "162.159.198.207",
+    "162.159.198.49",
+    "162.159.198.178",
+    "162.159.198.197",
+    "162.159.198.203",
+    "162.159.198.204",
+    "162.159.198.205",
+    "162.159.198.195",
+    "162.159.198.230",
+    "162.159.198.202",
+    "162.159.198.53",
+    "162.159.198.79",
+    "162.159.198.58",
+    "162.159.198.35",
+    "162.159.198.239",
+    "162.159.198.116",
+    "162.159.198.127",
+    "162.159.198.240",
+];
+
 pub const MASQUE_VERIFIED_GATEWAYS: &[&str] = &[
     "162.159.199.1",
     "162.159.199.2",
@@ -299,7 +381,10 @@ pub async fn hunt_best_gateway_avoiding(
             return Err(AetherError::NoCleanEndpoint);
         }
     }
-    let candidates = leave_out(build_candidates(&st, &probe.ports, effective_ip), avoid);
+    let candidates = leave_out(
+        build_candidates(&st, &probe.ports, effective_ip, zero_trust_mode()),
+        avoid,
+    );
     if !avoid.is_empty() {
         log::info!(
             "[*] leaving {} gateway(s) out of this scan for now",
@@ -495,12 +580,18 @@ async fn verify_one(
     }
 }
 
-fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u16)> {
+fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan, team: bool) -> Vec<(IpAddr, u16)> {
     let primary = ports.first().copied().unwrap_or(443);
     let mut out: Vec<(IpAddr, u16)> = Vec::new();
     let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
 
-    let seeds: Vec<Ipv4Addr> = MASQUE_SEEDS.iter().filter_map(|s| s.parse().ok()).collect();
+    // Regular WARP's IPv4 scan is its gateways alone; a team's is the seeds, then the ranges.
+    let (v4_seeds, ranges) = if team {
+        (MASQUE_SEEDS, masque_cidrs_v4())
+    } else {
+        (MASQUE_GATEWAYS_V4, Vec::new())
+    };
+    let seeds: Vec<Ipv4Addr> = v4_seeds.iter().filter_map(|s| s.parse().ok()).collect();
     let seeds6: Vec<Ipv6Addr> = MASQUE_SEEDS_V6
         .iter()
         .filter_map(|s| s.parse().ok())
@@ -512,7 +603,7 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
                 out.push((IpAddr::V4(*a), primary));
             }
         }
-        let cidr_hosts: Vec<Vec<Ipv4Addr>> = masque_cidrs_v4()
+        let cidr_hosts: Vec<Vec<Ipv4Addr>> = ranges
             .iter()
             .map(|c| {
                 if st.full_subnet {
@@ -704,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn the_masque_gateways_of_warp_and_warp_plus_are_scanned() {
+    fn with_a_team_the_masque_gateways_of_warp_and_warp_plus_are_scanned() {
         // WARP's MASQUE over IPv4 and IPv6, and WARP+'s, as the WARP client's own log of 2024
         // and Xray's notes have them: 162.159.198.0/24 with 2606:4700:103::1, and
         // 162.159.199.0/24, beside Zero Trust's 162.159.197.0/24.
@@ -712,7 +803,7 @@ mod tests {
         assert!(MASQUE_CIDRS_V4.contains(&"162.159.199.0/24"));
         assert!(MASQUE_CIDRS_V6.contains(&"2606:4700:103::/48"));
         let st = ScanMode::Thorough.strategy();
-        let v4 = build_candidates(&st, MASQUE_PORTS, IpScan::V4);
+        let v4 = build_candidates(&st, MASQUE_PORTS, IpScan::V4, true);
         for host in 1..=254u8 {
             let ip = IpAddr::V4(Ipv4Addr::new(162, 159, 199, host));
             assert!(v4.contains(&(ip, 443)), "{ip}");
@@ -726,7 +817,7 @@ mod tests {
         }
         // 2606:4700:103::1 first among the IPv6 ones, and on every port; the others of its range
         // carry an IPv4 address of the ranges in their last 32 bits, which ::1 cannot be.
-        let v6 = build_candidates(&st, MASQUE_PORTS, IpScan::V6);
+        let v6 = build_candidates(&st, MASQUE_PORTS, IpScan::V6, true);
         let gateway: IpAddr = "2606:4700:103::1".parse().expect("an address");
         assert_eq!(v6.first(), Some(&(gateway, 443)));
         for &port in MASQUE_PORTS {
@@ -737,6 +828,43 @@ mod tests {
                 address.segments()[..3] == [0x2606, 0x4700, 0x103] && *ip != gateway,
             IpAddr::V4(_) => false,
         }));
+    }
+
+    #[test]
+    fn without_a_team_the_ipv4_scan_tries_the_masque_gateways_alone_on_every_port() {
+        // In every mode: the gateways on the first port, fastest first, then each of them on the
+        // other ports, and no other IPv4 address.
+        let gateways: Vec<IpAddr> = MASQUE_GATEWAYS_V4
+            .iter()
+            .map(|gateway| gateway.parse().expect("an address"))
+            .collect();
+        let (first, others) = MASQUE_PORTS.split_first().expect("a port");
+        let mut expected: Vec<(IpAddr, u16)> = gateways.iter().map(|ip| (*ip, *first)).collect();
+        for ip in &gateways {
+            for &port in others {
+                expected.push((*ip, port));
+            }
+        }
+        for mode in [
+            ScanMode::Turbo,
+            ScanMode::Balanced,
+            ScanMode::Thorough,
+            ScanMode::Verified,
+            ScanMode::Ironclad,
+        ] {
+            let v4 = build_candidates(&mode.strategy(), MASQUE_PORTS, IpScan::V4, false);
+            assert_eq!(v4, expected, "{}", mode.label());
+        }
+    }
+
+    #[test]
+    fn the_masque_gateways_are_distinct_addresses_of_162_159_198_0_24() {
+        let mut seen = HashSet::new();
+        for gateway in MASQUE_GATEWAYS_V4 {
+            let address: Ipv4Addr = gateway.parse().expect("an address");
+            assert_eq!(address.octets()[..3], [162, 159, 198], "{gateway}");
+            assert!(seen.insert(address), "{gateway} is listed twice");
+        }
     }
 
     #[test]
