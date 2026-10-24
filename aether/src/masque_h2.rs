@@ -161,8 +161,10 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
 
-    // The core's TLS fingerprint, with --tls-ciphers, --tls-groups and --disable-grease.
-    tls::Fingerprint::configured().apply(&mut builder, H2_ALPN)?;
+    // The core's TLS fingerprint, with --tls-ciphers, --tls13-ciphers, --tls-groups,
+    // --tls-key-shares and --disable-grease.
+    let fingerprint = tls::Fingerprint::configured();
+    fingerprint.apply(&mut builder, H2_ALPN)?;
 
     let cert = X509::from_pem(&cfg.cert_pem).map_err(|e| AetherError::Tls(e.to_string()))?;
     let key =
@@ -189,6 +191,7 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
     // (see tls::install_verification), so the hostname check is skipped too.
     config.set_verify_hostname(false);
     config.set_use_server_name_indication(true);
+    fingerprint.prepare(&mut config)?;
 
     Ok(config)
 }

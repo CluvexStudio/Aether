@@ -165,10 +165,12 @@ fn configuration(fingerprint: &Fingerprint) -> Result<ConnectConfiguration> {
     // TLS server-certificate verification disabled (unconditional), as the fingerprint has it:
     // the server name may be neither the HTTP host nor the address.
     fingerprint.apply(&mut builder, ALPN_H2_HTTP1)?;
-    builder
+    let mut config = builder
         .build()
         .configure()
-        .map_err(|e| AetherError::Tls(e.to_string()))
+        .map_err(|e| AetherError::Tls(e.to_string()))?;
+    fingerprint.prepare(&mut config)?;
+    Ok(config)
 }
 
 /// A TCP connection to `host`:`port`: through the upstream proxy when there is one, which looks
@@ -836,17 +838,25 @@ mod tests {
         );
 
         // Every name BoringSSL knows, AES256-SHA among them, in the list's order.
+        // The TLS 1.3 suites in the list's order, and a key share for each group, where
+        // BoringSSL would send one for X25519 alone.
         let changed = Fingerprint {
             ciphers: Some(
                 "ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA:ECDHE-RSA-AES128-GCM-SHA256".to_string(),
             ),
+            tls13_ciphers: Some("TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256".to_string()),
             groups: "X25519:P-256".to_string(),
+            key_shares: Some("X25519:P-256".to_string()),
             grease: false,
+            grease_sigalgs: false,
         };
         let listed = hello("api.example.test", &changed, None).await;
         assert_eq!(listed.tls12_suites(), [0xcca9, 0x0035, 0xc02f]);
+        assert_eq!(listed.tls13_suites(), [0x1303, 0x1301]);
         assert_eq!(listed.groups(), [0x001d, 0x0017]);
+        assert_eq!(listed.key_shares(), [0x001d, 0x0017]);
         assert!(!listed.has_grease());
+        assert!(!listed.has_grease_signature_algorithm());
         assert_eq!(listed.alpn(), own.alpn());
     }
 

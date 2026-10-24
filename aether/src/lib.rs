@@ -4507,4 +4507,164 @@ mod tests {
             }
         }
     }
+
+    /// The groups of the key shares and the cipher suites, GREASE left out, of the ClientHello
+    /// a QUIC server on this machine reads first, as it reads it. It passes over what comes
+    /// before the first QUIC v1 Initial, as `h3_masque_server` does.
+    async fn h3_hello_server() -> (SocketAddr, tokio::task::JoinHandle<(Vec<u16>, Vec<u16>)>) {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let address = socket.local_addr().expect("its address");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<(Vec<u16>, Vec<u16>)>));
+        let caught = seen.clone();
+        let hello = tokio::spawn(async move {
+            let pair = account::generate_masque_keypair().expect("a key and a certificate");
+            let mut tls =
+                boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).expect("tls");
+            tls.set_certificate(
+                &boring::x509::X509::from_pem(&pair.cert_pem).expect("a certificate"),
+            )
+            .expect("the certificate");
+            tls.set_private_key(
+                &boring::pkey::PKey::private_key_from_pem(&pair.key_pem).expect("a key"),
+            )
+            .expect("the key");
+            tls.set_select_certificate_callback(move |hello| {
+                let grease = |value: u16| value & 0x0f0f == 0x0a0a && value >> 8 == value & 0xff;
+                let be16 = |bytes: &[u8], at: usize| u16::from_be_bytes([bytes[at], bytes[at + 1]]);
+                let mut shares = Vec::new();
+                if let Some(data) = hello.get_extension(boring::ssl::ExtensionType::KEY_SHARE) {
+                    let mut at = 2;
+                    while at + 4 <= data.len() {
+                        if !grease(be16(data, at)) {
+                            shares.push(be16(data, at));
+                        }
+                        at += 4 + be16(data, at + 2) as usize;
+                    }
+                }
+                let suites = hello.ciphers();
+                let suites = (0..suites.len() / 2)
+                    .map(|index| be16(suites, 2 * index))
+                    .filter(|suite| !grease(*suite))
+                    .collect();
+                *caught.lock().expect("the ClientHello") = Some((shares, suites));
+                Ok(())
+            });
+            let mut config =
+                quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls)
+                    .expect("a configuration");
+            config
+                .set_application_protos(&[consts::ALPN_H3])
+                .expect("h3");
+
+            let mut conn: Option<quiche::Connection> = None;
+            let mut packet = vec![0u8; 65535];
+            let mut out = vec![0u8; 1500];
+            loop {
+                let (read, from) = socket.recv_from(&mut packet).await.expect("a packet");
+                if conn.is_none() {
+                    // A long header of the Initial type, and version 1.
+                    if read <= 5 || packet[0] & 0xf0 != 0xc0 || packet[1..5] != [0, 0, 0, 1] {
+                        continue;
+                    }
+                    let scid = [7u8; 16];
+                    let scid = quiche::ConnectionId::from_ref(&scid);
+                    conn = Some(
+                        quiche::accept(&scid, None, address, from, &mut config)
+                            .expect("a connection"),
+                    );
+                }
+                let conn = conn.as_mut().expect("the connection");
+                let _ = conn.recv(&mut packet[..read], quiche::RecvInfo { from, to: address });
+                // A ClientHello with a post-quantum key share takes more than one packet.
+                if let Some(seen) = seen.lock().expect("the ClientHello").take() {
+                    return seen;
+                }
+                while let Ok((written, sent)) = conn.send(&mut out) {
+                    socket
+                        .send_to(&out[..written], sent.to)
+                        .await
+                        .expect("a packet sent");
+                }
+            }
+        });
+        (address, hello)
+    }
+
+    /// The check of the MASQUE gateway at `address`, or the tunnel through it, over HTTP/2 or
+    /// HTTP/3 as AETHER_MASQUE_HTTP2 has it: what the test runs as the client.
+    async fn masque_client(
+        identity: &account::Identity,
+        address: SocketAddr,
+        h2: bool,
+        tunnel: bool,
+    ) {
+        if tunnel {
+            let mtu = if h2 { H2_TUNNEL_MTU } else { TUNNEL_MTU };
+            let datagram = quic::MAX_DATAGRAM_SIZE;
+            let startup = std::time::Duration::from_secs(10);
+            let hop = establish_masque(
+                identity, address, None, h2, mtu, datagram, false, startup, "test",
+            );
+            let _ = hop.await;
+        } else {
+            quick_verify_masque_peer(identity, address, None).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn the_masque_handshakes_take_the_tls13_order_and_the_key_shares_of_the_options() {
+        let _setting = upstream::hold_setting().await;
+        let _options = tls::hold_options().await;
+        // Firefox's: its TLS 1.3 order, and key shares for three of its groups.
+        std::env::set_var(
+            "AETHER_TLS13_CIPHERS",
+            "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
+        );
+        std::env::set_var(
+            "AETHER_TLS_GROUPS",
+            "X25519MLKEM768:X25519:P-256:P-384:P-521",
+        );
+        std::env::set_var("AETHER_TLS_KEY_SHARES", "X25519MLKEM768:X25519:P-256");
+        let identity = account::handshake_identity();
+        for h2 in [false, true] {
+            if h2 {
+                std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+            } else {
+                std::env::remove_var("AETHER_MASQUE_HTTP2");
+            }
+            // The check of a gateway, and the tunnel.
+            for tunnel in [false, true] {
+                let case = format!("h2 {h2}, tunnel {tunnel}");
+                let (shares, suites) = if h2 {
+                    let (address, hello) = tls::client_hello::catch().await;
+                    let hello = tokio::select! {
+                        biased;
+                        hello = hello => hello.expect("the ClientHello"),
+                        () = masque_client(&identity, address, h2, tunnel) => {
+                            panic!("{case}: no ClientHello reached the server")
+                        }
+                    };
+                    (hello.key_shares(), hello.tls13_suites())
+                } else {
+                    let (address, hello) = h3_hello_server().await;
+                    tokio::select! {
+                        biased;
+                        hello = hello => hello.expect("the ClientHello"),
+                        () = masque_client(&identity, address, h2, tunnel) => {
+                            panic!("{case}: no ClientHello reached the server")
+                        }
+                    }
+                };
+                assert_eq!(shares, [0x11ec, 0x001d, 0x0017], "{case}");
+                // QUIC carries TLS 1.3 alone; over HTTP/2 the TLS 1.2 suites follow.
+                let tls13: Vec<u16> = suites
+                    .into_iter()
+                    .filter(|suite| (0x1301..=0x1305).contains(suite))
+                    .collect();
+                assert_eq!(tls13, [0x1301, 0x1303, 0x1302], "{case}");
+            }
+        }
+    }
 }

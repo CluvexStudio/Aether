@@ -215,20 +215,33 @@ handshake, signed certificate timestamps and OCSP asked for. They offer `h2` the
 `http/1.1`, as Chrome does, but `h3` over QUIC, which carries TLS 1.3 alone; the
 HTTP/2 carrier speaks HTTP/2, which Cloudflare picks. Certificates are not checked.
 Zero Trust sign-in, the Tor bridge and relay lists and the exit-location lookup keep
-a TLS of their own. Three options change the fingerprint of all four:
+a TLS of their own. Six options change the fingerprint of all four:
 
-- `--tls-ciphers` sets the TLS 1.2 cipher suites, listed after the TLS 1.3 ones,
-  which stay as they are: names separated by `:`, as BoringSSL reads a cipher
-  string. HTTP/3 lists none. Without it they are Chrome's, from Chrome's own rule
+- `--tls-ciphers` sets the TLS 1.2 cipher suites, listed after the TLS 1.3 ones:
+  names separated by `:`, as BoringSSL reads a cipher string. HTTP/3 lists none.
+  Without it they are Chrome's, from Chrome's own rule
   `ALL:!aPSK:!ECDSA+SHA1:!3DES`, in Chrome's order: AES-GCM first on hardware with
   AES instructions, ChaCha20 first elsewhere.
-- `--tls-groups` sets the groups, in order, the first one getting a key share
-  (default `P-256:X25519:P-384`).
+- `--tls13-ciphers` sets the TLS 1.3 cipher suites, in order: their standard names
+  separated by `:`, from `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384` and
+  `TLS_CHACHA20_POLY1305_SHA256`, each once. Without it they go in Chrome's order,
+  AES-GCM first on hardware with AES instructions and ChaCha20 first elsewhere.
+  BoringSSL always lists them before the TLS 1.2 suites.
+- `--tls-groups` sets the groups, in order (default `P-256:X25519:P-384`).
+- `--tls-key-shares` sets the groups the ClientHello sends key shares for, in
+  order: each one of the groups, in their order, and named once, e.g.
+  `X25519MLKEM768:X25519:P-256` with
+  `--tls-groups X25519MLKEM768:X25519:P-256:P-384:P-521`, as Firefox sends them.
+  Without it they are BoringSSL's choice, as Chrome's: the first group, and the
+  first one of the other kind, post-quantum or not.
 - `--disable-grease` leaves out the GREASE values, which all four otherwise put in
   the cipher suites, the extensions, the groups, the key shares and the versions.
+- `--enable-grease-sigalgs` puts a GREASE value first among the signature
+  algorithms as well, as Chrome does; BoringSSL leaves it out by default. It
+  goes with `--disable-grease` or without it.
 
-A cipher or group name BoringSSL does not know stops the core as it starts, with
-the option named.
+A cipher or group name BoringSSL does not know, or key shares that do not follow
+the groups, stop the core as it starts, with the option named.
 
 The MASQUE handshakes, on both carriers, put `www.cloudflare.com` in their
 ClientHello as the server name; `--masque-sni <name>` puts another one there, such
@@ -696,7 +709,10 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_API_SNI` | the server name of those calls |
 | `AETHER_API_HOST` | the HTTP host of those calls |
 | `AETHER_TLS_GROUPS` | TLS groups (see TLS) |
+| `AETHER_TLS_KEY_SHARES` | the groups with a key share (see TLS) |
 | `AETHER_TLS_CIPHERS` | TLS 1.2 cipher suites (see TLS) |
+| `AETHER_TLS13_CIPHERS` | TLS 1.3 cipher suites (see TLS) |
 | `AETHER_DISABLE_GREASE` | `1` leaves GREASE out (see TLS) |
+| `AETHER_ENABLE_GREASE_SIGALGS` | `1` puts GREASE among the signature algorithms (see TLS) |
 | `AETHER_PERF_PROFILE` | `low`, `medium`, `high` |
 | `AETHER_LOG_LEVEL` | `error` to `trace` |

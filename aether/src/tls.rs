@@ -1,9 +1,11 @@
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void, CString};
 use std::os::raw::c_int;
 use std::ptr;
 
 use boring::pkey::PKey;
-use boring::ssl::{SslContextBuilder, SslMethod, SslVerifyError, SslVerifyMode, SslVersion};
+use boring::ssl::{
+    Ssl, SslCipher, SslContextBuilder, SslMethod, SslRef, SslVerifyError, SslVerifyMode, SslVersion,
+};
 use boring::x509::X509;
 use ring::digest;
 use foreign_types_shared::ForeignTypeRef;
@@ -23,6 +25,26 @@ extern "C" {
         out_retry_configs: *mut *const u8,
         out_retry_configs_len: *mut usize,
     );
+
+    // Calls of the BoringSSL of boring 5.3 that the boring crate does not wrap.
+    fn SSL_CTX_set1_tls13_ciphers(
+        ctx: *mut c_void,
+        cipher_ids: *const u16,
+        flags: *const u32,
+        num_cipher_ids: usize,
+    ) -> c_int;
+
+    fn SSL_CTX_set_grease_sigalgs_enabled(ctx: *mut c_void, enabled: c_int);
+
+    fn SSL_set1_client_key_shares(
+        ssl: *mut c_void,
+        group_ids: *const u16,
+        num_group_ids: usize,
+    ) -> c_int;
+
+    fn SSL_set1_groups_list(ssl: *mut c_void, groups: *const c_char) -> c_int;
+
+    fn SSL_get_group_name(group_id: u16) -> *const c_char;
 }
 
 /// The groups of the fingerprint, in order, unless --tls-groups names others.
@@ -104,17 +126,28 @@ fn set_groups(builder: &mut SslContextBuilder, groups: &str) -> Result<()> {
 /// The TLS fingerprint of the handshakes of the tunnel and its setup: MASQUE over HTTP/2 and
 /// over HTTP/3, the calls to the WARP API and the DoH lookup of the ECH key, each with its
 /// own ALPN.
-/// It is Chrome's, as BoringSSL writes it, with what --tls-ciphers, --tls-groups and
-/// --disable-grease change of it.
+/// It is Chrome's, as BoringSSL writes it, with what --tls-ciphers, --tls13-ciphers,
+/// --tls-groups, --tls-key-shares, --disable-grease and --enable-grease-sigalgs change of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
     /// --tls-ciphers: the TLS 1.2 cipher suites in place of Chrome's, when given.
     pub ciphers: Option<String>,
-    /// --tls-groups: the groups, in order; the first gets a key share.
+    /// --tls13-ciphers: the TLS 1.3 cipher suites, in order, by their standard names, when
+    /// given. Otherwise BoringSSL's order, as Chrome's: AES-GCM first on hardware with AES
+    /// instructions, ChaCha20 first elsewhere.
+    pub tls13_ciphers: Option<String>,
+    /// --tls-groups: the groups, in order.
     pub groups: String,
+    /// --tls-key-shares: the groups that get a key share, in order, when given; each is one of
+    /// the groups, in their order. Otherwise BoringSSL's choice, as Chrome's: the first group,
+    /// and the first one of the other kind, post-quantum or not.
+    pub key_shares: Option<String>,
     /// GREASE values (RFC 8701) among the cipher suites, the extensions, the groups, the key
     /// shares and the versions, as Chrome sends them; --disable-grease leaves them out.
     pub grease: bool,
+    /// --enable-grease-sigalgs: a GREASE value first among the signature algorithms as well, as
+    /// Chrome sends it, which BoringSSL turns on apart from the rest and leaves off by default.
+    pub grease_sigalgs: bool,
 }
 
 impl Default for Fingerprint {
@@ -122,32 +155,48 @@ impl Default for Fingerprint {
     fn default() -> Self {
         Fingerprint {
             ciphers: None,
+            tls13_ciphers: None,
             groups: CHROME_GROUPS.to_string(),
+            key_shares: None,
             grease: true,
+            grease_sigalgs: false,
         }
     }
 }
 
+/// The value of the environment variable `variable`, trimmed, unless it is not set or blank.
+fn listed(variable: &str) -> Option<String> {
+    std::env::var(variable)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 impl Fingerprint {
-    /// The fingerprint the options give: --tls-ciphers (AETHER_TLS_CIPHERS), --tls-groups
-    /// (AETHER_TLS_GROUPS) and --disable-grease (AETHER_DISABLE_GREASE).
+    /// The fingerprint the options give: --tls-ciphers (AETHER_TLS_CIPHERS), --tls13-ciphers
+    /// (AETHER_TLS13_CIPHERS), --tls-groups (AETHER_TLS_GROUPS), --tls-key-shares
+    /// (AETHER_TLS_KEY_SHARES), --disable-grease (AETHER_DISABLE_GREASE) and
+    /// --enable-grease-sigalgs (AETHER_ENABLE_GREASE_SIGALGS).
     pub fn configured() -> Self {
-        let groups = std::env::var("AETHER_TLS_GROUPS")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
+        let on = |variable: &str| {
+            std::env::var(variable).is_ok_and(|value| crate::fragment::is_truthy(&value))
+        };
         Fingerprint {
             ciphers: TLS_CIPHERS.configured(),
-            groups: groups.unwrap_or_else(|| CHROME_GROUPS.to_string()),
-            grease: !std::env::var("AETHER_DISABLE_GREASE")
-                .is_ok_and(|value| crate::fragment::is_truthy(&value)),
+            tls13_ciphers: listed("AETHER_TLS13_CIPHERS"),
+            groups: listed("AETHER_TLS_GROUPS").unwrap_or_else(|| CHROME_GROUPS.to_string()),
+            key_shares: listed("AETHER_TLS_KEY_SHARES"),
+            grease: !on("AETHER_DISABLE_GREASE"),
+            grease_sigalgs: on("AETHER_ENABLE_GREASE_SIGALGS"),
         }
     }
 
     /// Gives `builder` the fingerprint, offering `alpn`, in wire format: TLS 1.2 and 1.3, the
     /// groups, the extensions in a new order on each handshake, signed certificate timestamps
-    /// and OCSP asked for, GREASE unless it is off, and the TLS 1.2 suites, Chrome's unless the
-    /// cipher list names others. TLS server-certificate verification disabled (unconditional).
+    /// and OCSP asked for, GREASE unless it is off, GREASE among the signature algorithms when
+    /// it is on, the TLS 1.2 suites, Chrome's unless the cipher list names others, and the TLS
+    /// 1.3 suites in their order when it is given. TLS server-certificate verification disabled
+    /// (unconditional). The key shares go on each connection, see `prepare`.
     pub fn apply(&self, builder: &mut SslContextBuilder, alpn: &[u8]) -> Result<()> {
         let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
         builder.set_verify(SslVerifyMode::NONE);
@@ -158,18 +207,141 @@ impl Fingerprint {
             .set_max_proto_version(Some(SslVersion::TLS1_3))
             .map_err(tls)?;
         builder.set_grease_enabled(self.grease);
+        unsafe {
+            SSL_CTX_set_grease_sigalgs_enabled(
+                builder.as_ptr().cast(),
+                c_int::from(self.grease_sigalgs),
+            )
+        };
         builder.set_permute_extensions(true);
         set_groups(builder, &self.groups)?;
         builder.set_alpn_protos(alpn).map_err(tls)?;
         builder.enable_signed_cert_timestamps();
         builder.enable_ocsp_stapling();
         set_tls12_ciphers(builder, self.ciphers.as_deref().unwrap_or(CHROME_CIPHERS))?;
+        if let Some(list) = &self.tls13_ciphers {
+            set_tls13_ciphers(builder, list)?;
+        }
         Ok(())
+    }
+
+    /// Gives `ssl`, one connection of a context `apply` set up, before its ClientHello, what
+    /// BoringSSL takes from a connection only: the key shares of --tls-key-shares.
+    pub fn prepare(&self, ssl: &mut SslRef) -> Result<()> {
+        match &self.key_shares {
+            Some(list) => set_key_shares(ssl, list),
+            None => Ok(()),
+        }
     }
 }
 
-/// Checks --tls-ciphers and --tls-groups as the core starts: a cipher string or a group list
-/// BoringSSL does not take stops it, with the option named.
+/// The first number of a TLS 1.3 cipher suite, and the last one: 0x13 is their first byte.
+const TLS13_CIPHER_IDS: std::ops::RangeInclusive<u16> = 0x1300..=0x13ff;
+
+/// The numbers of the TLS 1.3 cipher suites `list` names, standard names separated by ':', in
+/// order, as BoringSSL names them.
+fn tls13_cipher_ids(list: &str) -> Result<Vec<u16>> {
+    list.split(':')
+        .map(|name| {
+            TLS13_CIPHER_IDS
+                .into_iter()
+                .find(|&id| {
+                    SslCipher::from_value(id).and_then(|cipher| cipher.standard_name())
+                        == Some(name)
+                })
+                .ok_or_else(|| {
+                    AetherError::Tls(format!(
+                        "{name:?} is no TLS 1.3 cipher suite BoringSSL has (it has \
+                         TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384 and \
+                         TLS_CHACHA20_POLY1305_SHA256)"
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// Sets `list`, TLS 1.3 cipher suites by their standard names separated by ':', as the TLS 1.3
+/// suites of `builder`, in order, in place of BoringSSL's own.
+fn set_tls13_ciphers(builder: &mut SslContextBuilder, list: &str) -> Result<()> {
+    let ids = tls13_cipher_ids(list)?;
+    let set = unsafe {
+        SSL_CTX_set1_tls13_ciphers(
+            builder.as_ptr().cast(),
+            ids.as_ptr(),
+            ptr::null(),
+            ids.len(),
+        )
+    };
+    if set != 1 {
+        // Off the thread's error queue, where it would show in a later error.
+        let _ = boring::error::ErrorStack::get();
+        return Err(AetherError::Tls(format!(
+            "{list:?} names a TLS 1.3 cipher suite more than once"
+        )));
+    }
+    Ok(())
+}
+
+/// Every group BoringSSL has, by number: each number it has a name for.
+fn known_group_ids() -> &'static [u16] {
+    static IDS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| {
+        (0..=u16::MAX)
+            .filter(|&id| !unsafe { SSL_get_group_name(id) }.is_null())
+            .collect()
+    })
+}
+
+/// The numbers of the groups `list` names, names separated by ':', in order, each read as
+/// --tls-groups reads it. BoringSSL has no call that turns a group's name into its number, so
+/// each name alone is set as the groups of a connection, and its number is the one group of
+/// BoringSSL's that this connection then takes as a key share.
+fn group_ids(list: &str) -> Result<Vec<u16>> {
+    let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
+    let context = SslContextBuilder::new(SslMethod::tls())
+        .map_err(tls)?
+        .build();
+    let ids = list
+        .split(':')
+        .map(|name| {
+            let unknown = || AetherError::Tls(format!("{name:?} is no group BoringSSL takes"));
+            let text = CString::new(name).map_err(|_| unknown())?;
+            let ssl = Ssl::new(&context).map_err(tls)?;
+            let alone = unsafe { SSL_set1_groups_list(ssl.as_ptr().cast(), text.as_ptr()) };
+            if name.is_empty() || alone != 1 {
+                return Err(unknown());
+            }
+            known_group_ids()
+                .iter()
+                .copied()
+                .find(|id| unsafe { SSL_set1_client_key_shares(ssl.as_ptr().cast(), id, 1) } == 1)
+                .ok_or_else(unknown)
+        })
+        .collect();
+    // The groups each name was not, and a name BoringSSL did not take, left errors on the
+    // thread's queue, where they would show in a later error.
+    let _ = boring::error::ErrorStack::get();
+    ids
+}
+
+/// Sets `list`, group names separated by ':', as the groups `ssl` sends key shares for, in
+/// order: each one of the groups of `ssl`, in their order, and named once.
+fn set_key_shares(ssl: &mut SslRef, list: &str) -> Result<()> {
+    let ids = group_ids(list)?;
+    let set = unsafe { SSL_set1_client_key_shares(ssl.as_ptr().cast(), ids.as_ptr(), ids.len()) };
+    if set != 1 {
+        let _ = boring::error::ErrorStack::get();
+        return Err(AetherError::Tls(format!(
+            "{list:?} names no key shares BoringSSL sends: each must be one of the groups, in \
+             their order, and named once"
+        )));
+    }
+    Ok(())
+}
+
+/// Checks --tls-ciphers, --tls13-ciphers, --tls-groups and --tls-key-shares as the core starts:
+/// a cipher string, a TLS 1.3 suite list, a group list or key shares BoringSSL does not take
+/// stop it, with the option named.
 pub fn check_tls_options() -> Result<()> {
     let named = |flag: &str, e: AetherError| {
         let reason = match e {
@@ -178,22 +350,40 @@ pub fn check_tls_options() -> Result<()> {
         };
         AetherError::Tls(format!("{flag}: {reason}"))
     };
+    let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
     let fingerprint = Fingerprint::configured();
     if let Some(list) = &fingerprint.ciphers {
         tls12_ciphers(list).map_err(|e| named(TLS_CIPHERS.flag, e))?;
     }
-    let mut builder =
-        SslContextBuilder::new(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
-    set_groups(&mut builder, &fingerprint.groups).map_err(|e| named("--tls-groups", e))
+    let mut builder = SslContextBuilder::new(SslMethod::tls()).map_err(tls)?;
+    if let Some(list) = &fingerprint.tls13_ciphers {
+        set_tls13_ciphers(&mut builder, list).map_err(|e| named("--tls13-ciphers", e))?;
+    }
+    set_groups(&mut builder, &fingerprint.groups).map_err(|e| named("--tls-groups", e))?;
+    let context = builder.build();
+    let mut ssl = Ssl::new(&context).map_err(tls)?;
+    fingerprint
+        .prepare(&mut ssl)
+        .map_err(|e| named("--tls-key-shares", e))
+}
+
+/// Gives `conn`, a QUIC connection, before its first packet, what the fingerprint sets on each
+/// connection, see `Fingerprint::prepare`; `build_config` set up the rest.
+pub fn prepare_quic(conn: &mut quiche::Connection) -> Result<()> {
+    let ssl: &mut SslRef = conn.as_mut();
+    Fingerprint::configured().prepare(ssl)
 }
 
 /// The variables of the options the handshakes are made with: those of the fingerprint, and
 /// for MASQUE --masque-sni and the carrier.
 #[cfg(test)]
-const OPTION_VARIABLES: [&str; 5] = [
+const OPTION_VARIABLES: [&str; 8] = [
     "AETHER_TLS_CIPHERS",
+    "AETHER_TLS13_CIPHERS",
     "AETHER_TLS_GROUPS",
+    "AETHER_TLS_KEY_SHARES",
     "AETHER_DISABLE_GREASE",
+    "AETHER_ENABLE_GREASE_SIGALGS",
     "AETHER_MASQUE_SNI",
     "AETHER_MASQUE_HTTP2",
 ];
@@ -897,27 +1087,89 @@ mod tests {
             Fingerprint::default(),
             Fingerprint {
                 ciphers: None,
+                tls13_ciphers: None,
                 groups: "P-256:X25519:P-384".to_string(),
+                key_shares: None,
                 grease: true,
+                grease_sigalgs: false,
             }
         );
         assert!(check_tls_options().is_ok());
 
         std::env::set_var("AETHER_TLS_CIPHERS", " ECDHE-RSA-AES128-GCM-SHA256 ");
+        std::env::set_var(
+            "AETHER_TLS13_CIPHERS",
+            " TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256 ",
+        );
         std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
+        std::env::set_var("AETHER_TLS_KEY_SHARES", " X25519:P-256 ");
         for (value, greased) in [("1", false), ("on", false), ("TRUE", false), ("0", true)] {
             std::env::set_var("AETHER_DISABLE_GREASE", value);
             assert_eq!(
                 Fingerprint::configured(),
                 Fingerprint {
                     ciphers: Some("ECDHE-RSA-AES128-GCM-SHA256".to_string()),
+                    tls13_ciphers: Some(
+                        "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256".to_string()
+                    ),
                     groups: "X25519:P-256".to_string(),
+                    key_shares: Some("X25519:P-256".to_string()),
                     grease: greased,
+                    grease_sigalgs: false,
                 },
                 "{value}"
             );
         }
         assert!(check_tls_options().is_ok());
+        for (value, on) in [("1", true), ("yes", true), ("0", false), ("", false)] {
+            std::env::set_var("AETHER_ENABLE_GREASE_SIGALGS", value);
+            assert_eq!(Fingerprint::configured().grease_sigalgs, on, "{value}");
+        }
+        std::env::remove_var("AETHER_ENABLE_GREASE_SIGALGS");
+
+        // A TLS 1.3 suite list BoringSSL takes: standard names of TLS 1.3 suites, each once.
+        for list in [
+            "TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256",
+            "TLS_AES_128_GCM_SHA256:TLS_AES_128_GCM_SHA256",
+            "TLS_AES_128_GCM_SHA256:",
+            "AES128-GCM-SHA256",
+        ] {
+            std::env::set_var("AETHER_TLS13_CIPHERS", list);
+            let refused = check_tls_options().expect_err(list);
+            assert!(
+                refused.to_string().starts_with("tls: --tls13-ciphers: "),
+                "{list}: {refused}"
+            );
+        }
+        std::env::remove_var("AETHER_TLS13_CIPHERS");
+
+        // Key shares: groups of the list, in its order, each once, as --tls-groups names them
+        // (x25519 for X25519).
+        std::env::set_var("AETHER_TLS_GROUPS", "X25519MLKEM768:X25519:P-256:P-384");
+        for list in [
+            "X25519MLKEM768",
+            "X25519MLKEM768:x25519:prime256v1",
+            "P-256:P-384",
+        ] {
+            std::env::set_var("AETHER_TLS_KEY_SHARES", list);
+            assert!(check_tls_options().is_ok(), "{list}");
+        }
+        for list in [
+            "P-521",
+            "P-256:X25519",
+            "X25519:X25519",
+            "X25519:P-999",
+            "X25519:",
+        ] {
+            std::env::set_var("AETHER_TLS_KEY_SHARES", list);
+            let refused = check_tls_options().expect_err(list);
+            assert!(
+                refused.to_string().starts_with("tls: --tls-key-shares: "),
+                "{list}: {refused}"
+            );
+        }
+        std::env::remove_var("AETHER_TLS_KEY_SHARES");
+        std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
 
         std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-999");
         let refused = check_tls_options().expect_err("a group BoringSSL does not know");
@@ -937,6 +1189,32 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_command_line_sets_the_tls13_order_and_the_key_shares() {
+        let _options = hold_options().await;
+        let words = [
+            "--tls13-ciphers",
+            "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256",
+            "--tls-groups",
+            "X25519MLKEM768:X25519:P-256",
+            "--tls-key-shares",
+            "X25519:P-256",
+            "--enable-grease-sigalgs",
+        ];
+        let parsed = crate::cli::parse_args(words.iter().map(|word| word.to_string()).collect())
+            .expect("options the core takes");
+        assert!(parsed == crate::cli::Parsed::Run);
+        let fingerprint = Fingerprint::configured();
+        assert_eq!(
+            fingerprint.tls13_ciphers.as_deref(),
+            Some("TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256")
+        );
+        assert_eq!(fingerprint.key_shares.as_deref(), Some("X25519:P-256"));
+        assert!(fingerprint.grease_sigalgs);
+        assert!(fingerprint.grease);
+        assert!(check_tls_options().is_ok());
+    }
+
     /// The ClientHello of `fingerprint`, offering HTTP/2, as a server on this machine reads it.
     async fn hello_of(fingerprint: &Fingerprint) -> client_hello::ClientHello {
         let (server, hello) = client_hello::catch().await;
@@ -944,7 +1222,8 @@ mod tests {
         fingerprint
             .apply(&mut builder, b"\x02h2")
             .expect("the fingerprint");
-        let config = builder.build().configure().expect("a configuration");
+        let mut config = builder.build().configure().expect("a configuration");
+        fingerprint.prepare(&mut config).expect("the key shares");
         let tcp = tokio::net::TcpStream::connect(server)
             .await
             .expect("a connection");
@@ -961,6 +1240,8 @@ mod tests {
         let chrome = hello_of(&Fingerprint::default()).await;
         assert!(chrome.has_grease());
         assert!(chrome.has_grease_extension());
+        // Not among the signature algorithms, which take --enable-grease-sigalgs.
+        assert!(!chrome.has_grease_signature_algorithm());
         assert_eq!(chrome.versions(), [0x0304, 0x0303]);
         assert_eq!(chrome.groups(), [0x0017, 0x001d, 0x0018]);
         assert_eq!(chrome.key_shares(), [0x0017]);
@@ -990,12 +1271,33 @@ mod tests {
         let ungreased = hello_of(&plain).await;
         assert!(!ungreased.has_grease());
         assert!(!ungreased.has_grease_extension());
+        assert!(!ungreased.has_grease_signature_algorithm());
         assert_eq!(ungreased.groups(), chrome.groups());
+
+        // --enable-grease-sigalgs puts a GREASE value first among the signature algorithms, as
+        // Chrome does, with the rest of GREASE or without it.
+        for grease in [true, false] {
+            let sigalgs = hello_of(&Fingerprint {
+                grease,
+                grease_sigalgs: true,
+                ..Fingerprint::default()
+            })
+            .await;
+            assert!(sigalgs.has_grease_signature_algorithm(), "{grease}");
+            assert_eq!(
+                sigalgs.signature_algorithms()[1..],
+                chrome.signature_algorithms(),
+                "{grease}"
+            );
+            assert_eq!(sigalgs.has_grease(), grease);
+            assert_eq!(sigalgs.has_grease_extension(), grease);
+        }
 
         let changed = hello_of(&Fingerprint {
             ciphers: Some("ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA".to_string()),
             groups: "X25519:P-384".to_string(),
             grease: false,
+            ..Fingerprint::default()
         })
         .await;
         assert_eq!(changed.tls12_suites(), [0xcca9, 0x0035]);
@@ -1009,6 +1311,50 @@ mod tests {
             orders.insert(hello_of(&plain).await.extension_types());
         }
         assert!(orders.len() > 1, "{orders:?}");
+    }
+
+    #[tokio::test]
+    async fn the_client_hello_takes_the_tls13_order_and_the_key_shares_of_the_options() {
+        // Firefox's, as its ClientHello of October 2026 has them: its TLS 1.3 order, and key
+        // shares for three of its groups, where BoringSSL would send two.
+        let firefox = hello_of(&Fingerprint {
+            tls13_ciphers: Some(
+                "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384"
+                    .to_string(),
+            ),
+            groups: "X25519MLKEM768:X25519:P-256:P-384:P-521".to_string(),
+            key_shares: Some("X25519MLKEM768:X25519:P-256".to_string()),
+            grease: false,
+            ..Fingerprint::default()
+        })
+        .await;
+        assert_eq!(firefox.tls13_suites(), [0x1301, 0x1303, 0x1302]);
+        assert_eq!(firefox.groups(), [0x11ec, 0x001d, 0x0017, 0x0018, 0x0019]);
+        assert_eq!(firefox.key_shares(), [0x11ec, 0x001d, 0x0017]);
+        assert!(!firefox.has_grease());
+
+        // Without them, BoringSSL's choice: the first group, and the first of the other kind.
+        let groups = Fingerprint {
+            groups: "X25519MLKEM768:X25519:P-256".to_string(),
+            ..Fingerprint::default()
+        };
+        assert_eq!(hello_of(&groups).await.key_shares(), [0x11ec, 0x001d]);
+
+        // Python's TLS 1.3 order, and one key share named as --tls-groups names it.
+        let python = hello_of(&Fingerprint {
+            tls13_ciphers: Some(
+                "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"
+                    .to_string(),
+            ),
+            key_shares: Some("x25519".to_string()),
+            ..groups
+        })
+        .await;
+        assert_eq!(python.tls13_suites(), [0x1302, 0x1303, 0x1301]);
+        assert_eq!(python.key_shares(), [0x001d]);
+        // GREASE stays where it was: before the suites and among the key shares.
+        assert!(python.has_grease());
+        assert!(python.has_grease_key_share());
     }
 
     /// An ECHConfig: `version`, config id 7, the KEM `kem` with a key of `key_len` bytes, the
@@ -1330,19 +1676,54 @@ pub(crate) mod client_hello {
                 .collect()
         }
 
-        /// The groups of the shares of key_share, in order, GREASE left out.
-        pub fn key_shares(&self) -> Vec<u16> {
+        /// The groups of the shares of key_share, in order, GREASE among them.
+        fn key_share_groups(&self) -> Vec<u16> {
             let data = self.extension(51).expect("key_share");
             let mut groups = Vec::new();
             let mut at = 2;
             while at + 4 <= data.len() {
-                let group = be16(data, at) as u16;
-                if !grease(group) {
-                    groups.push(group);
-                }
+                groups.push(be16(data, at) as u16);
                 at += 4 + be16(data, at + 2);
             }
             groups
+        }
+
+        /// The groups of the shares of key_share, in order, GREASE left out.
+        pub fn key_shares(&self) -> Vec<u16> {
+            self.key_share_groups()
+                .into_iter()
+                .filter(|group| !grease(*group))
+                .collect()
+        }
+
+        /// Whether one of the shares of key_share is a GREASE one.
+        pub fn has_grease_key_share(&self) -> bool {
+            self.key_share_groups().into_iter().any(grease)
+        }
+
+        /// The TLS 1.3 cipher suites, in order.
+        pub fn tls13_suites(&self) -> Vec<u16> {
+            self.suites
+                .iter()
+                .copied()
+                .filter(|suite| (0x1301..=0x1305).contains(suite))
+                .collect()
+        }
+
+        /// The signature algorithms of signature_algorithms, in order, GREASE among them.
+        pub fn signature_algorithms(&self) -> Vec<u16> {
+            let data = self.extension(13).expect("signature_algorithms");
+            data[2..2 + be16(data, 0)]
+                .chunks(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .collect()
+        }
+
+        /// Whether a GREASE value leads its signature algorithms.
+        pub fn has_grease_signature_algorithm(&self) -> bool {
+            self.signature_algorithms()
+                .first()
+                .is_some_and(|value| grease(*value))
         }
     }
 

@@ -168,11 +168,21 @@ TLS:
                            \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256\"
                            (default Chrome's, \"ALL:!aPSK:!ECDSA+SHA1:!3DES\").
                            HTTP/3 lists none: QUIC offers TLS 1.3 alone
-  --tls-groups <list>      TLS groups, in order, the first with a key share
-                           (default \"P-256:X25519:P-384\")
+  --tls13-ciphers <list>   TLS 1.3 cipher suites, in order, standard names
+                           separated by ':', e.g.
+                           \"TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256\"
+                           (default Chrome's order: AES-GCM first on hardware
+                           with AES instructions, ChaCha20 first elsewhere)
+  --tls-groups <list>      TLS groups, in order (default \"P-256:X25519:P-384\")
+  --tls-key-shares <list>  the groups that get a key share, in order, each one
+                           of --tls-groups, in its order (default Chrome's: the
+                           first group, and the first one of the other kind,
+                           post-quantum or not)
   --disable-grease         leave out the GREASE values (RFC 8701) the cipher
                            suites, extensions, groups, key shares and versions
                            carry by default, as Chrome's do
+  --enable-grease-sigalgs  put a GREASE value first among the signature
+                           algorithms as well, as Chrome does (off by default)
 
 WireGuard:
   --keepalive <n>          persistent keepalive interval in seconds (default 5)
@@ -422,8 +432,11 @@ Environment variables:
   AETHER_ECH_DNS                   --ech-dns
   AETHER_ECH_DOMAIN                --ech-domain
   AETHER_TLS_CIPHERS               --tls-ciphers
+  AETHER_TLS13_CIPHERS             --tls13-ciphers
   AETHER_TLS_GROUPS                --tls-groups
+  AETHER_TLS_KEY_SHARES            --tls-key-shares
   AETHER_DISABLE_GREASE            --disable-grease
+  AETHER_ENABLE_GREASE_SIGALGS     --enable-grease-sigalgs
   AETHER_WG_KEEPALIVE              --keepalive
   AETHER_WG_NO_PROFILE_RETRY       --no-profile-retry
   AETHER_TEAM                      --team
@@ -655,8 +668,11 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--routes" => set("AETHER_ROUTES_FILE", next_value!()),
 
             "--tls-groups" => set("AETHER_TLS_GROUPS", next_value!()),
+            "--tls-key-shares" => set("AETHER_TLS_KEY_SHARES", next_value!()),
             "--tls-ciphers" => set("AETHER_TLS_CIPHERS", next_value!()),
+            "--tls13-ciphers" => set("AETHER_TLS13_CIPHERS", next_value!()),
             "--disable-grease" => set("AETHER_DISABLE_GREASE", "1"),
+            "--enable-grease-sigalgs" => set("AETHER_ENABLE_GREASE_SIGALGS", "1"),
             "--tls-verify" => set("AETHER_TLS_VERIFY", "1"),
             "--perf" => set("AETHER_PERF_PROFILE", next_value!()),
             "--log-level" => set("AETHER_LOG_LEVEL", next_value!()),
