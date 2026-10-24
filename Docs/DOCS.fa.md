@@ -419,6 +419,9 @@ aether --masque --h2 --upstream http://proxy.example:8080
 داخل تونل برمی‌گشت. یک نشانی IP برای `--api-address` نام را از جست‌وجوی DNS هم دور
 نگه می‌دارد، که با `--ech` مهم است.
 
+هر درخواست، و هر تلاش آن، روی یک اتصال TCP و یک هندشیک TLS جدا می‌رود که درخواست
+دیگری را حمل نمی‌کند؛ هر درخواست ورود به Zero Trust هم همین‌طور.
+
 ```sh
 aether --register all --api-address 162.159.137.105
 aether --register all --api-host api.cloudflareclient.com

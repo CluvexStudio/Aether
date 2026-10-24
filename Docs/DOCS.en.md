@@ -623,6 +623,10 @@ leave outside the mark and loop back into the tunnel. An IP address for
 `--api-address` also keeps the name out of the DNS lookup, which matters with
 `--ech`.
 
+Each call, and each attempt of it, goes over a TCP connection and a TLS handshake
+of its own, which carries no other request; so does each request of the Zero Trust
+sign-in.
+
 ```sh
 aether --register all --api-address 162.159.137.105
 aether --register all --api-host api.cloudflareclient.com

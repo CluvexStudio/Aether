@@ -391,7 +391,10 @@ fn access_client() -> Result<reqwest::Client> {
             .timeout(AUTH_TIMEOUT)
             // TLS server-certificate verification disabled (unconditional).
             .danger_accept_invalid_certs(true)
-            .cookie_store(true),
+            .cookie_store(true)
+            // Each request over a connection of its own, as the WARP API calls go: no connection
+            // is kept for the next one, over HTTP/1.1 or HTTP/2. The cookies stay with the client.
+            .pool_max_idle_per_host(0),
     )?
     .build()
     .map_err(|e| AetherError::Api(format!("access client: {e}")))
@@ -952,5 +955,49 @@ mod tests {
         assert!(!settings.has_service_token());
         settings.client_secret = Some("secret".to_string());
         assert!(settings.has_service_token());
+    }
+
+    #[tokio::test]
+    async fn each_request_of_the_sign_in_goes_over_a_connection_of_its_own() {
+        let _upstream = crate::upstream::hold_setting().await;
+        // A server on this machine that speaks HTTP/2, which lets a client send many requests
+        // over one connection, answers each and counts them, connection by connection.
+        let (address, listener, acceptor) = crate::https::test_server(b"\x02h2").await;
+        let counts = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let kept = counts.clone();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                let kept = kept.clone();
+                tokio::spawn(async move {
+                    let Ok(tls) = tokio_boring::accept(&acceptor, tcp).await else {
+                        return;
+                    };
+                    let index = {
+                        let mut counts = kept.lock().expect("the counts");
+                        counts.push(0);
+                        counts.len() - 1
+                    };
+                    let Ok(mut connection) = h2::server::handshake(tls).await else {
+                        return;
+                    };
+                    while let Some(Ok((_, mut respond))) = connection.accept().await {
+                        kept.lock().expect("the counts")[index] += 1;
+                        let _ = respond.send_response(http::Response::new(()), true);
+                    }
+                });
+            }
+        });
+
+        let client = access_client().expect("the sign-in client");
+        for _ in 0..3 {
+            let answer = client
+                .get(format!("https://127.0.0.1:{}/", address.port()))
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(answer.status(), reqwest::StatusCode::OK);
+        }
+        assert_eq!(*counts.lock().expect("the counts"), [1, 1, 1]);
     }
 }

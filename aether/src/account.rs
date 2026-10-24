@@ -1698,8 +1698,12 @@ mod tests {
     }
 
     /// The server name of each connection an API on this machine took, in order, with the
-    /// :authority of its request when it answered one.
+    /// :authority of its request when it answered one, and `SECOND_REQUEST` for a request that
+    /// came over a connection that had carried one already.
     type Seen = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+    /// What `Seen` holds for a second request over one connection.
+    const SECOND_REQUEST: &str = "a second request over the same connection";
 
     /// An API on this machine, on the port it gives, that does with each connection what `plan`
     /// says for its server name, one answer after another; one it has no answer left for is
@@ -1740,7 +1744,7 @@ mod tests {
                 let authority = request.uri().authority().expect("an authority").to_string();
                 kept.lock()
                     .expect("what was seen")
-                    .push((name, Some(authority)));
+                    .push((name.clone(), Some(authority)));
                 let mut answer = http::Response::builder().status(status);
                 if let Some(wait) = wait {
                     answer = answer.header("retry-after", wait.to_string());
@@ -1751,8 +1755,17 @@ mod tests {
                 stream
                     .send_data(bytes::Bytes::from_static(body.as_bytes()), true)
                     .expect("its body");
-                // Drives the connection until the client goes away.
-                tokio::spawn(async move { while let Some(Ok(_)) = connection.accept().await {} });
+                // Drives the connection until the client goes away. A second request on it, which
+                // the core never sends, gets no answer and is noted as one.
+                let again = kept.clone();
+                tokio::spawn(async move {
+                    while let Some(Ok(_)) = connection.accept().await {
+                        again
+                            .lock()
+                            .expect("what was seen")
+                            .push((name.clone(), Some(SECOND_REQUEST.to_string())));
+                    }
+                });
             }
         });
         (address.port(), seen)
@@ -1767,6 +1780,42 @@ mod tests {
     /// `name` asked, with its own server name and host, or dropped when `answered` is false.
     fn asked(name: &str, answered: bool) -> (String, Option<String>) {
         (name.to_string(), answered.then(|| name.to_string()))
+    }
+
+    #[tokio::test]
+    async fn each_call_of_a_registration_goes_over_a_connection_of_its_own() {
+        let _upstream = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        const DEVICE: &str = r#"{"id":"a-device","token":"a-token"}"#;
+        let (port, seen) = api_server(vec![(
+            consts::API_HOST,
+            vec![
+                Answer::Reply(200, DEVICE),
+                Answer::Reply(200, DEVICE),
+                Answer::Reply(200, DEVICE),
+            ],
+        )])
+        .await;
+        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+
+        // A key as the core gets one: the device registered, WARP enabled on it, and a MASQUE key
+        // enrolled for it.
+        let (device, _) = register("a-model", "en_US", None)
+            .await
+            .expect("a registration");
+        enable_warp(&device.id, &device.token)
+            .await
+            .expect("WARP enabled");
+        enroll_key(&device.id, &device.token, b"a key", None)
+            .await
+            .expect("the key enrolled");
+        // Each call over a TCP connection and a TLS handshake of its own, with no request after it.
+        assert_eq!(
+            *seen.lock().expect("what was seen"),
+            vec![asked(consts::API_HOST, true); 3]
+        );
     }
 
     #[tokio::test]
