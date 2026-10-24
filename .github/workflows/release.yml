@@ -639,20 +639,22 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.7
+            Aether v2.3.8
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
             Changed
 
-            - The calls to the WARP API, which register devices and enroll their keys, now go by api.devices.cloudflare.com, the name Cloudflare's own client has called since its version 2026.6.0, on addresses of its own (162.159.137.105 and 162.159.138.105). An attempt that gets no answer there, or a refusal of another server than the API, such as an error page, goes by api.cloudflareclient.com next, the name used before. The name the API answers by goes first for the rest of the run, with the other one still behind it.
-            - This holds with --api-address as well: the calls go to that address by the new name first. --api-host api.cloudflareclient.com sends every call by the old name, as before.
+            - Aether is built on boring 5.3.0, Cloudflare's bindings to BoringSSL, with the BoringSSL of 2026-09-29 and Cloudflare's post-quantum patch, which boring applies to every build, as it did before. Without the new options below, every ClientHello is as it was, but for one change of the newer BoringSSL, which Chrome's has as well: a ClientHello of 256 to 511 bytes is no longer padded to 512.
 
             New
 
-            - --api-host sets the HTTP host of those calls and --api-sni the server name of their ClientHello, next to --api-address, which sets where they connect. The address follows the server name unless given, and the server name follows the host. Cloudflare refuses a call whose server name and host differ, with a 403 that the error message now explains.
+            - --tls13-ciphers sets the TLS 1.3 cipher suites, in order, by their standard names, e.g. "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384" as Firefox lists them. Without it they keep Chrome's order: AES-GCM first on hardware with AES instructions, ChaCha20 first elsewhere. They still come before the TLS 1.2 suites.
+            - --tls-key-shares sets the groups the ClientHello sends key shares for, in order, each one of --tls-groups, e.g. "X25519MLKEM768:X25519:P-256" with --tls-groups "X25519MLKEM768:X25519:P-256:P-384:P-521", as Firefox sends them. Without it BoringSSL picks them as Chrome's does: the first group, and the first one of the other kind, post-quantum or not.
+            - --enable-grease-sigalgs puts a GREASE value first among the signature algorithms, as Chrome does; BoringSSL leaves it out by default. It goes with --disable-grease or without it.
+            - All three shape every TLS handshake the fingerprint shapes: MASQUE over HTTP/2 and over HTTP/3, the WARP API and the DoH lookup of the ECH key. A value BoringSSL does not take stops the core as it starts, with the option named.
 
-            Other commands and options are unchanged. The changes of 2.3.6, 2.3.5 and 2.3.4 are in their release notes.
+            Other commands and options are unchanged. The changes of 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
