@@ -1476,8 +1476,6 @@ mod tests {
         clear();
     }
 
-    use super::*;
-
     /// The hold of a test on the session key, which the whole process shares: the tests that
     /// set it run one at a time.
     fn hold_session_key() -> std::sync::MutexGuard<'static, ()> {
