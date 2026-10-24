@@ -140,7 +140,7 @@ TLS:
   the TLS handshakes of the tunnel and its setup, MASQUE over HTTP/2 and HTTP/3,
   the calls to the WARP API and the DoH lookup of --ech-dns, have Chrome's
   fingerprint as BoringSSL writes it, with what these change; certificates go
-  unchecked
+  unchecked, but for the MASQUE gateway's with --team or --tls-verify
   --masque-sni <name>      the server name the MASQUE handshakes, over HTTP/3 and
                            HTTP/2, put in their ClientHello (default
                            www.cloudflare.com; the WARP client sends
@@ -148,6 +148,9 @@ TLS:
                            the :authority of the CONNECT request, stays
                            cloudflareaccess.com. With --ech it is the name
                            inside the encrypted ClientHello
+  --tls-verify             hold the certificate of the MASQUE gateway to the
+                           pins aether carries (on by default with --team;
+                           AETHER_TLS_VERIFY=0 turns it off)
   --ech <auto|base64>      enable Encrypted Client Hello on the MASQUE handshakes
                            and the calls to the WARP API, with the key looked up
                            (auto) or given in base64; without a key it can
@@ -457,6 +460,7 @@ Environment variables:
   AETHER_MASQUE_H2_FRAGMENT_SIZE   --fragment-size
   AETHER_MASQUE_H2_FRAGMENT_DELAY  --fragment-delay
   AETHER_MASQUE_SNI                --masque-sni
+  AETHER_TLS_VERIFY                --tls-verify (on by default with --team)
   AETHER_ECH                       --ech
   AETHER_ECH_DNS                   --ech-dns
   AETHER_ECH_DOMAIN                --ech-domain

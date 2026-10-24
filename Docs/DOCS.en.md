@@ -213,9 +213,11 @@ All four send Chrome's ClientHello as BoringSSL writes it: TLS 1.3 and 1.2, Chro
 cipher suites, GREASE values (RFC 8701), the extensions in a new order on every
 handshake, signed certificate timestamps and OCSP asked for. They offer `h2` then
 `http/1.1`, as Chrome does, but `h3` over QUIC, which carries TLS 1.3 alone; the
-HTTP/2 carrier speaks HTTP/2, which Cloudflare picks. Certificates are not checked.
-Zero Trust sign-in, the Tor bridge and relay lists and the exit-location lookup keep
-a TLS of their own. Sixteen options change the fingerprint of all four:
+HTTP/2 carrier speaks HTTP/2, which Cloudflare picks. Certificates are not checked,
+except the MASQUE gateway's with `--team` or `--tls-verify`, which must match one of
+Aether's pins. Zero Trust sign-in, the Tor bridge and relay lists and the
+exit-location lookup keep a TLS of their own. Sixteen options change the fingerprint
+of all four:
 
 - `--tls-ciphers` sets the TLS 1.2 cipher suites, listed after the TLS 1.3 ones:
   names separated by `:`, as BoringSSL reads a cipher string. HTTP/3 lists none.
@@ -256,7 +258,7 @@ a TLS of their own. Sixteen options change the fingerprint of all four:
 - `--tls-trust-anchors` asks for a certificate from the trust anchors it names
   (draft-ietf-tls-trust-anchor-ids): their IDs, relative OIDs in dotted decimal
   such as `11129.9.1`, separated by `:`, in order, as Chrome asks for its own. It
-  changes no certificate check, which stays off.
+  changes no certificate check.
 - `--tls-server-padding <n>` asks the server for `n` bytes of padding in its
   handshake, from 0 to 65535, as Chrome asks for 6000 (BoringSSL's server_padding
   extension). A server that does not know it ignores it.
@@ -335,6 +337,11 @@ Cloudflare emails a one-time code and Aether asks for it. The code can be typed
 into a terminal or fed on standard input, which is how the desktop and Android
 clients answer it. You get three attempts. The resulting token is cached for the
 life of the process, so a reconnect does not ask again.
+
+Over MASQUE, `--team` holds the gateway's certificate to Aether's pins, as
+`--tls-verify` does, so a middlebox cannot stand in for the gateway with a
+certificate of its own and see the traffic inside the tunnel. `AETHER_TLS_VERIFY=0`
+turns the check off.
 
 `--gateway` sends HTTP and HTTPS through the organization's Gateway proxy so its
 filtering and logging apply. It is off by default because it adds a hop inside
@@ -655,6 +662,13 @@ With `--api-address` alone, the calls also go by the new name first, then by the
 old one. A front of your own that knows only `api.cloudflareclient.com` keeps
 working through that fallback; `--api-host api.cloudflareclient.com` sends every
 call by the old name, as before 2.3.7.
+
+With none of the three options, a call that neither name serves has one more way:
+the name that goes first, on a Cloudflare edge of its own, 104.24.4.6 and then
+104.18.0.6, for a network that blocks the API's own addresses, or answers in their
+place, but lets an edge through. As on the other ways, its ClientHello goes out in
+pieces only with `--fragment`. Once an edge has answered, the later calls of the run
+go there first.
 
 A domain name in `--api-address`, or the server name in its place, is looked up
 first, by the proxy with `--upstream` and by the system resolver otherwise. With
