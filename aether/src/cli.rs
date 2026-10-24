@@ -183,6 +183,35 @@ TLS:
                            carry by default, as Chrome's do
   --enable-grease-sigalgs  put a GREASE value first among the signature
                            algorithms as well, as Chrome does (off by default)
+  --tls-sigalgs <list>     signature algorithms, in order, by BoringSSL's names
+                           separated by ':', e.g.
+                           \"ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256\";
+                           the server signs the handshake with one of them
+                           (default BoringSSL's: Chrome's eight, then
+                           rsa_pkcs1_sha1)
+  --tls-cert-compression <list>
+                           certificate compression offered, in order, of zlib,
+                           brotli and zstd, e.g. \"brotli\" as Chrome offers it;
+                           a certificate sent compressed is decompressed
+                           (default none)
+  --tls-alps <new|old>     offer ALPS for h2 and h3, under the codepoint Chrome
+                           sends now (new, 0x44cd) or sent before (old, 0x4469,
+                           as Chrome 120) (default none)
+  --tls-trust-anchors <list>
+                           trust anchor IDs asked for, in order, dotted,
+                           separated by ':', e.g. \"11129.9.1:11129.9.4\"
+                           (default none)
+  --tls-server-padding <n> bytes of padding asked of the server, from 0 to
+                           65535, as Chrome asks 6000 (default none)
+  --enable-ech-grease      send a GREASE ECH extension when no ECH key is
+                           offered, as Chrome and Firefox do (off by default)
+  --disable-ocsp-stapling  leave out status_request (OCSP), which Chrome sends
+  --disable-sct            leave out signed_certificate_timestamp, which Chrome
+                           sends
+  --disable-session-ticket leave out session_ticket, which Chrome sends
+  --disable-extension-permutation
+                           keep BoringSSL's one order of the extensions, where
+                           Chrome's change on each handshake
 
 WireGuard:
   --keepalive <n>          persistent keepalive interval in seconds (default 5)
@@ -437,6 +466,17 @@ Environment variables:
   AETHER_TLS_KEY_SHARES            --tls-key-shares
   AETHER_DISABLE_GREASE            --disable-grease
   AETHER_ENABLE_GREASE_SIGALGS     --enable-grease-sigalgs
+  AETHER_TLS_SIGALGS               --tls-sigalgs
+  AETHER_TLS_CERT_COMPRESSION      --tls-cert-compression
+  AETHER_TLS_ALPS                  --tls-alps
+  AETHER_TLS_TRUST_ANCHORS         --tls-trust-anchors
+  AETHER_TLS_SERVER_PADDING        --tls-server-padding
+  AETHER_ENABLE_ECH_GREASE         --enable-ech-grease
+  AETHER_DISABLE_OCSP_STAPLING     --disable-ocsp-stapling
+  AETHER_DISABLE_SCT               --disable-sct
+  AETHER_DISABLE_SESSION_TICKET    --disable-session-ticket
+  AETHER_DISABLE_EXTENSION_PERMUTATION
+                                   --disable-extension-permutation
   AETHER_WG_KEEPALIVE              --keepalive
   AETHER_WG_NO_PROFILE_RETRY       --no-profile-retry
   AETHER_TEAM                      --team
@@ -673,6 +713,16 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--tls13-ciphers" => set("AETHER_TLS13_CIPHERS", next_value!()),
             "--disable-grease" => set("AETHER_DISABLE_GREASE", "1"),
             "--enable-grease-sigalgs" => set("AETHER_ENABLE_GREASE_SIGALGS", "1"),
+            "--tls-sigalgs" => set("AETHER_TLS_SIGALGS", next_value!()),
+            "--tls-cert-compression" => set("AETHER_TLS_CERT_COMPRESSION", next_value!()),
+            "--tls-alps" => set("AETHER_TLS_ALPS", next_value!()),
+            "--tls-trust-anchors" => set("AETHER_TLS_TRUST_ANCHORS", next_value!()),
+            "--tls-server-padding" => set("AETHER_TLS_SERVER_PADDING", next_value!()),
+            "--enable-ech-grease" => set("AETHER_ENABLE_ECH_GREASE", "1"),
+            "--disable-ocsp-stapling" => set("AETHER_DISABLE_OCSP_STAPLING", "1"),
+            "--disable-sct" => set("AETHER_DISABLE_SCT", "1"),
+            "--disable-session-ticket" => set("AETHER_DISABLE_SESSION_TICKET", "1"),
+            "--disable-extension-permutation" => set("AETHER_DISABLE_EXTENSION_PERMUTATION", "1"),
             "--tls-verify" => set("AETHER_TLS_VERIFY", "1"),
             "--perf" => set("AETHER_PERF_PROFILE", next_value!()),
             "--log-level" => set("AETHER_LOG_LEVEL", next_value!()),

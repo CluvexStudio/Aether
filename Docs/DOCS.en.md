@@ -215,7 +215,7 @@ handshake, signed certificate timestamps and OCSP asked for. They offer `h2` the
 `http/1.1`, as Chrome does, but `h3` over QUIC, which carries TLS 1.3 alone; the
 HTTP/2 carrier speaks HTTP/2, which Cloudflare picks. Certificates are not checked.
 Zero Trust sign-in, the Tor bridge and relay lists and the exit-location lookup keep
-a TLS of their own. Six options change the fingerprint of all four:
+a TLS of their own. Sixteen options change the fingerprint of all four:
 
 - `--tls-ciphers` sets the TLS 1.2 cipher suites, listed after the TLS 1.3 ones:
   names separated by `:`, as BoringSSL reads a cipher string. HTTP/3 lists none.
@@ -239,9 +239,49 @@ a TLS of their own. Six options change the fingerprint of all four:
 - `--enable-grease-sigalgs` puts a GREASE value first among the signature
   algorithms as well, as Chrome does; BoringSSL leaves it out by default. It
   goes with `--disable-grease` or without it.
+- `--tls-sigalgs` sets the signature algorithms the ClientHello lists, in order,
+  and so the ones the server may sign the handshake with: BoringSSL's names
+  separated by `:`, such as `ecdsa_secp256r1_sha256`, `rsa_pss_rsae_sha256`,
+  `rsa_pkcs1_sha1`, `ed25519` or `mldsa65`, each once. Without it they are
+  BoringSSL's: Chrome's eight, then `rsa_pkcs1_sha1`.
+- `--tls-cert-compression` offers certificate compression (RFC 8879), in order,
+  of `zlib`, `brotli` and `zstd`, separated by `:`: `brotli` as Chrome offers it,
+  `zlib:brotli:zstd` as Firefox does. A certificate the server sends compressed
+  with one of them is decompressed, and must come to the length the server gave.
+  Without it none is offered.
+- `--tls-alps new` or `--tls-alps old` offers application settings (ALPS) for
+  HTTP/2 and HTTP/3, with no settings of the client's, as Chrome does: `new` under
+  the codepoint Chrome sends now (0x44cd), `old` under the one it sent before
+  (0x4469), as Chrome 120 does. HTTP/1.1 gets none. Without it none is offered.
+- `--tls-trust-anchors` asks for a certificate from the trust anchors it names
+  (draft-ietf-tls-trust-anchor-ids): their IDs, relative OIDs in dotted decimal
+  such as `11129.9.1`, separated by `:`, in order, as Chrome asks for its own. It
+  changes no certificate check, which stays off.
+- `--tls-server-padding <n>` asks the server for `n` bytes of padding in its
+  handshake, from 0 to 65535, as Chrome asks for 6000 (BoringSSL's server_padding
+  extension). A server that does not know it ignores it.
+- `--enable-ech-grease` sends a GREASE encrypted_client_hello, which looks like
+  ECH and hides nothing, when there is no ECH config to offer, as Chrome and
+  Firefox do. With `--ech`, the config goes instead.
+- `--disable-ocsp-stapling` and `--disable-sct` leave out the requests for OCSP
+  (status_request) and for signed certificate timestamps, which all four
+  otherwise send, as Chrome does.
+- `--disable-session-ticket` leaves out the session_ticket extension, which all
+  four otherwise send, as Chrome does.
+- `--disable-extension-permutation` keeps the extensions in BoringSSL's one order,
+  the same on every handshake, as Firefox's, Python's and Go's are; otherwise they
+  go in a new order each time, as Chrome's.
 
-A cipher or group name BoringSSL does not know, or key shares that do not follow
-the groups, stop the core as it starts, with the option named.
+A value these options do not take stops the core as it starts, with the option
+named: a cipher, group or signature algorithm BoringSSL does not know, key shares
+that do not follow the groups, a name given twice, an ALPS codepoint other than
+`new` and `old`, a trust anchor ID that is not dotted decimal, a padding over
+65535.
+
+Some of what other clients send, BoringSSL cannot: delegated_credentials,
+record_size_limit, signature_algorithms_cert, encrypt_then_mac, post_handshake_auth
+and more than one point format. It always sends psk_key_exchange_modes with TLS
+1.3, a key share of its own for each group, and its own order of the extensions.
 
 The MASQUE handshakes, on both carriers, put `www.cloudflare.com` in their
 ClientHello as the server name; `--masque-sni <name>` puts another one there, such
@@ -718,5 +758,15 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_TLS13_CIPHERS` | TLS 1.3 cipher suites (see TLS) |
 | `AETHER_DISABLE_GREASE` | `1` leaves GREASE out (see TLS) |
 | `AETHER_ENABLE_GREASE_SIGALGS` | `1` puts GREASE among the signature algorithms (see TLS) |
+| `AETHER_TLS_SIGALGS` | the signature algorithms (see TLS) |
+| `AETHER_TLS_CERT_COMPRESSION` | the certificate compression offered (see TLS) |
+| `AETHER_TLS_ALPS` | `new` or `old`: ALPS offered (see TLS) |
+| `AETHER_TLS_TRUST_ANCHORS` | the trust anchor IDs asked for (see TLS) |
+| `AETHER_TLS_SERVER_PADDING` | the padding asked of the server (see TLS) |
+| `AETHER_ENABLE_ECH_GREASE` | `1` sends a GREASE ECH (see TLS) |
+| `AETHER_DISABLE_OCSP_STAPLING` | `1` leaves the OCSP request out (see TLS) |
+| `AETHER_DISABLE_SCT` | `1` leaves the SCT request out (see TLS) |
+| `AETHER_DISABLE_SESSION_TICKET` | `1` leaves session_ticket out (see TLS) |
+| `AETHER_DISABLE_EXTENSION_PERMUTATION` | `1` keeps one order of the extensions (see TLS) |
 | `AETHER_PERF_PROFILE` | `low`, `medium`, `high` |
 | `AETHER_LOG_LEVEL` | `error` to `trace` |

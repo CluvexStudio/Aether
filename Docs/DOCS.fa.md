@@ -174,7 +174,7 @@ ClientHello مرورگر Chrome را همان‌طور که BoringSSL می‌ن�
 `http/1.1` را پیشنهاد می‌دهند، جز روی QUIC که `h3` را پیشنهاد می‌دهد و فقط TLS 1.3 را
 حمل می‌کند؛ حامل HTTP/2 با HTTP/2 کار می‌کند که کلادفلر انتخابش می‌کند. گواهی‌ها
 بررسی نمی‌شوند. ورود به Zero Trust، فهرست پل‌ها و رله‌های Tor و جست‌وجوی محل خروج TLS
-خودشان را دارند. شش گزینه اثرانگشت هر چهار را تغییر می‌دهند:
+خودشان را دارند. شانزده گزینه اثرانگشت هر چهار را تغییر می‌دهند:
 
 - `--tls-ciphers` سوئیت‌های رمز TLS 1.2 را تعیین می‌کند که بعد از سوئیت‌های TLS 1.3
   می‌آیند. نام‌ها با `:` از هم جدا می‌شوند، همان‌طور که BoringSSL یک رشته‌ی رمز را
@@ -198,9 +198,49 @@ ClientHello مرورگر Chrome را همان‌طور که BoringSSL می‌ن�
 - `--enable-grease-sigalgs` یک مقدار GREASE را هم در ابتدای الگوریتم‌های امضا
   می‌گذارد، مثل Chrome؛ BoringSSL به‌طور پیش‌فرض آن را نمی‌گذارد. با
   `--disable-grease` یا بدون آن کار می‌کند.
+- `--tls-sigalgs` الگوریتم‌های امضایی را که ClientHello فهرست می‌کند به ترتیب تعیین
+  می‌کند، و در نتیجه الگوریتم‌هایی را که سرور می‌تواند هندشیک را با آن‌ها امضا کند:
+  نام‌های BoringSSL که با `:` از هم جدا می‌شوند، مثل `ecdsa_secp256r1_sha256`،
+  `rsa_pss_rsae_sha256`، `rsa_pkcs1_sha1`، `ed25519` یا `mldsa65`، هر کدام یک بار.
+  بدون آن، فهرست BoringSSL است: هشت الگوریتم Chrome و بعد `rsa_pkcs1_sha1`.
+- `--tls-cert-compression` فشرده‌سازی گواهی (RFC 8879) را به ترتیب پیشنهاد می‌دهد،
+  از میان `zlib`، `brotli` و `zstd` که با `:` از هم جدا می‌شوند: `brotli` همان‌طور که
+  Chrome پیشنهاد می‌دهد و `zlib:brotli:zstd` همان‌طور که Firefox. گواهی‌ای که سرور با
+  یکی از آن‌ها فشرده بفرستد باز می‌شود و باید دقیقاً به طولی برسد که سرور گفته است.
+  بدون آن، هیچ‌کدام پیشنهاد نمی‌شود.
+- `--tls-alps new` یا `--tls-alps old` تنظیمات برنامه (ALPS) را برای HTTP/2 و HTTP/3
+  پیشنهاد می‌دهد، بی هیچ تنظیمی از سمت کلاینت، مثل Chrome: `new` با کدی که Chrome
+  اکنون می‌فرستد (0x44cd) و `old` با کدی که پیش‌تر می‌فرستاد (0x4469)، مثل Chrome 120.
+  HTTP/1.1 هیچ ALPSی نمی‌گیرد. بدون آن، ALPS پیشنهاد نمی‌شود.
+- `--tls-trust-anchors` گواهی‌ای از لنگرهای اعتمادی (trust anchors) می‌خواهد که نام
+  می‌برد (draft-ietf-tls-trust-anchor-ids): شناسه‌هایشان، OIDهای نسبی به شکل اعداد
+  نقطه‌دار مثل `11129.9.1`، که با `:` از هم جدا می‌شوند، به ترتیب، همان‌طور که Chrome
+  لنگرهای خودش را می‌خواهد. هیچ بررسی گواهی را تغییر نمی‌دهد، که خاموش می‌ماند.
+- `--tls-server-padding <n>` از سرور `n` بایت padding در هندشیکش می‌خواهد، از 0 تا
+  65535، همان‌طور که Chrome ‏6000 بایت می‌خواهد (افزونه‌ی server_padding در
+  BoringSSL). سروری که آن را نشناسد نادیده‌اش می‌گیرد.
+- `--enable-ech-grease` وقتی کانفیگ ECHی برای پیشنهاد نیست، یک
+  encrypted_client_hello از نوع GREASE می‌فرستد که شبیه ECH است و چیزی را پنهان
+  نمی‌کند، مثل Chrome و Firefox. با `--ech`، خود کانفیگ به جای آن می‌رود.
+- `--disable-ocsp-stapling` و `--disable-sct` درخواست OCSP (status_request) و
+  درخواست signed certificate timestamps را کنار می‌گذارند، که هر چهار در غیر این صورت
+  مثل Chrome می‌فرستند.
+- `--disable-session-ticket` افزونه‌ی session_ticket را کنار می‌گذارد، که هر چهار در
+  غیر این صورت مثل Chrome می‌فرستند.
+- `--disable-extension-permutation` افزونه‌ها را با ترتیب ثابت BoringSSL نگه می‌دارد،
+  در هر هندشیک یکسان، همان‌طور که افزونه‌های Firefox، Python و Go هستند؛ در غیر این
+  صورت هر بار با ترتیبی تازه می‌آیند، مثل Chrome.
 
-نام رمز یا گروهی که BoringSSL نشناسد، یا سهم‌های کلیدی که از گروه‌ها پیروی نکنند،
-هسته را در شروع، با نام همان گزینه، متوقف می‌کنند.
+مقداری که این گزینه‌ها نپذیرند هسته را در شروع، با نام همان گزینه، متوقف می‌کند: رمز،
+گروه یا الگوریتم امضایی که BoringSSL نشناسد، سهم‌های کلیدی که از گروه‌ها پیروی نکنند،
+نامی که دو بار آمده باشد، کد ALPSی جز `new` و `old`، شناسه‌ی لنگر اعتمادی که عدد
+نقطه‌دار نباشد، یا paddingی بیش از 65535.
+
+بعضی از چیزهایی که کلاینت‌های دیگر می‌فرستند از BoringSSL برنمی‌آید:
+delegated_credentials، record_size_limit، signature_algorithms_cert،
+encrypt_then_mac، post_handshake_auth و بیش از یک قالب نقطه (point format). همیشه
+با TLS 1.3 افزونه‌ی psk_key_exchange_modes را می‌فرستد، برای هر گروه سهم کلید جداگانه
+می‌سازد و افزونه‌ها را با ترتیب خودش می‌چیند.
 
 هندشیک‌های MASQUE، روی هر دو حامل، `www.cloudflare.com` را به‌عنوان نام سرور در
 ClientHello می‌گذارند؛ `--masque-sni <name>` نام دیگری را به‌جای آن می‌گذارد، مثلاً
@@ -505,5 +545,15 @@ cargo build --release --bin aether   # فقط باینری
 | `AETHER_TLS13_CIPHERS` | سوئیت‌های رمز TLS 1.3 (بخش TLS را ببینید) |
 | `AETHER_DISABLE_GREASE` | `1` مقدارهای GREASE را کنار می‌گذارد (بخش TLS را ببینید) |
 | `AETHER_ENABLE_GREASE_SIGALGS` | `1` مقدار GREASE را در الگوریتم‌های امضا می‌گذارد (بخش TLS را ببینید) |
+| `AETHER_TLS_SIGALGS` | الگوریتم‌های امضا (بخش TLS را ببینید) |
+| `AETHER_TLS_CERT_COMPRESSION` | فشرده‌سازی گواهی که پیشنهاد می‌شود (بخش TLS را ببینید) |
+| `AETHER_TLS_ALPS` | `new` یا `old`: ALPS پیشنهادی (بخش TLS را ببینید) |
+| `AETHER_TLS_TRUST_ANCHORS` | شناسه‌های لنگر اعتماد که خواسته می‌شوند (بخش TLS را ببینید) |
+| `AETHER_TLS_SERVER_PADDING` | paddingی که از سرور خواسته می‌شود (بخش TLS را ببینید) |
+| `AETHER_ENABLE_ECH_GREASE` | `1` یک ECH از نوع GREASE می‌فرستد (بخش TLS را ببینید) |
+| `AETHER_DISABLE_OCSP_STAPLING` | `1` درخواست OCSP را کنار می‌گذارد (بخش TLS را ببینید) |
+| `AETHER_DISABLE_SCT` | `1` درخواست SCT را کنار می‌گذارد (بخش TLS را ببینید) |
+| `AETHER_DISABLE_SESSION_TICKET` | `1` افزونه‌ی session_ticket را کنار می‌گذارد (بخش TLS را ببینید) |
+| `AETHER_DISABLE_EXTENSION_PERMUTATION` | `1` ترتیب افزونه‌ها را ثابت نگه می‌دارد (بخش TLS را ببینید) |
 | `AETHER_PERF_PROFILE` | `low`، `medium`، `high` |
 | `AETHER_LOG_LEVEL` | از `error` تا `trace` |

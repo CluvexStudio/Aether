@@ -50,6 +50,11 @@ h2 = "0.4.15"
 http = "1"
 bytes = "1"
 tokio-boring = "5.3"
+# What --tls-cert-compression offers: certificates a server sends compressed with zlib, brotli
+# or zstd, decompressed.
+flate2 = "1.1"
+brotli-decompressor = "5.0.0"
+zstd = { version = "0.14", default-features = false }
 arti-client = { version = "0.46", default-features = false, features = ["tokio", "rustls", "compression", "static-sqlite", "bridge-client", "pt-client"], optional = true }
 tor-chanmgr = { version = "0.46", optional = true }
 tor-rtcompat = { version = "0.46", default-features = false, features = ["tokio", "rustls"], optional = true }

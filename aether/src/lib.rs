@@ -4508,15 +4508,19 @@ mod tests {
         }
     }
 
-    /// The groups of the key shares and the cipher suites, GREASE left out, of the ClientHello
-    /// a QUIC server on this machine reads first, as it reads it. It passes over what comes
-    /// before the first QUIC v1 Initial, as `h3_masque_server` does.
-    async fn h3_hello_server() -> (SocketAddr, tokio::task::JoinHandle<(Vec<u16>, Vec<u16>)>) {
+    /// The ClientHello a QUIC server on this machine reads first, as it reads it. It passes
+    /// over what comes before the first QUIC v1 Initial, as `h3_masque_server` does.
+    async fn h3_hello_server() -> (
+        SocketAddr,
+        tokio::task::JoinHandle<tls::client_hello::ClientHello>,
+    ) {
         let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
             .await
             .expect("a port");
         let address = socket.local_addr().expect("its address");
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<(Vec<u16>, Vec<u16>)>));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(
+            None::<tls::client_hello::ClientHello>,
+        ));
         let caught = seen.clone();
         let hello = tokio::spawn(async move {
             let pair = account::generate_masque_keypair().expect("a key and a certificate");
@@ -4531,24 +4535,8 @@ mod tests {
             )
             .expect("the key");
             tls.set_select_certificate_callback(move |hello| {
-                let grease = |value: u16| value & 0x0f0f == 0x0a0a && value >> 8 == value & 0xff;
-                let be16 = |bytes: &[u8], at: usize| u16::from_be_bytes([bytes[at], bytes[at + 1]]);
-                let mut shares = Vec::new();
-                if let Some(data) = hello.get_extension(boring::ssl::ExtensionType::KEY_SHARE) {
-                    let mut at = 2;
-                    while at + 4 <= data.len() {
-                        if !grease(be16(data, at)) {
-                            shares.push(be16(data, at));
-                        }
-                        at += 4 + be16(data, at + 2) as usize;
-                    }
-                }
-                let suites = hello.ciphers();
-                let suites = (0..suites.len() / 2)
-                    .map(|index| be16(suites, 2 * index))
-                    .filter(|suite| !grease(*suite))
-                    .collect();
-                *caught.lock().expect("the ClientHello") = Some((shares, suites));
+                *caught.lock().expect("the ClientHello") =
+                    Some(tls::client_hello::parse_body(hello.as_bytes()));
                 Ok(())
             });
             let mut config =
@@ -4629,42 +4617,108 @@ mod tests {
         std::env::set_var("AETHER_TLS_KEY_SHARES", "X25519MLKEM768:X25519:P-256");
         let identity = account::handshake_identity();
         for h2 in [false, true] {
-            if h2 {
-                std::env::set_var("AETHER_MASQUE_HTTP2", "1");
-            } else {
-                std::env::remove_var("AETHER_MASQUE_HTTP2");
-            }
             // The check of a gateway, and the tunnel.
             for tunnel in [false, true] {
                 let case = format!("h2 {h2}, tunnel {tunnel}");
-                let (shares, suites) = if h2 {
-                    let (address, hello) = tls::client_hello::catch().await;
-                    let hello = tokio::select! {
-                        biased;
-                        hello = hello => hello.expect("the ClientHello"),
-                        () = masque_client(&identity, address, h2, tunnel) => {
-                            panic!("{case}: no ClientHello reached the server")
-                        }
-                    };
-                    (hello.key_shares(), hello.tls13_suites())
-                } else {
-                    let (address, hello) = h3_hello_server().await;
-                    tokio::select! {
-                        biased;
-                        hello = hello => hello.expect("the ClientHello"),
-                        () = masque_client(&identity, address, h2, tunnel) => {
-                            panic!("{case}: no ClientHello reached the server")
-                        }
-                    }
-                };
-                assert_eq!(shares, [0x11ec, 0x001d, 0x0017], "{case}");
+                let hello = masque_hello(&identity, h2, tunnel, &case).await;
+                assert_eq!(hello.key_shares(), [0x11ec, 0x001d, 0x0017], "{case}");
                 // QUIC carries TLS 1.3 alone; over HTTP/2 the TLS 1.2 suites follow.
-                let tls13: Vec<u16> = suites
-                    .into_iter()
-                    .filter(|suite| (0x1301..=0x1305).contains(suite))
-                    .collect();
-                assert_eq!(tls13, [0x1301, 0x1303, 0x1302], "{case}");
+                assert_eq!(hello.tls13_suites(), [0x1301, 0x1303, 0x1302], "{case}");
             }
+        }
+    }
+
+    /// The ClientHello of a MASQUE handshake, over HTTP/2 or HTTP/3, of the check of a gateway
+    /// or of the tunnel, as a server on this machine reads it.
+    async fn masque_hello(
+        identity: &account::Identity,
+        h2: bool,
+        tunnel: bool,
+        case: &str,
+    ) -> tls::client_hello::ClientHello {
+        if h2 {
+            std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+        } else {
+            std::env::remove_var("AETHER_MASQUE_HTTP2");
+        }
+        let (address, hello) = if h2 {
+            tls::client_hello::catch().await
+        } else {
+            h3_hello_server().await
+        };
+        tokio::select! {
+            biased;
+            hello = hello => hello.expect("the ClientHello"),
+            () = masque_client(identity, address, h2, tunnel) => {
+                panic!("{case}: no ClientHello reached the server")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_masque_handshakes_carry_the_extensions_of_the_options() {
+        let _setting = upstream::hold_setting().await;
+        let _options = tls::hold_options().await;
+        // Chrome's, as its ClientHello of October 2026 has them, with fewer trust anchors.
+        std::env::set_var("AETHER_ENABLE_GREASE_SIGALGS", "1");
+        std::env::set_var(
+            "AETHER_TLS_SIGALGS",
+            "mldsa44:mldsa65:mldsa87:ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256",
+        );
+        std::env::set_var("AETHER_TLS_CERT_COMPRESSION", "brotli");
+        std::env::set_var("AETHER_TLS_ALPS", "new");
+        std::env::set_var("AETHER_TLS_TRUST_ANCHORS", "11129.9.1");
+        std::env::set_var("AETHER_TLS_SERVER_PADDING", "6000");
+        std::env::set_var("AETHER_ENABLE_ECH_GREASE", "1");
+        let identity = account::handshake_identity();
+        for h2 in [false, true] {
+            for tunnel in [false, true] {
+                let case = format!("h2 {h2}, tunnel {tunnel}");
+                let hello = masque_hello(&identity, h2, tunnel, &case).await;
+                assert!(hello.has_grease_signature_algorithm(), "{case}");
+                assert_eq!(
+                    hello.signature_algorithms()[1..],
+                    [0x0904, 0x0905, 0x0906, 0x0403, 0x0804],
+                    "{case}"
+                );
+                assert_eq!(hello.cert_compression(), [2], "{case}");
+                // ALPS for the protocol the carrier offers: HTTP/2, which comes with HTTP/1.1,
+                // or HTTP/3.
+                let protocol = if h2 { b"h2".to_vec() } else { b"h3".to_vec() };
+                assert_eq!(hello.alps(0x44cd), Some(vec![protocol]), "{case}");
+                assert!(hello.offers_ech(), "{case}");
+                assert_eq!(
+                    hello.extension(0xca34),
+                    Some(&[0, 5, 4, 0xd6, 0x79, 0x09, 0x01][..]),
+                    "{case}"
+                );
+                assert_eq!(hello.server_padding(), Some(6000), "{case}");
+            }
+        }
+
+        // Python's: neither OCSP nor signed certificate timestamps, over either carrier.
+        for variable in [
+            "AETHER_ENABLE_GREASE_SIGALGS",
+            "AETHER_TLS_SIGALGS",
+            "AETHER_TLS_CERT_COMPRESSION",
+            "AETHER_TLS_ALPS",
+            "AETHER_TLS_TRUST_ANCHORS",
+            "AETHER_TLS_SERVER_PADDING",
+            "AETHER_ENABLE_ECH_GREASE",
+        ] {
+            std::env::remove_var(variable);
+        }
+        std::env::set_var("AETHER_DISABLE_OCSP_STAPLING", "1");
+        std::env::set_var("AETHER_DISABLE_SCT", "1");
+        for h2 in [false, true] {
+            let case = format!("h2 {h2}");
+            let hello = masque_hello(&identity, h2, false, &case).await;
+            assert!(
+                !hello.has_extension(5) && !hello.has_extension(18),
+                "{case}"
+            );
+            assert!(!hello.offers_ech(), "{case}");
+            assert_eq!(hello.alps(0x44cd), None, "{case}");
         }
     }
 }

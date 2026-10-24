@@ -169,7 +169,7 @@ fn configuration(fingerprint: &Fingerprint) -> Result<ConnectConfiguration> {
         .build()
         .configure()
         .map_err(|e| AetherError::Tls(e.to_string()))?;
-    fingerprint.prepare(&mut config)?;
+    fingerprint.prepare(&mut config, ALPN_H2_HTTP1)?;
     Ok(config)
 }
 
@@ -849,6 +849,7 @@ mod tests {
             key_shares: Some("X25519:P-256".to_string()),
             grease: false,
             grease_sigalgs: false,
+            ..Fingerprint::default()
         };
         let listed = hello("api.example.test", &changed, None).await;
         assert_eq!(listed.tls12_suites(), [0xcca9, 0x0035, 0xc02f]);
@@ -858,6 +859,15 @@ mod tests {
         assert!(!listed.has_grease());
         assert!(!listed.has_grease_signature_algorithm());
         assert_eq!(listed.alpn(), own.alpn());
+
+        // ALPS for HTTP/2, which the calls offer first, and not for HTTP/1.1.
+        let alps = Fingerprint {
+            alps: Some("new".to_string()),
+            ..Fingerprint::default()
+        };
+        let alps = hello("api.example.test", &alps, None).await;
+        assert_eq!(alps.alps(0x44cd), Some(vec![b"h2".to_vec()]));
+        assert_eq!(own.alps(0x44cd), None);
     }
 
     /// Cloudflare's key of cloudflare-ech.com on 2026-10-01.
