@@ -419,6 +419,15 @@ pub const MASQUE_SEEDS_V6: &[&str] = &[
     "2606:4700:d0::a29f:c001",
 ];
 
+/// The IPv6 gateway the scan tries first without a team, on every MASQUE port: WARP's own, the
+/// one of `MASQUE_SEEDS_V6` in `MASQUE_WARP_CIDRS_V6`.
+pub const MASQUE_GATEWAYS_V6: &[&str] = &["2606:4700:103::1"];
+
+/// The IPv6 range the scan samples without a team: regular WARP's MASQUE connects on
+/// 2606:4700:103::/48 and on no other range of `MASQUE_CIDRS_V6`. With a team, the scan tries
+/// `MASQUE_SEEDS_V6` and samples every range instead.
+pub const MASQUE_WARP_CIDRS_V6: &[&str] = &["2606:4700:103::/48"];
+
 #[derive(Debug, Clone, Copy)]
 pub struct ProbeResult {
     pub ip: IpAddr,
@@ -813,11 +822,15 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan, team: bool) -> Vec
     } else {
         (MASQUE_GATEWAYS_V4, Vec::new())
     };
+    // Over IPv6, regular WARP's is its gateway, then its one range; a team's, the seeds, then
+    // every range.
+    let (v6_seeds, ranges6) = if team {
+        (MASQUE_SEEDS_V6, masque_cidrs_v6())
+    } else {
+        (MASQUE_GATEWAYS_V6, MASQUE_WARP_CIDRS_V6.to_vec())
+    };
     let seeds: Vec<Ipv4Addr> = v4_seeds.iter().filter_map(|s| s.parse().ok()).collect();
-    let seeds6: Vec<Ipv6Addr> = MASQUE_SEEDS_V6
-        .iter()
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let seeds6: Vec<Ipv6Addr> = v6_seeds.iter().filter_map(|s| s.parse().ok()).collect();
 
     if ip.want_v4() {
         for a in &seeds {
@@ -858,7 +871,7 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan, team: bool) -> Vec
         } else {
             st.sample_per_cidr
         };
-        let cidr6: Vec<Vec<Ipv6Addr>> = masque_cidrs_v6()
+        let cidr6: Vec<Vec<Ipv6Addr>> = ranges6
             .iter()
             .map(|c| sample_cidr_v6(c, per, MASQUE_CIDRS_V4))
             .collect();
@@ -1089,6 +1102,31 @@ mod tests {
                 "{gateway}"
             );
             assert!(seen.insert(address), "{gateway} is listed twice");
+        }
+    }
+
+    #[test]
+    fn without_a_team_the_ipv6_scan_tries_warps_range_alone() {
+        // 2606:4700:103::1 first and on every port, then addresses of 2606:4700:103::/48 alone,
+        // on the first port.
+        let (first, _) = MASQUE_PORTS.split_first().expect("a port");
+        let gateway: IpAddr = "2606:4700:103::1".parse().expect("an address");
+        let st = ScanMode::Thorough.strategy();
+        let v6 = build_candidates(&st, MASQUE_PORTS, IpScan::V6, false);
+        assert_eq!(v6.first(), Some(&(gateway, *first)));
+        for &port in MASQUE_PORTS {
+            assert!(v6.contains(&(gateway, port)), "{port}");
+        }
+        assert!(
+            v6.len() > MASQUE_PORTS.len(),
+            "the range is sampled as well"
+        );
+        for (ip, port) in &v6 {
+            assert!(
+                matches!(ip, IpAddr::V6(a) if a.segments()[..3] == [0x2606, 0x4700, 0x103]),
+                "{ip}"
+            );
+            assert!(*ip == gateway || port == first, "{ip}:{port}");
         }
     }
 
