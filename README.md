@@ -96,7 +96,7 @@ To run the same HTTP/2 setup PattNG uses on Android, and to start it on boot, se
 
 ### Requirements
 
-- Rust 1.98 or newer
+- Rust, the latest stable release
 - C/C++ compiler
 - CMake
 

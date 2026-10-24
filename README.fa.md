@@ -1,6 +1,6 @@
 # Aether
 
-![Aether](Docs/Aether.png)
+![Aether](Docs/Aether_ar.png)
 
 ### اینترنت آزاد برای همه :))
 
@@ -55,7 +55,7 @@ aether
 
 ### پیش‌نیازها
 
-- Rust نسخه ۱.۹۸ یا بالاتر
+- Rust، آخرین نسخه‌ی پایدار
 - کامپایلر C/C++
 - CMake
 
