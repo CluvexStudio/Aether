@@ -943,9 +943,14 @@ pub struct TlsParams<'a> {
 /// Install TLS verification on an `SslContextBuilder`.
 ///
 fn verify_enabled() -> bool {
-    std::env::var("AETHER_TLS_VERIFY")
-        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
+    match std::env::var("AETHER_TLS_VERIFY") {
+        Ok(value) => matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => team_run(),
+    }
+}
+
+fn team_run() -> bool {
+    std::env::var("AETHER_TEAM").is_ok_and(|team| !team.trim().is_empty())
 }
 
 fn spki_sha256(cert: &boring::x509::X509Ref) -> Option<[u8; 32]> {
@@ -965,7 +970,8 @@ pub fn install_verification(
     if !verify_enabled() {
         builder.set_verify(SslVerifyMode::NONE);
         announce_once(
-            "tls verification: disabled (default; --tls-verify enables pinning)".to_string(),
+            "tls verification: disabled (--tls-verify enables pinning; on by default with --team)"
+                .to_string(),
         );
         return Ok(());
     }
@@ -1440,6 +1446,36 @@ impl<'a> Fields<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_trust_run_verifies_the_gateway_unless_told_otherwise() {
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _held = ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let clear = || {
+            for key in ["AETHER_TEAM", "AETHER_TLS_VERIFY"] {
+                std::env::remove_var(key);
+            }
+        };
+
+        clear();
+        assert!(!verify_enabled());
+
+        std::env::set_var("AETHER_TEAM", "example");
+        assert!(verify_enabled());
+
+        std::env::set_var("AETHER_TLS_VERIFY", "false");
+        assert!(!verify_enabled());
+
+        std::env::remove_var("AETHER_TEAM");
+        std::env::set_var("AETHER_TLS_VERIFY", "1");
+        assert!(verify_enabled());
+
+        clear();
+    }
+
     use super::*;
 
     /// The hold of a test on the session key, which the whole process shares: the tests that
