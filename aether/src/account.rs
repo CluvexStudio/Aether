@@ -648,7 +648,7 @@ async fn api_call_by(
 
     let mut ech = api_ech().await?;
     let fingerprint = crate::tls::Fingerprint::configured();
-    let named_fragment = api_fragment();
+    let fragment = api_fragment();
     let headers = front_headers(bearer, jwt);
     let mut way = 0;
     // The ways another server than the API answered for, with an answer not worth asking again.
@@ -673,14 +673,9 @@ async fn api_call_by(
             tokio::time::sleep(wait).await;
         }
 
-        let fragment = if route.front {
-            front_fragment()
-        } else {
-            named_fragment
-        };
         if route.front {
             log::info!(
-                "[*] {label} goes by {} on the cloudflare edge {}, its ClientHello in pieces",
+                "[*] {label} goes by {} on the cloudflare edge {}",
                 route.host,
                 route.address
             );
@@ -812,12 +807,6 @@ async fn api_call_by(
     }
 
     Err(last_error)
-}
-
-fn front_fragment() -> crate::fragment::FragmentConfig {
-    let mut fragment = crate::fragment::FragmentConfig::from_env();
-    fragment.enabled = true;
-    fragment
 }
 
 /// `--fragment`: the ClientHello of the calls to the WARP API goes out in pieces as on MASQUE over
@@ -1616,16 +1605,6 @@ mod tests {
                 front: false,
             }])
         );
-    }
-
-    #[test]
-    fn a_call_by_an_edge_cuts_its_clienthello_up_without_the_option() {
-        let _settings = hold_api_settings();
-        std::env::remove_var("AETHER_MASQUE_H2_FRAGMENT");
-        assert!(!api_fragment().enabled);
-        let fragment = front_fragment();
-        assert!(fragment.enabled);
-        assert!(fragment.size_max >= fragment.size_min && fragment.size_min >= 1);
     }
 
     #[test]
