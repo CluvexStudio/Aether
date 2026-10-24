@@ -639,29 +639,16 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.10
+            Aether v2.3.11
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
             Changed
 
-            - The MASQUE scan also tries 162.159.199.0/24, where Cloudflare serves MASQUE to WARP+, and 2606:4700:103::/48, where WARP's own client finds its IPv6 gateway. That gateway, 2606:4700:103::1, now goes first among the IPv6 addresses, and the gateways of WARP+ and Zero Trust, 162.159.199.2 and 162.159.197.2, are tried on every MASQUE port, as WARP's 162.159.198.2 already was.
+            - Without --team, the MASQUE scan over IPv4 tries 297 gateways and no other address: 75 of 162.159.198.0/24 and 222 of 162.159.199.0/24, those of their 256 that completed a TCP handshake on port 443. It tries each of them on every MASQUE port, 443 first, then 500, 1701, 4500, 4443, 8443 and 8095; before, the scan swept the ranges, and only ten known gateways went past port 443. WARP's own gateways, 162.159.198.1 and 162.159.198.2, are not among the 297; --peer still names any gateway.
+            - With --team, the MASQUE scan is as it was: its known gateways, then the ranges, 162.159.197.0/24 first. The IPv6 scan is unchanged.
 
-            New
-
-            Ten options bring the TLS fingerprint closer to the ClientHello of a real client, through BoringSSL's own calls, with no patch to it:
-
-            - --tls-sigalgs sets the signature algorithms, in order, by BoringSSL's names, e.g. "mldsa44:mldsa65:mldsa87:ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256" as Chrome starts its list. The server signs the handshake with one of them. Without it they are BoringSSL's: Chrome's eight, then rsa_pkcs1_sha1.
-            - --tls-cert-compression offers certificate compression (RFC 8879), in order, of zlib, brotli and zstd: "brotli" as Chrome offers it, "zlib:brotli:zstd" as Firefox does. A certificate the server sends compressed is decompressed, and must come to the length the server gave.
-            - --tls-alps new or --tls-alps old offers application settings (ALPS) for HTTP/2 and HTTP/3, as Chrome does: under the codepoint Chrome sends now (0x44cd), or under the one it sent before (0x4469), as Chrome 120 does.
-            - --tls-trust-anchors asks for a certificate from the trust anchors it names, by their IDs in dotted decimal, as Chrome asks for its own. --tls-server-padding asks the server for padding in its handshake, as Chrome asks for 6000 bytes.
-            - --enable-ech-grease sends a GREASE ECH extension, which looks like ECH and hides nothing, when there is no ECH config to offer, as Chrome and Firefox do.
-            - --disable-ocsp-stapling, --disable-sct and --disable-session-ticket leave out the request for OCSP, the request for signed certificate timestamps and the session ticket, which the handshakes otherwise send as Chrome does. --disable-extension-permutation keeps BoringSSL's one order of the extensions, the same on every handshake, as Firefox, Python and Go keep theirs.
-            - All ten shape every TLS handshake the fingerprint shapes: MASQUE over HTTP/2 and over HTTP/3, the WARP API and the DoH lookup of the ECH key. A value BoringSSL does not take stops the core as it starts, with the option named. Without them, every ClientHello is as it was.
-
-            Some of what other clients send, BoringSSL cannot: delegated_credentials, record_size_limit, signature_algorithms_cert, encrypt_then_mac, post_handshake_auth and more than one point format. It always sends psk_key_exchange_modes with TLS 1.3, and orders the extensions its own way.
-
-            Other commands and options are unchanged. The changes of 2.3.9, 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes, and those of 2.3.9 hold the changes of 2.3.8.
+            Other commands and options are unchanged. The changes of 2.3.10, 2.3.9, 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes, and those of 2.3.9 hold the changes of 2.3.8.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 

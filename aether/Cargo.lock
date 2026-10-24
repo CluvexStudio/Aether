@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "aether"
-version = "2.3.10"
+version = "2.3.11"
 dependencies = [
  "anyhow",
  "arti-client",
