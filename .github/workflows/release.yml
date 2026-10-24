@@ -639,13 +639,14 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.8
+            Aether v2.3.9
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
             Changed
 
             - Aether is built on boring 5.3.0, Cloudflare's bindings to BoringSSL, with the BoringSSL of 2026-09-29 and Cloudflare's post-quantum patch, which boring applies to every build, as it did before. Without the new options below, every ClientHello is as it was, but for one change of the newer BoringSSL, which Chrome's has as well: a ClientHello of 256 to 511 bytes is no longer padded to 512.
+            - The Zero Trust sign-in by email sends each of its requests over a connection of its own, as the WARP API calls do: no connection carries two requests. Each call to the WARP API, and each attempt of it, already went over a TCP connection and a TLS handshake of its own.
 
             New
 
@@ -654,7 +655,7 @@ jobs:
             - --enable-grease-sigalgs puts a GREASE value first among the signature algorithms, as Chrome does; BoringSSL leaves it out by default. It goes with --disable-grease or without it.
             - All three shape every TLS handshake the fingerprint shapes: MASQUE over HTTP/2 and over HTTP/3, the WARP API and the DoH lookup of the ECH key. A value BoringSSL does not take stops the core as it starts, with the option named.
 
-            Other commands and options are unchanged. The changes of 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes.
+            Other commands and options are unchanged. 2.3.8 was not released on its own; these notes hold its changes too. The changes of 2.3.7, 2.3.6, 2.3.5 and 2.3.4 are in their release notes.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
