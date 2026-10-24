@@ -564,12 +564,21 @@ fn api_routes_of(
 /// The ways of the calls to the WARP API, as the options and this run have them, see
 /// `api_routes_of`.
 fn api_routes() -> Result<Vec<ApiRoute>> {
-    Ok(api_routes_of(
+    let mut routes = api_routes_of(
         api_host()?,
         api_sni()?,
         api_address()?,
         answered_api_host().as_deref(),
-    ))
+    );
+    if let Some(edge) = answered_api_edge() {
+        if let Some(at) = routes
+            .iter()
+            .position(|route| route.front && route.address == edge)
+        {
+            routes.rotate_left(at);
+        }
+    }
+    Ok(routes)
 }
 
 /// The name the WARP API itself answered last in this run when the calls go by the default
@@ -595,6 +604,22 @@ pub fn forget_answered_api_host() {
     *API_ANSWERED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    remember_answered_api_edge(None);
+}
+
+static API_EDGE_ANSWERED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn answered_api_edge() -> Option<String> {
+    API_EDGE_ANSWERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn remember_answered_api_edge(edge: Option<&str>) {
+    *API_EDGE_ANSWERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = edge.map(str::to_string);
 }
 
 /// A call to the WARP API, the ways `api_routes` gives, see `api_call_by`.
@@ -742,7 +767,14 @@ async fn api_call_by(
                     route.host
                 );
             }
+            if route.front && answered_api_edge().as_deref() != Some(route.address.as_str()) {
+                log::info!(
+                    "[*] the warp api answered on the cloudflare edge {}; the later calls of this run go there first",
+                    route.address
+                );
+            }
             remember_answered_api_host(&route.host);
+            remember_answered_api_edge(route.front.then_some(route.address.as_str()));
         }
 
         if status.is_success() {
@@ -1708,6 +1740,30 @@ mod tests {
         forget_answered_api_host();
         assert_eq!(answered_api_host(), None);
         assert_eq!(first(), consts::API_HOST);
+    }
+
+    #[tokio::test]
+    async fn an_edge_the_api_answered_on_goes_first_until_the_run_forgets_it() {
+        let _answered = hold_answered().await;
+        let _settings = hold_api_settings();
+        let ways = || api_routes().expect("the ways to the api");
+        assert!(!ways()[0].front);
+
+        let edge = consts::API_FRONT_ADDRESSES[1];
+        remember_answered_api_edge(Some(edge));
+        let routes = ways();
+        assert_eq!(routes.len(), 4);
+        assert!(routes[0].front);
+        assert_eq!(routes[0].address, edge);
+        assert_eq!(routes[0].host, consts::API_HOST);
+
+        std::env::set_var("AETHER_API_ADDRESS", "162.159.137.105");
+        assert!(ways().iter().all(|route| !route.front));
+        std::env::remove_var("AETHER_API_ADDRESS");
+
+        forget_answered_api_host();
+        assert_eq!(answered_api_edge(), None);
+        assert!(!ways()[0].front);
     }
 
     #[test]
