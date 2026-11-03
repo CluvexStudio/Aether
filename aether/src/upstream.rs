@@ -263,24 +263,38 @@ impl Upstream {
             Kind::Socks5 => "socks5",
             Kind::Http => "http",
         };
-        let credentials = match (&self.user, &self.password) {
+        format!("{scheme}://{}{host}:{}", self.credentials(), self.port)
+    }
+
+    /// The proxy tor can dial its relays and bridges through, as tor's outbound proxy takes it: a
+    /// socks5 proxy at an address, with no name to resolve, and any credentials written into the
+    /// address. One with a password is taken on this machine only: tor prints a proxy elsewhere in
+    /// its log, password and all.
+    pub fn tor_proxy(&self) -> Option<String> {
+        if self.kind != Kind::Socks5 {
+            return None;
+        }
+        let ip: IpAddr = self.host.parse().ok()?;
+        if self.user.is_some() && !ip.is_loopback() {
+            return None;
+        }
+        Some(format!(
+            "socks5://{}{}",
+            self.credentials(),
+            SocketAddr::new(ip, self.port)
+        ))
+    }
+
+    /// The credentials as a proxy's address carries them, percent-encoded and ending in @; empty
+    /// without a user.
+    fn credentials(&self) -> String {
+        match (&self.user, &self.password) {
             (Some(user), Some(password)) => {
                 format!("{}:{}@", percent_encode(user), percent_encode(password))
             }
             (Some(user), None) => format!("{}@", percent_encode(user)),
             _ => String::new(),
-        };
-        format!("{scheme}://{credentials}{host}:{}", self.port)
-    }
-
-    /// The address tor can dial its relays and bridges through: a socks5 proxy at an address, with
-    /// no name to resolve and no password, which is what tor's outbound proxy takes.
-    pub fn socks_address(&self) -> Option<SocketAddr> {
-        if self.kind != Kind::Socks5 || self.user.is_some() {
-            return None;
         }
-        let ip: IpAddr = self.host.parse().ok()?;
-        Some(SocketAddr::new(ip, self.port))
     }
 
     pub fn as_reqwest_proxy(&self) -> Result<reqwest::Proxy> {
@@ -1071,16 +1085,41 @@ mod tests {
     }
 
     #[test]
-    fn tor_takes_a_socks5_proxy_at_an_address_without_a_password_only() {
-        let at = |raw: &str| Upstream::parse(raw).unwrap().socks_address();
+    fn tor_takes_a_socks5_proxy_at_an_address_with_a_password_on_this_machine_only() {
+        let at = |raw: &str| Upstream::parse(raw).unwrap().tor_proxy();
         assert_eq!(
-            at("socks5://127.0.0.1:10821"),
-            "127.0.0.1:10821".parse().ok()
+            at("socks5://127.0.0.1:10821").as_deref(),
+            Some("socks5://127.0.0.1:10821")
         );
-        assert_eq!(at("socks5://[::1]:1080"), "[::1]:1080".parse().ok());
+        assert_eq!(
+            at("socks5://203.0.113.7:1080").as_deref(),
+            Some("socks5://203.0.113.7:1080")
+        );
+        assert_eq!(
+            at("socks5://al%40ice:p%3Ass@127.0.0.1:1080").as_deref(),
+            Some("socks5://al%40ice:p%3Ass@127.0.0.1:1080")
+        );
+        assert_eq!(
+            at("socks5://alice:secret@[::1]:1080").as_deref(),
+            Some("socks5://alice:secret@[::1]:1080")
+        );
         assert!(at("http://127.0.0.1:8080").is_none());
         assert!(at("socks5://proxy.example:1080").is_none());
-        assert!(at("socks5://alice:secret@127.0.0.1:1080").is_none());
+        assert!(at("socks5://alice:secret@203.0.113.7:1080").is_none());
+    }
+
+    #[cfg(feature = "tor")]
+    #[test]
+    fn tor_reads_the_password_the_proxy_carries() {
+        let proxy: tor_chanmgr::ProxyProtocol =
+            Upstream::parse("socks5://al%40ice:p%3Ass@127.0.0.1:1080")
+                .unwrap()
+                .tor_proxy()
+                .unwrap()
+                .parse()
+                .unwrap();
+        // Written back from what tor read: the credentials were decoded once, not twice or never.
+        assert_eq!(proxy.to_string(), "socks5://al%40ice:p%3Ass@127.0.0.1:1080");
     }
 
     #[test]

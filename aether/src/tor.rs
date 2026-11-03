@@ -361,15 +361,18 @@ mod with_tor {
             .state_dir(CfgPath::new(data.to_string_lossy().to_string()));
 
         // Without a tunnel to dial through, tor leaves through the upstream proxy, if there is one.
-        if let Some(proxy) = through.or_else(upstream_socks) {
-            let parsed: ProxyProtocol = format!("socks5://{proxy}")
-                .parse()
-                .map_err(|e| AetherError::Other(format!("tor cannot dial through {proxy}: {e}")))?;
-            builder.channel().outbound_proxy(parsed);
+        let proxy = match through {
+            Some(tunnel) => Some(format!("socks5://{tunnel}").parse().map_err(|e| {
+                AetherError::Other(format!("tor cannot dial through {tunnel}: {e}"))
+            })?),
+            None => upstream_proxy(),
+        };
+        if let Some(proxy) = proxy {
+            builder.channel().outbound_proxy(proxy);
         } else if let Some(proxy) = crate::upstream::configured() {
             // Connecting directly would leave outside the proxy aether was told to dial through.
             return Err(AetherError::Other(format!(
-                "tor cannot dial through the upstream proxy at {}: it takes a socks5 address without a password",
+                "tor cannot dial through the upstream proxy at {}: it takes a socks5 address, with a password only on this machine",
                 proxy.endpoint()
             )));
         }
@@ -831,9 +834,10 @@ mod with_tor {
     }
 
     /// The upstream proxy tor dials through when no tunnel carries it, see
-    /// [crate::upstream::Upstream::socks_address].
-    fn upstream_socks() -> Option<SocketAddr> {
-        crate::upstream::configured()?.socks_address()
+    /// [crate::upstream::Upstream::tor_proxy]. One tor cannot read is one it cannot dial through,
+    /// and is not printed, as it may carry a password.
+    fn upstream_proxy() -> Option<ProxyProtocol> {
+        crate::upstream::configured()?.tor_proxy()?.parse().ok()
     }
 
     /// Says how tor reaches the network when no tunnel carries it: through the upstream proxy, or
@@ -842,13 +846,14 @@ mod with_tor {
         let Some(proxy) = crate::upstream::configured() else {
             return;
         };
-        match proxy.socks_address() {
-            Some(address) => {
-                log::info!("[*] tor dials out through the upstream proxy at {address}")
-            }
+        match proxy.tor_proxy() {
+            Some(_) => log::info!(
+                "[*] tor dials out through the upstream proxy at {}",
+                proxy.endpoint()
+            ),
             None => log::warn!(
-                "[-] tor cannot dial through the upstream proxy at {}, which is no socks5 address \
-                 without a password; it does not connect directly instead",
+                "[-] tor cannot dial through the upstream proxy at {}, which is no socks5 address, \
+                 or has a password and is not on this machine; it does not connect directly instead",
                 proxy.endpoint()
             ),
         }
