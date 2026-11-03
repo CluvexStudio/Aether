@@ -2,6 +2,8 @@
 
 ![Aether](Docs/Aether_ar.png)
 
+<a href="https://trendshift.io/repositories/112657" target="_blank"><img src="https://trendshift.io/api/badge/repositories/112657" alt="CluvexStudio%2FAether | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+
 ### اینترنت آزاد برای همه:))
 **[راهنمای فارسی](README.fa.md)** · **[English Guide](Docs/DOCS.en.md)** · **[راهنمای کامل فارسی](Docs/DOCS.fa.md)**
 
