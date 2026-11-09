@@ -38,7 +38,6 @@ fn app_queue() -> usize {
 const MAX_INGEST_PER_TICK: usize = 512;
 const MAX_RECV_CHUNKS: usize = 128;
 const BACKPRESSURE_RETRY: std::time::Duration = std::time::Duration::from_millis(2);
-const DROP_REPORT_STEP: usize = 512;
 const MAX_IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(250);
 
 const ORPHAN_LINGER: std::time::Duration = std::time::Duration::from_secs(10);
@@ -95,6 +94,9 @@ pub struct StackDevice {
     rx: VecDeque<Vec<u8>>,
     tx: VecDeque<Vec<u8>>,
     mtu: usize,
+    // Packets the carrier has not taken yet; at this many transmit() gives no token, so smoltcp keeps
+    // unsent data in its socket buffers instead of handing over packets that would be lost
+    tx_limit: usize,
 }
 
 impl StackDevice {
@@ -103,6 +105,7 @@ impl StackDevice {
             rx: VecDeque::new(),
             tx: VecDeque::new(),
             mtu,
+            tx_limit: app_queue().max(1),
         }
     }
 }
@@ -135,6 +138,9 @@ impl Device for StackDevice {
     }
 
     fn transmit(&mut self, _t: Instant) -> Option<Self::TxToken<'_>> {
+        if self.tx.len() >= self.tx_limit {
+            return None;
+        }
         Some(StackTxToken(&mut self.tx))
     }
 
@@ -554,8 +560,6 @@ async fn run(
     outbound_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<()> {
     let mut deferred: VecDeque<DataIn> = VecDeque::new();
-    let mut tx_dropped: usize = 0;
-    let mut next_drop_report: usize = DROP_REPORT_STEP;
 
     loop {
         let now = Instant::now();
@@ -568,15 +572,7 @@ async fn run(
         }
         let tcp_busy = service_tcp(&mut s);
         let udp_busy = service_udp(&mut s);
-        let dropped = flush_tx(&mut s, &outbound_tx);
-
-        if dropped > 0 {
-            tx_dropped = tx_dropped.saturating_add(dropped);
-            if tx_dropped >= next_drop_report {
-                next_drop_report = tx_dropped + DROP_REPORT_STEP;
-                log::debug!("[netstack] dropped {tx_dropped} outbound packets under pressure");
-            }
-        }
+        let tx_pending = flush_tx(&mut s, &outbound_tx);
 
         while let Some(d) = deferred.pop_front() {
             if let Some(back) = try_handle_data(&mut s, d) {
@@ -585,7 +581,7 @@ async fn run(
             }
         }
 
-        let delay = if tcp_busy || udp_busy || !deferred.is_empty() {
+        let delay = if tcp_busy || udp_busy || tx_pending || !deferred.is_empty() {
             Some(BACKPRESSURE_RETRY)
         } else {
             let polled = s
@@ -985,16 +981,24 @@ fn service_udp(s: &mut NetStack) -> bool {
     backpressured
 }
 
-fn flush_tx(s: &mut NetStack, outbound_tx: &mpsc::Sender<Vec<u8>>) -> usize {
-    let mut dropped = 0;
+/// Hands the stack's packets to the carrier without waiting. When its channel is full the rest stay queued in the
+/// device (true is returned and the loop comes back shortly): dropping them made smoltcp, which has no congestion
+/// control here, resend whole windows into the same full channel until every connection stalled under uploads.
+fn flush_tx(s: &mut NetStack, outbound_tx: &mpsc::Sender<Vec<u8>>) -> bool {
     while let Some(pkt) = s.device.tx.pop_front() {
         match outbound_tx.try_send(pkt) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => dropped += 1,
-            Err(mpsc::error::TrySendError::Closed(_)) => break,
+            Err(mpsc::error::TrySendError::Full(pkt)) => {
+                s.device.tx.push_front(pkt);
+                return true;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                s.device.tx.clear();
+                return false;
+            }
         }
     }
-    dropped
+    false
 }
 
 #[cfg(test)]
@@ -1371,7 +1375,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn flush_tx_drops_instead_of_blocking_when_outbound_is_full() {
+    async fn flush_tx_keeps_packets_instead_of_blocking_when_outbound_is_full() {
         let (outbound_tx, outbound_rx) = mpsc::channel::<Vec<u8>>(2);
         let mut stack = NetStack {
             iface: {
@@ -1393,13 +1397,30 @@ mod tests {
             stack.device.tx.push_back(vec![1, 2, 3]);
         }
 
-        let dropped = flush_tx(&mut stack, &outbound_tx);
+        let mut outbound_rx = outbound_rx;
+        assert!(flush_tx(&mut stack, &outbound_tx), "a full channel leaves packets pending");
+        assert_eq!(outbound_rx.len(), 2, "the channel takes what fits");
+        assert_eq!(stack.device.tx.len(), 8, "nothing is dropped: the rest waits in the device");
 
-        assert!(stack.device.tx.is_empty(), "the tx queue must be drained");
-        assert_eq!(
-            dropped, 8,
-            "everything past the channel capacity is dropped"
-        );
-        assert_eq!(outbound_rx.len(), 2, "the channel keeps what fits");
+        let mut delivered = 0;
+        while stack.device.tx.len() + outbound_rx.len() > 0 {
+            while outbound_rx.try_recv().is_ok() {
+                delivered += 1;
+            }
+            flush_tx(&mut stack, &outbound_tx);
+        }
+        assert_eq!(delivered, 10, "every packet reaches the carrier once there is room");
+    }
+
+    #[test]
+    fn transmit_gives_no_token_while_the_device_queue_is_full() {
+        let mut device = StackDevice::new(1400);
+        device.tx_limit = 3;
+        for _ in 0..3 {
+            device.tx.push_back(vec![0u8; 20]);
+        }
+        assert!(device.transmit(Instant::now()).is_none(), "a full queue refuses new packets");
+        device.tx.pop_front();
+        assert!(device.transmit(Instant::now()).is_some(), "room again: smoltcp may send");
     }
 }
