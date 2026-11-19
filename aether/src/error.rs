@@ -86,6 +86,9 @@ pub enum AetherError {
     #[error(transparent)]
     Endpoint(#[from] crate::modes::endpoints::EndpointError),
 
+    #[error(transparent)]
+    Carrier(#[from] crate::carrier::CarrierError),
+
     #[error("other: {0}")]
     Other(String),
 }

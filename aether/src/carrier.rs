@@ -1,6 +1,23 @@
 use std::net::SocketAddr;
 
 use crate::error::{AetherError, Result};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CarrierError {
+    #[error("{0} inside the tunnel stopped")]
+    Stopped(String),
+    #[error("{name} inside the tunnel failed: {reason}")]
+    Failed { name: String, reason: String },
+    #[error(
+        "{name} listens on {socks}, which the tunnel cannot be dialled through ({reason}); \
+         aether ends rather than dial around {name}"
+    )]
+    Undialable {
+        name: String,
+        socks: SocketAddr,
+        reason: String,
+    },
+}
 use crate::relay::TaskGuard;
 use crate::upstream;
 
@@ -14,9 +31,12 @@ pub(crate) fn watch_chain(
     let watch = tokio::spawn(async move {
         let e = match chain.await {
             Ok(Err(e)) => e,
-            Ok(Ok(())) => AetherError::Other(format!("{name} inside the tunnel stopped")),
+            Ok(Ok(())) => AetherError::from(CarrierError::Stopped(name.to_string())),
             Err(failed) if failed.is_cancelled() => return,
-            Err(failed) => AetherError::Other(format!("{name} inside the tunnel failed: {failed}")),
+            Err(failed) => AetherError::from(CarrierError::Failed {
+                name: name.to_string(),
+                reason: failed.to_string(),
+            }),
         };
         log::error!(target: "aether", "[-] {name}: {e}");
         let _ = core_end.send(e);
@@ -38,11 +58,11 @@ pub(crate) async fn until_core_end(
 pub(crate) fn carrier_upstream(name: &str, socks: SocketAddr) -> Result<String> {
     let setting = format!("socks5://{socks}");
     upstream::Upstream::parse(&setting).map_err(|e| {
-        AetherError::Other(format!(
-            "{name} listens on {socks}, which the tunnel cannot be dialled through ({}); \
-             aether ends rather than dial around {name}",
-            e.detail()
-        ))
+        AetherError::from(CarrierError::Undialable {
+            name: name.to_string(),
+            socks,
+            reason: e.detail(),
+        })
     })?;
     Ok(setting)
 }
@@ -181,7 +201,7 @@ mod tests {
         let returned = tokio::spawn(async { Ok(()) });
         let reported = next("psiphon", returned).await;
         assert!(
-            matches!(&reported, AetherError::Other(why) if why == "psiphon inside the tunnel stopped"),
+            reported.detail() == "psiphon inside the tunnel stopped",
             "{reported:?}"
         );
 
@@ -193,7 +213,9 @@ mod tests {
         });
         let reported = next("tor", panicked).await;
         assert!(
-            matches!(&reported, AetherError::Other(why) if why.starts_with("tor inside the tunnel failed")),
+            reported
+                .detail()
+                .starts_with("tor inside the tunnel failed"),
             "{reported:?}"
         );
     }
