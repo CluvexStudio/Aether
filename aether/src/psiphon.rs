@@ -9,7 +9,37 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
-use crate::error::{AetherError, Result};
+use crate::error::Result;
+
+#[derive(Debug, thiserror::Error)]
+pub enum PsiphonError {
+    #[error("{0}")]
+    NotInstalled(String),
+    #[error("psiphon config {path}: {reason}")]
+    Config { path: String, reason: String },
+    #[error("psiphon config {0} is not a json object")]
+    ConfigNotAnObject(String),
+    #[error("psiphon config could not be written: {0}")]
+    ConfigNotWritten(serde_json::Error),
+    #[error("psiphon state dir {path}: {error}")]
+    StateDir { path: String, error: std::io::Error },
+    #[error("psiphon config could not be saved: {0}")]
+    ConfigNotSaved(std::io::Error),
+    #[error("psiphon would not start: {0}")]
+    NotStarted(std::io::Error),
+    #[error("psiphon gave no notice stream")]
+    NoNotices,
+    #[error("psiphon did not come up in time; it may be blocked on this network")]
+    NotReadyInTime,
+    #[error("psiphon stopped before it was ready")]
+    StoppedBeforeReady,
+    #[error("psiphon: {0}")]
+    Io(std::io::Error),
+    #[error("psiphon stopped: {0}")]
+    Stopped(std::process::ExitStatus),
+    #[error("psiphon's listener {listen} stopped{reason}")]
+    ListenerStopped { listen: SocketAddr, reason: String },
+}
 
 const DEFAULT_BIND: &str = "127.0.0.1:1821";
 const READY_TIMEOUT_SECS: u64 = 180;
@@ -389,16 +419,18 @@ fn read_base_config() -> Result<Option<serde_json::Value>> {
         None => return Ok(None),
     };
 
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| AetherError::Other(format!("psiphon config {path}: {e}")))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| PsiphonError::Config {
+        path: path.clone(),
+        reason: e.to_string(),
+    })?;
 
-    let parsed: serde_json::Value =
-        json5_ish(&text).map_err(|e| AetherError::Other(format!("psiphon config {path}: {e}")))?;
+    let parsed: serde_json::Value = json5_ish(&text).map_err(|e| PsiphonError::Config {
+        path: path.clone(),
+        reason: e.to_string(),
+    })?;
 
     if !parsed.is_object() {
-        return Err(AetherError::Other(format!(
-            "psiphon config {path} is not a json object"
-        )));
+        return Err(PsiphonError::ConfigNotAnObject(path).into());
     }
 
     log::info!("[*] psiphon settings read from {path}");
@@ -668,7 +700,7 @@ fn build_config(
     );
 
     serde_json::to_string(&serde_json::Value::Object(map))
-        .map_err(|e| AetherError::Other(format!("psiphon config could not be written: {e}")))
+        .map_err(|e| PsiphonError::ConfigNotWritten(e).into())
 }
 
 fn proxy_note(
@@ -703,12 +735,8 @@ pub struct Running {
 
 impl Running {
     pub async fn wait(&mut self) -> Result<()> {
-        let status = self
-            .child
-            .wait()
-            .await
-            .map_err(|e| AetherError::Other(format!("psiphon: {e}")))?;
-        Err(AetherError::Other(format!("psiphon stopped: {status}")))
+        let status = self.child.wait().await.map_err(PsiphonError::Io)?;
+        Err(PsiphonError::Stopped(status).into())
     }
 }
 
@@ -776,15 +804,16 @@ pub async fn start(
     upstream: Option<String>,
     placement: Placement,
 ) -> Result<Running> {
-    let exe = binary().ok_or_else(|| AetherError::Other(install_hint()))?;
+    let exe = binary().ok_or_else(|| PsiphonError::NotInstalled(install_hint()))?;
 
-    std::fs::create_dir_all(state)
-        .map_err(|e| AetherError::Other(format!("psiphon state dir {}: {e}", state.display())))?;
+    std::fs::create_dir_all(state).map_err(|error| PsiphonError::StateDir {
+        path: state.display().to_string(),
+        error,
+    })?;
 
     let config = build_config(state, socks, http, upstream, placement)?;
     let config_path = state.join("aether-psiphon.json");
-    std::fs::write(&config_path, config)
-        .map_err(|e| AetherError::Other(format!("psiphon config could not be saved: {e}")))?;
+    std::fs::write(&config_path, config).map_err(PsiphonError::ConfigNotSaved)?;
     // The config can carry the password of the upstream proxy.
     #[cfg(unix)]
     {
@@ -812,14 +841,9 @@ pub async fn start(
         log::info!("[*] psiphon trusts the ca store at {value}");
         command.env(key, value);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|e| AetherError::Other(format!("psiphon would not start: {e}")))?;
+    let mut child = command.spawn().map_err(PsiphonError::NotStarted)?;
 
-    let notices = child
-        .stderr
-        .take()
-        .ok_or_else(|| AetherError::Other("psiphon gave no notice stream".into()))?;
+    let notices = child.stderr.take().ok_or(PsiphonError::NoNotices)?;
 
     if let Some(out) = child.stdout.take() {
         tokio::spawn(async move {
@@ -839,17 +863,9 @@ pub async fn start(
 
     loop {
         let line = match tokio::time::timeout_at(deadline, lines.next_line()).await {
-            Err(_) => {
-                return Err(AetherError::Other(
-                    "psiphon did not come up in time; it may be blocked on this network".into(),
-                ))
-            }
-            Ok(Err(e)) => return Err(AetherError::Other(format!("psiphon: {e}"))),
-            Ok(Ok(None)) => {
-                return Err(AetherError::Other(
-                    "psiphon stopped before it was ready".into(),
-                ))
-            }
+            Err(_) => return Err(PsiphonError::NotReadyInTime.into()),
+            Ok(Err(e)) => return Err(PsiphonError::Io(e).into()),
+            Ok(Ok(None)) => return Err(PsiphonError::StoppedBeforeReady.into()),
             Ok(Ok(Some(line))) => line,
         };
 
@@ -960,7 +976,7 @@ pub async fn run_only(
 pub async fn run_chain(through: SocketAddr, state: PathBuf) -> Result<()> {
     // Without the program nothing would ever serve the listener the user dials: say so now, not
     // once the tunnel is up.
-    binary().ok_or_else(|| AetherError::Other(install_hint()))?;
+    binary().ok_or_else(|| PsiphonError::NotInstalled(install_hint()))?;
     let listen = listen_address();
     // Held from the start, as the core holds its own: the user dials Psiphon's listener while the
     // tunnel and Psiphon come up, and no other program may take it meanwhile. Psiphon listens on
@@ -1033,10 +1049,11 @@ async fn relay_to(
 
     tokio::select! {
         ended = running.wait() => ended,
-        relayed = socks_relay => Err(AetherError::Other(match relayed {
-            Err(e) => format!("psiphon's listener {listen} stopped: {e}"),
-            Ok(()) => format!("psiphon's listener {listen} stopped"),
-        })),
+        relayed = socks_relay => Err(PsiphonError::ListenerStopped {
+            listen,
+            reason: relayed.err().map(|e| format!(": {e}")).unwrap_or_default(),
+        }
+        .into()),
         never = http_relay => match never {},
     }
 }
@@ -1279,6 +1296,34 @@ mod tests {
         assert_eq!(alone["DisableTactics"], serde_json::Value::Null);
 
         clear();
+    }
+
+    #[test]
+    fn psiphon_errors_read_as_they_did_before_they_had_a_type() {
+        let detail = |error: PsiphonError| crate::error::AetherError::from(error).detail();
+        assert_eq!(
+            detail(PsiphonError::NoNotices),
+            "psiphon gave no notice stream"
+        );
+        assert_eq!(
+            detail(PsiphonError::ConfigNotAnObject("base.json".into())),
+            "psiphon config base.json is not a json object"
+        );
+        let listen: SocketAddr = "127.0.0.1:1821".parse().expect("an address");
+        assert_eq!(
+            detail(PsiphonError::ListenerStopped {
+                listen,
+                reason: String::new(),
+            }),
+            "psiphon's listener 127.0.0.1:1821 stopped"
+        );
+        assert_eq!(
+            detail(PsiphonError::ListenerStopped {
+                listen,
+                reason: ": refused".into(),
+            }),
+            "psiphon's listener 127.0.0.1:1821 stopped: refused"
+        );
     }
 
     #[test]

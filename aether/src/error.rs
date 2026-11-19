@@ -35,6 +35,9 @@ pub enum AetherError {
     #[error("cancelled")]
     Cancelled,
 
+    #[error(transparent)]
+    Psiphon(#[from] crate::psiphon::PsiphonError),
+
     #[error("other: {0}")]
     Other(String),
 }
