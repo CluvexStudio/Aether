@@ -368,23 +368,6 @@ fn wg_stale_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
-fn build_dns_query() -> Vec<u8> {
-    let id: u16 = rand::random();
-    let mut q = Vec::with_capacity(32);
-    q.extend_from_slice(&id.to_be_bytes());
-    q.extend_from_slice(&[0x01, 0x00]);
-    q.extend_from_slice(&[0x00, 0x01]);
-    q.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-    for label in ["cloudflare", "com"] {
-        q.push(label.len() as u8);
-        q.extend_from_slice(label.as_bytes());
-    }
-    q.push(0x00);
-    q.extend_from_slice(&[0x00, 0x01]);
-    q.extend_from_slice(&[0x00, 0x01]);
-    q
-}
-
 fn ipv4_checksum(header: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;
@@ -402,7 +385,7 @@ fn ipv4_checksum(header: &[u8]) -> u16 {
 }
 
 fn build_dataplane_probe(src: Ipv4Addr) -> Vec<u8> {
-    let dns = build_dns_query();
+    let dns = crate::dns::probe_query();
     let udp_len = 8 + dns.len();
     let total_len = 20 + udp_len;
     let mut pkt = Vec::with_capacity(total_len);

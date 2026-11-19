@@ -475,6 +475,17 @@ pub fn response_matches(
     u16::from_be_bytes([msg[pos], msg[pos + 1]]) == expected_qtype
 }
 
+const PROBE_QUERY: [u8; 32] = [
+    0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 10, b'c', b'l', b'o',
+    b'u', b'd', b'f', b'l', b'a', b'r', b'e', 3, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00, 0x01,
+];
+
+pub(crate) fn probe_query() -> Vec<u8> {
+    let mut query = PROBE_QUERY.to_vec();
+    query[..2].copy_from_slice(&rand::random::<u16>().to_be_bytes());
+    query
+}
+
 pub(crate) fn build_query(name: &str, qtype: u16) -> (Vec<u8>, u16) {
     let mut q = Vec::with_capacity(32 + name.len());
     let id: u16 = rand::random();
@@ -789,6 +800,14 @@ mod tests {
         msg.extend_from_slice(&qtype.to_be_bytes());
         msg.extend_from_slice(&1u16.to_be_bytes());
         msg
+    }
+
+    #[test]
+    fn the_probe_asks_for_the_a_record_of_cloudflare_com_under_a_fresh_id() {
+        let (built, _) = build_query("cloudflare.com", 1);
+        let probes: Vec<Vec<u8>> = (0..8).map(|_| probe_query()).collect();
+        assert!(probes.iter().all(|probe| probe[2..] == built[2..]));
+        assert!(probes.iter().any(|probe| probe[..2] != probes[0][..2]));
     }
 
     #[test]
