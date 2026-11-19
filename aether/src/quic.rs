@@ -14,6 +14,18 @@ use crate::noize::{self, NoizeConfig};
 use crate::tls::{self, TlsParams};
 use crate::{consts, error::AetherError, error::Result};
 
+#[derive(Debug, thiserror::Error)]
+pub enum QuicError {
+    #[error("no spare dcids for migration")]
+    NoSpareConnectionIds,
+    #[error("verify timeout")]
+    VerifyTimeout,
+    #[error("status {0}")]
+    Status(String),
+    #[error("closed before data-plane confirmation")]
+    ClosedBeforeConfirmation,
+}
+
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
 pub const MIN_DATAGRAM_SIZE: usize = 1200;
 
@@ -771,7 +783,7 @@ async fn do_migrate(
     readers: &mut ReaderGuard,
 ) -> Result<()> {
     if conn.available_dcids() == 0 {
-        return Err(AetherError::Other("no spare dcids for migration".into()));
+        return Err(AetherError::from(QuicError::NoSpareConnectionIds));
     }
 
     let new_sock = bind_udp_fast(bind_addr_for(&peer)).await?;
@@ -898,7 +910,7 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
 
     loop {
         if Instant::now() >= deadline {
-            return Err(AetherError::Other("verify timeout".into()));
+            return Err(AetherError::from(QuicError::VerifyTimeout));
         }
 
         let wait = match conn.timeout() {
@@ -964,9 +976,8 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
                                     }
                                     last_probe = Instant::now();
                                 } else {
-                                    return Err(AetherError::Other(format!(
-                                        "status {}",
-                                        String::from_utf8_lossy(h.value())
+                                    return Err(AetherError::from(QuicError::Status(
+                                        String::from_utf8_lossy(h.value()).to_string(),
                                     )));
                                 }
                             }
@@ -1033,9 +1044,7 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
         }
 
         if conn.is_closed() {
-            return Err(AetherError::Other(
-                "closed before data-plane confirmation".into(),
-            ));
+            return Err(AetherError::from(QuicError::ClosedBeforeConfirmation));
         }
     }
 }

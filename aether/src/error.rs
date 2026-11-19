@@ -59,6 +59,9 @@ pub enum AetherError {
     #[error(transparent)]
     Config(#[from] crate::config::ConfigError),
 
+    #[error(transparent)]
+    QuicSession(#[from] crate::quic::QuicError),
+
     #[error("other: {0}")]
     Other(String),
 }
