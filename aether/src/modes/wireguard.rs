@@ -439,7 +439,15 @@ pub(crate) async fn run_wireguard(
         last_good = Some((peer, profile.clone(), profile_name));
 
         let started = Instant::now();
-        match run_wireguard_tunnel(identity.clone(), peer, profile, &listeners).await {
+        match run_wireguard_tunnel(
+            identity.clone(),
+            peer,
+            profile,
+            wg_keepalive_secs(),
+            &listeners,
+        )
+        .await
+        {
             Ok(()) => log::warn!("[-] WireGuard tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] WireGuard tunnel ended: {e}; reconnecting"),
         }
@@ -463,6 +471,7 @@ pub(crate) async fn run_wireguard_tunnel(
     identity: account::Identity,
     peer: SocketAddr,
     aethernoize: aethernoize::AetherNoizeConfig,
+    keepalive: u16,
     listeners: &Listeners,
 ) -> Result<()> {
     let private_key = identity.private_key_bytes()?;
@@ -478,7 +487,7 @@ pub(crate) async fn run_wireguard_tunnel(
             client_id: identity.client_id,
             local_ipv4: ipv4,
             aethernoize: &aethernoize,
-            keepalive: Some(wg_keepalive_secs()),
+            keepalive: Some(keepalive),
         },
         wg_tunnel_validate_timeout(),
     )

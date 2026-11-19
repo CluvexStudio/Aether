@@ -10,7 +10,9 @@ use crate::error::{AetherError, Result};
 use crate::modes::gool::run_gool_tunnel;
 use crate::prompt::{select_ip_version, select_scan_mode_str, want_quick_reconnect};
 use crate::relay::TaskGuard;
-use crate::{account, consts, dns, exitloc, lastconn, masque_h2, netstack, prober, quic, tls};
+use crate::{
+    account, consts, dns, exitloc, lastconn, masque_h2, netstack, noize, prober, quic, tls,
+};
 
 pub(crate) async fn resolve_ech() -> Result<Option<Vec<u8>>> {
     let setting = crate::settings::var(tls::SESSION_ECH_OPTION.variable).ok();
@@ -98,6 +100,7 @@ pub(crate) async fn quick_verify_masque_peer(
     identity: &account::Identity,
     peer: SocketAddr,
     ech: Option<Vec<u8>>,
+    noize: noize::NoizeConfig,
 ) -> bool {
     let sni = match quic::masque_sni() {
         Ok(sni) => sni,
@@ -114,7 +117,7 @@ pub(crate) async fn quick_verify_masque_peer(
         cert_pem: identity.cert_pem.clone(),
         key_pem: identity.key_pem.clone(),
         ech_config_list: ech.clone(),
-        noize: noize_config(),
+        noize,
         timeout: std::time::Duration::from_secs(5),
         local_ipv4: parse_local_v4(&identity.ipv4),
     };
@@ -158,7 +161,9 @@ pub(crate) async fn run_masque(
     if forced.is_none() {
         if let Some(assigned) = team_endpoint() {
             log::info!("[*] verifying the endpoint the organization assigned: {assigned}");
-            if quick_verify_masque_peer(&identity, assigned, tls::session_ech()).await {
+            if quick_verify_masque_peer(&identity, assigned, tls::session_ech(), noize_config())
+                .await
+            {
                 log::info!("[+] the assigned endpoint {assigned} works; skipping the scan");
                 quick_peer = Some(assigned);
             } else {
@@ -175,7 +180,9 @@ pub(crate) async fn run_masque(
             if !ring.is_empty() && want_quick_reconnect(&cached).await {
                 for peer in ring {
                     log::info!("[*] verifying cached gateway {peer} before reuse");
-                    if quick_verify_masque_peer(&identity, peer, tls::session_ech()).await {
+                    if quick_verify_masque_peer(&identity, peer, tls::session_ech(), noize_config())
+                        .await
+                    {
                         log::info!("[+] cached gateway {peer} still works; skipping scan");
                         quick_peer = Some(peer);
                         break;
@@ -217,7 +224,9 @@ pub(crate) async fn run_masque(
             let retried = match last_good_peer {
                 Some(p) => {
                     log::info!("[*] retrying last known-good gateway {p} before rescanning");
-                    if quick_verify_masque_peer(&identity, p, tls::session_ech()).await {
+                    if quick_verify_masque_peer(&identity, p, tls::session_ech(), noize_config())
+                        .await
+                    {
                         Some(p)
                     } else {
                         log::warn!(
@@ -282,7 +291,16 @@ pub(crate) async fn run_masque(
             Some(path) => {
                 run_gool_tunnel(&identity, peer, tls::session_ech(), &listeners, path).await
             }
-            None => run_masque_tunnel(&identity, peer, tls::session_ech(), &listeners).await,
+            None => {
+                run_masque_tunnel(
+                    &identity,
+                    peer,
+                    tls::session_ech(),
+                    noize_config(),
+                    &listeners,
+                )
+                .await
+            }
         };
         strikes.ended(started.elapsed());
         match ended {
@@ -340,18 +358,33 @@ pub(crate) struct MasqueHop {
     _guard: TaskGuard,
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct Hop<'a> {
+    pub(crate) peer: SocketAddr,
+    pub(crate) ech: Option<Vec<u8>>,
+    pub(crate) noize: noize::NoizeConfig,
+    pub(crate) h2: bool,
+    pub(crate) mtu: usize,
+    pub(crate) datagram: usize,
+    pub(crate) version_bait: bool,
+    pub(crate) startup: std::time::Duration,
+    pub(crate) label: &'a str,
+}
+
 pub(crate) async fn establish_masque(
     identity: &account::Identity,
-    peer: SocketAddr,
-    ech: Option<Vec<u8>>,
-    h2: bool,
-    mtu: usize,
-    datagram: usize,
-    version_bait: bool,
-    startup: std::time::Duration,
-    label: &str,
+    hop: Hop<'_>,
 ) -> Result<MasqueHop> {
+    let Hop {
+        peer,
+        ech,
+        noize,
+        h2,
+        mtu,
+        datagram,
+        version_bait,
+        startup,
+        label,
+    } = hop;
     let sni = quic::masque_sni()?;
     let (chans, internals) = quic::channels();
     let quic::Channels {
@@ -411,7 +444,7 @@ pub(crate) async fn establish_masque(
             cert_pem: identity.cert_pem.clone(),
             key_pem: identity.key_pem.clone(),
             ech_config_list: ech,
-            noize: noize_config(),
+            noize,
             local_ipv4: parse_local_v4(&identity.ipv4),
             quiet: false,
             max_datagram: datagram,
@@ -466,6 +499,7 @@ pub(crate) async fn run_masque_tunnel(
     identity: &account::Identity,
     peer: SocketAddr,
     ech: Option<Vec<u8>>,
+    noize: noize::NoizeConfig,
     listeners: &Listeners,
 ) -> Result<()> {
     let h2 = masque_h2::enabled();
@@ -473,14 +507,17 @@ pub(crate) async fn run_masque_tunnel(
 
     let mut hop = establish_masque(
         identity,
-        dial,
-        ech,
-        h2,
-        masque_tunnel_mtu(),
-        quic::MAX_DATAGRAM_SIZE,
-        true,
-        masque_startup_timeout(),
-        "masque",
+        Hop {
+            peer: dial,
+            ech,
+            noize,
+            h2,
+            mtu: masque_tunnel_mtu(),
+            datagram: quic::MAX_DATAGRAM_SIZE,
+            version_bait: true,
+            startup: masque_startup_timeout(),
+            label: "masque",
+        },
     )
     .await?;
 
@@ -707,11 +744,23 @@ mod tests {
                             let mtu = if h2 { H2_TUNNEL_MTU } else { TUNNEL_MTU };
                             let datagram = quic::MAX_DATAGRAM_SIZE;
                             let hop = establish_masque(
-                                &identity, address, None, h2, mtu, datagram, false, startup, "test",
+                                &identity,
+                                Hop {
+                                    peer: address,
+                                    ech: None,
+                                    noize: noize_config(),
+                                    h2,
+                                    mtu,
+                                    datagram,
+                                    version_bait: false,
+                                    startup,
+                                    label: "test",
+                                },
                             );
                             let _ = hop.await;
                         } else {
-                            quick_verify_masque_peer(&identity, address, None).await;
+                            quick_verify_masque_peer(&identity, address, None, noize_config())
+                                .await;
                         }
                     };
                     let (name, authority) = tokio::select! {
@@ -810,11 +859,22 @@ mod tests {
             let datagram = quic::MAX_DATAGRAM_SIZE;
             let startup = std::time::Duration::from_secs(10);
             let hop = establish_masque(
-                identity, address, None, h2, mtu, datagram, false, startup, "test",
+                identity,
+                Hop {
+                    peer: address,
+                    ech: None,
+                    noize: noize_config(),
+                    h2,
+                    mtu,
+                    datagram,
+                    version_bait: false,
+                    startup,
+                    label: "test",
+                },
             );
             let _ = hop.await;
         } else {
-            quick_verify_masque_peer(identity, address, None).await;
+            quick_verify_masque_peer(identity, address, None, noize_config()).await;
         }
     }
 

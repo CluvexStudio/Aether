@@ -3,13 +3,14 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Instant;
 
 use super::{
-    count_tunnel_end, edge_network, exit_policy_guard, masque_tunnel_mtu, verified_scan_selected,
-    Listeners, TunnelError, TUNNEL_MTU,
+    count_tunnel_end, edge_network, exit_policy_guard, masque_tunnel_mtu, noize_config,
+    verified_scan_selected, Listeners, TunnelError, TUNNEL_MTU,
 };
 use crate::error::{AetherError, Result};
 use crate::modes::endpoints::mim_endpoints_from_env;
 use crate::modes::masque::{
-    establish_masque, hunt_masque_peer, masque_reconnect_delay, masque_startup_timeout, MasqueHop,
+    establish_masque, hunt_masque_peer, masque_reconnect_delay, masque_startup_timeout, Hop,
+    MasqueHop,
 };
 use crate::prompt::{select_ip_version, select_scan_mode_str, MIM_MANUAL_TIP};
 use crate::relay::{join_outcome, spawn_tcp_forwarder, spawn_udp_forwarder, TaskGuard};
@@ -162,14 +163,17 @@ async fn run_masque_in_masque(
     log::info!("[*] establishing outer MASQUE tunnel to {peer}...");
     let mut outer = establish_masque(
         primary,
-        peer,
-        ech,
-        h2,
-        outer_mtu,
-        quic::MAX_DATAGRAM_SIZE,
-        true,
-        masque_startup_timeout(),
-        "outer",
+        Hop {
+            peer,
+            ech,
+            noize: noize_config(),
+            h2,
+            mtu: outer_mtu,
+            datagram: quic::MAX_DATAGRAM_SIZE,
+            version_bait: true,
+            startup: masque_startup_timeout(),
+            label: "outer",
+        },
     )
     .await?;
 
@@ -200,14 +204,17 @@ async fn run_masque_in_masque(
 
         match establish_masque(
             secondary,
-            forwarder,
-            None,
-            h2,
-            inner_mtu,
-            inner_datagram,
-            false,
-            mim_inner_startup(),
-            "inner",
+            Hop {
+                peer: forwarder,
+                ech: None,
+                noize: noize_config(),
+                h2,
+                mtu: inner_mtu,
+                datagram: inner_datagram,
+                version_bait: false,
+                startup: mim_inner_startup(),
+                label: "inner",
+            },
         )
         .await
         {

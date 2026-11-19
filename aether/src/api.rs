@@ -456,6 +456,7 @@ pub struct TunnelSpec {
     /// The ECHConfigList the MASQUE handshakes of the job offer, the tunnel's and the check's;
     /// with none, the server name goes out in the clear.
     pub ech: Option<Vec<u8>>,
+    pub noize: noize::NoizeConfig,
     pub aethernoize: aethernoize::AetherNoizeConfig,
     pub keepalive: u16,
     pub verify_timeout: Duration,
@@ -468,6 +469,7 @@ impl TunnelSpec {
             socks: SocketAddr::from(([127, 0, 0, 1], 1819)),
             http: None,
             ech: None,
+            noize: noize::from_profile("firewall"),
             aethernoize: aethernoize::from_profile("balanced"),
             keepalive: 5,
             verify_timeout: Duration::from_secs(10),
@@ -485,6 +487,7 @@ impl TunnelSpec {
     }
 
     pub fn with_profile(mut self, profile: &str) -> Self {
+        self.noize = noize::from_profile(profile);
         self.aethernoize = aethernoize::from_profile(profile);
         self
     }
@@ -518,7 +521,13 @@ pub async fn verify_endpoint(
             // The check offers the job's ECH key, as its tunnel would.
             let ech = spec.ech.clone();
             let attempt = async {
-                Ok(crate::modes::masque::quick_verify_masque_peer(identity, peer, ech).await)
+                Ok(crate::modes::masque::quick_verify_masque_peer(
+                    identity,
+                    peer,
+                    ech,
+                    spec.noize.clone(),
+                )
+                .await)
             };
             guard(cancel, attempt).await
         }
@@ -570,6 +579,7 @@ pub async fn connect(
                         identity,
                         peer,
                         spec.ech.clone(),
+                        spec.noize.clone(),
                         &listeners,
                     )
                     .await
@@ -579,6 +589,7 @@ pub async fn connect(
                         identity.clone(),
                         peer,
                         spec.aethernoize.clone(),
+                        spec.keepalive,
                         &listeners,
                     )
                     .await

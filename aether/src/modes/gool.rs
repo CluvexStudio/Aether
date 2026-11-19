@@ -3,12 +3,12 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use super::{
-    count_tunnel_end, env_value, exit_policy_guard, masque_tunnel_mtu, spread_hops,
+    count_tunnel_end, env_value, exit_policy_guard, masque_tunnel_mtu, noize_config, spread_hops,
     verified_scan_selected, Listeners, TunnelError, INNER_MTU, TUNNEL_MTU,
 };
 use crate::error::{AetherError, Result};
 use crate::modes::endpoints::{parse_endpoint, wiw_endpoints_with_fallback, WG_EXAMPLE_PORT};
-use crate::modes::masque::{establish_masque, masque_startup_timeout};
+use crate::modes::masque::{establish_masque, masque_startup_timeout, Hop};
 use crate::modes::wireguard::{establish_wg, select_wg_peers, wg_reconnect_delay};
 use crate::prompt::{select_ip_version, select_scan_mode_str, WIW_MANUAL_TIP};
 use crate::provision::provision_gool;
@@ -278,14 +278,17 @@ pub(crate) async fn run_gool_tunnel(
 
     let mut outer = establish_masque(
         identity,
-        dial,
-        ech,
-        h2,
-        masque_tunnel_mtu(),
-        quic::MAX_DATAGRAM_SIZE,
-        true,
-        masque_startup_timeout(),
-        "outer",
+        Hop {
+            peer: dial,
+            ech,
+            noize: noize_config(),
+            h2,
+            mtu: masque_tunnel_mtu(),
+            datagram: quic::MAX_DATAGRAM_SIZE,
+            version_bait: true,
+            startup: masque_startup_timeout(),
+            label: "outer",
+        },
     )
     .await?;
 
