@@ -38,25 +38,6 @@ const VERIFY_RETRY_DELAYS: [Duration; 2] =
 const WG_MSG_TYPE_MIN: u8 = 1;
 const WG_MSG_TYPE_MAX: u8 = 4;
 
-const MAX_TRANSIENT_RECV_ERRORS: u32 = 64;
-const TRANSIENT_RECV_BACKOFF: Duration = Duration::from_millis(50);
-
-pub fn is_transient_socket_error(error: &std::io::Error) -> bool {
-    use std::io::ErrorKind;
-
-    matches!(
-        error.kind(),
-        ErrorKind::ConnectionRefused
-            | ErrorKind::ConnectionReset
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::HostUnreachable
-            | ErrorKind::NetworkUnreachable
-            | ErrorKind::Interrupted
-            | ErrorKind::WouldBlock
-            | ErrorKind::TimedOut
-    )
-}
-
 struct TaskGuard(Vec<tokio::task::AbortHandle>);
 
 impl Drop for TaskGuard {
@@ -226,9 +207,9 @@ impl WgTunnel {
                         }
                     }
                     Err(e) => {
-                        if is_transient_socket_error(&e) {
+                        if crate::egress::is_transient_socket_error(&e) {
                             transient_errors += 1;
-                            if transient_errors > MAX_TRANSIENT_RECV_ERRORS {
+                            if transient_errors > crate::egress::MAX_TRANSIENT_RECV_ERRORS {
                                 log::error!(
                                     "recv error: {e}; giving up after {transient_errors} consecutive transient failures"
                                 );
@@ -237,7 +218,7 @@ impl WgTunnel {
                             log::debug!(
                                 "transient recv error: {e}; keeping the tunnel and retrying"
                             );
-                            tokio::time::sleep(TRANSIENT_RECV_BACKOFF).await;
+                            tokio::time::sleep(crate::egress::TRANSIENT_RECV_BACKOFF).await;
                             continue;
                         }
                         log::error!("recv error: {e}");
@@ -837,31 +818,6 @@ mod tests {
     }
 
     #[test]
-    fn an_icmp_port_unreachable_is_treated_as_transient() {
-        assert!(is_transient_socket_error(&Error::from(
-            ErrorKind::ConnectionRefused
-        )));
-    }
-
-    #[test]
-    fn the_usual_transient_udp_errors_do_not_end_the_tunnel() {
-        for kind in [
-            ErrorKind::ConnectionReset,
-            ErrorKind::ConnectionAborted,
-            ErrorKind::HostUnreachable,
-            ErrorKind::NetworkUnreachable,
-            ErrorKind::Interrupted,
-            ErrorKind::WouldBlock,
-            ErrorKind::TimedOut,
-        ] {
-            assert!(
-                is_transient_socket_error(&Error::from(kind)),
-                "{kind:?} should be transient"
-            );
-        }
-    }
-
-    #[test]
     fn health_probes_are_jittered_around_the_interval() {
         for _ in 0..200 {
             let pause = health_check_pause();
@@ -890,7 +846,7 @@ mod tests {
             ErrorKind::InvalidInput,
         ] {
             assert!(
-                !is_transient_socket_error(&Error::from(kind)),
+                !crate::egress::is_transient_socket_error(&Error::from(kind)),
                 "{kind:?} should be fatal"
             );
         }

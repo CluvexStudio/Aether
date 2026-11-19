@@ -21,6 +21,25 @@ pub enum EgressError {
 
 static MARK: AtomicU32 = AtomicU32::new(0);
 
+pub(crate) const MAX_TRANSIENT_RECV_ERRORS: u32 = 64;
+pub(crate) const TRANSIENT_RECV_BACKOFF: Duration = Duration::from_millis(50);
+
+pub fn is_transient_socket_error(error: &io::Error) -> bool {
+    use std::io::ErrorKind;
+
+    matches!(
+        error.kind(),
+        ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::Interrupted
+            | ErrorKind::WouldBlock
+            | ErrorKind::TimedOut
+    )
+}
+
 pub fn init() -> Result<()> {
     let raw = match crate::settings::var("AETHER_MARK") {
         Ok(value) if !value.trim().is_empty() => value,
@@ -181,6 +200,32 @@ pub fn udp_bind(address: SocketAddr) -> io::Result<UdpSocket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn an_icmp_port_unreachable_is_treated_as_transient() {
+        assert!(is_transient_socket_error(&Error::from(
+            ErrorKind::ConnectionRefused
+        )));
+    }
+
+    #[test]
+    fn the_usual_transient_udp_errors_do_not_end_the_tunnel() {
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::HostUnreachable,
+            ErrorKind::NetworkUnreachable,
+            ErrorKind::Interrupted,
+            ErrorKind::WouldBlock,
+            ErrorKind::TimedOut,
+        ] {
+            assert!(
+                is_transient_socket_error(&Error::from(kind)),
+                "{kind:?} should be transient"
+            );
+        }
+    }
 
     #[test]
     fn marks_are_read_in_decimal_and_in_hex() {

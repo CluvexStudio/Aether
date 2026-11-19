@@ -273,14 +273,24 @@ fn spawn_reader(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
+        let mut transient_errors = 0u32;
         loop {
             match sock.recv_from(&mut buf).await {
                 Ok((n, observed)) => {
+                    transient_errors = 0;
                     let from = crate::upstream::real_source(local, observed);
                     log::trace!("recv {n} bytes from {from}");
                     if tx.send((local, from, buf[..n].to_vec())).await.is_err() {
                         break;
                     }
+                }
+                Err(e)
+                    if crate::egress::is_transient_socket_error(&e)
+                        && transient_errors < crate::egress::MAX_TRANSIENT_RECV_ERRORS =>
+                {
+                    transient_errors += 1;
+                    log::debug!("transient recv error: {e}; retrying");
+                    tokio::time::sleep(crate::egress::TRANSIENT_RECV_BACKOFF).await;
                 }
                 Err(e) => {
                     log::debug!("recv error: {e}");
