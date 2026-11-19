@@ -1,6 +1,16 @@
 use std::net::SocketAddr;
 
 use crate::error::{AetherError, Result};
+
+#[derive(Debug, thiserror::Error)]
+pub enum TaskError {
+    #[error("{0} stopped")]
+    Stopped(String),
+    #[error("{0} was cancelled")]
+    Cancelled(String),
+    #[error("{what} panicked: {reason}")]
+    Panicked { what: String, reason: String },
+}
 use crate::{netstack, socks};
 
 pub(crate) async fn spawn_tcp_forwarder(
@@ -118,9 +128,14 @@ pub(crate) fn join_outcome(
     result: std::result::Result<Result<()>, tokio::task::JoinError>,
 ) -> Result<()> {
     match result {
-        Ok(Ok(())) => Err(AetherError::Other(format!("{what} stopped"))),
+        Ok(Ok(())) => Err(AetherError::from(TaskError::Stopped(what.to_string()))),
         Ok(Err(e)) => Err(e),
-        Err(e) if e.is_cancelled() => Err(AetherError::Other(format!("{what} was cancelled"))),
-        Err(e) => Err(AetherError::Other(format!("{what} panicked: {e}"))),
+        Err(e) if e.is_cancelled() => {
+            Err(AetherError::from(TaskError::Cancelled(what.to_string())))
+        }
+        Err(e) => Err(AetherError::from(TaskError::Panicked {
+            what: what.to_string(),
+            reason: e.to_string(),
+        })),
     }
 }

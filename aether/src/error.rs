@@ -89,6 +89,9 @@ pub enum AetherError {
     #[error(transparent)]
     Carrier(#[from] crate::carrier::CarrierError),
 
+    #[error(transparent)]
+    Task(#[from] crate::relay::TaskError),
+
     #[error("other: {0}")]
     Other(String),
 }
