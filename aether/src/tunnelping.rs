@@ -5,6 +5,18 @@ use tokio::sync::oneshot;
 
 use crate::aethernoize::AetherNoizeConfig;
 use crate::error::{AetherError, Result};
+
+#[derive(Debug, thiserror::Error)]
+pub enum TunnelPingError {
+    #[error("http probe response timeout")]
+    ProbeTimeout,
+    #[error("unexpected http probe response: {0}")]
+    UnexpectedResponse(String),
+    #[error("tunnel exited before data-plane validation")]
+    ExitedBeforeValidation,
+    #[error("ironclad http probe timeout")]
+    IroncladTimeout,
+}
 use crate::masque_h2;
 use crate::netstack;
 use crate::noize::NoizeConfig;
@@ -66,7 +78,7 @@ async fn http_probe(stack: &netstack::StackHandle) -> Result<()> {
     sender.close().await;
 
     if timed_out {
-        return Err(AetherError::Other("http probe response timeout".into()));
+        return Err(AetherError::from(TunnelPingError::ProbeTimeout));
     }
 
     let response = String::from_utf8_lossy(&buf);
@@ -75,8 +87,8 @@ async fn http_probe(stack: &netstack::StackHandle) -> Result<()> {
     if http_status_code(status_line) == Some(204) {
         Ok(())
     } else {
-        Err(AetherError::Other(format!(
-            "unexpected http probe response: {status_line}"
+        Err(AetherError::from(TunnelPingError::UnexpectedResponse(
+            status_line.to_string(),
         )))
     }
 }
@@ -168,9 +180,7 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
         };
 
         if ready_rx.await.is_err() {
-            return Err(AetherError::Other(
-                "tunnel exited before data-plane validation".into(),
-            ));
+            return Err(AetherError::from(TunnelPingError::ExitedBeforeValidation));
         }
 
         let start = Instant::now();
@@ -184,7 +194,7 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
     match tokio::time::timeout(timeout, attempt).await {
         Ok(Ok(rtt)) => Ok(rtt),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(AetherError::Other("ironclad http probe timeout".into())),
+        Err(_) => Err(AetherError::from(TunnelPingError::IroncladTimeout)),
     }
 }
 
@@ -234,7 +244,7 @@ pub async fn wg_http_ping_established(
     match tokio::time::timeout(timeout, attempt).await {
         Ok(Ok(rtt)) => Ok(rtt),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(AetherError::Other("ironclad http probe timeout".into())),
+        Err(_) => Err(AetherError::from(TunnelPingError::IroncladTimeout)),
     }
 }
 

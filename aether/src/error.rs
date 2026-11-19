@@ -50,6 +50,9 @@ pub enum AetherError {
     #[error(transparent)]
     WireGuard(#[from] crate::wireguard::WireGuardError),
 
+    #[error(transparent)]
+    TunnelPing(#[from] crate::tunnelping::TunnelPingError),
+
     #[error("other: {0}")]
     Other(String),
 }
