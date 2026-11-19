@@ -1482,7 +1482,7 @@ async fn quick_verify_masque_peer(
             local_ipv4: parse_local_v4(&identity.ipv4),
             quiet: true,
             pin_endpoint: true,
-            expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
+            expected_pins: consts::MASQUE_PINS,
             ech_config_list: ech,
         };
         return masque_h2::verify_h2(&cfg, std::time::Duration::from_secs(5))
@@ -1790,7 +1790,7 @@ async fn establish_masque(
             local_ipv4: parse_local_v4(&identity.ipv4),
             quiet: false,
             pin_endpoint: true,
-            expected_pins: consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
+            expected_pins: consts::MASQUE_PINS,
             ech_config_list: ech,
         };
         log::info!("[+] [{label}] MASQUE transport: HTTP/2 (TCP) to {peer} (inner mtu {mtu})");

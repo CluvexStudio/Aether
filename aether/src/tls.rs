@@ -937,7 +937,7 @@ pub struct TlsParams<'a> {
     /// against these pins instead of relying on standard CA chain validation.
     /// This allows the TLS handshake to succeed even when SNI is spoofed for DPI bypass,
     /// while still preventing MITM attacks.
-    pub expected_pins: &'a [&'a [u8]],
+    pub expected_pins: &'a [consts::Pin],
 }
 
 fn verify_enabled() -> bool {
@@ -969,7 +969,7 @@ fn spki_sha256(cert: &boring::x509::X509Ref) -> Option<[u8; 32]> {
 pub fn install_verification(
     builder: &mut SslContextBuilder,
     pin_endpoint: bool,
-    expected_pins: &[&[u8]],
+    expected_pins: &[consts::Pin],
 ) -> Result<()> {
     if !verify_enabled() {
         builder.set_verify(SslVerifyMode::NONE);
@@ -993,8 +993,8 @@ pub fn install_verification(
     Ok(())
 }
 
-fn install_pins(builder: &mut SslContextBuilder, expected_pins: &[&[u8]]) {
-    let pins: Vec<Vec<u8>> = expected_pins.iter().map(|p| p.to_vec()).collect();
+fn install_pins(builder: &mut SslContextBuilder, expected_pins: &[consts::Pin]) {
+    let pins = expected_pins.to_vec();
     builder.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
         if ssl.get_ech_name_override().is_some() {
             return Ok(());
@@ -1007,14 +1007,34 @@ fn install_pins(builder: &mut SslContextBuilder, expected_pins: &[&[u8]]) {
             log::warn!("tls pin: failed to compute SPKI hash");
             SslVerifyError::Invalid(boring::ssl::SslAlert::INTERNAL_ERROR)
         })?;
-        if pins.iter().any(|pin| pin.as_slice() == hash.as_slice()) {
-            Ok(())
-        } else {
-            Err(SslVerifyError::Invalid(
-                boring::ssl::SslAlert::CERTIFICATE_UNKNOWN,
-            ))
+        match pins.iter().find(|pin| pin.spki_sha256 == hash) {
+            Some(pin) => {
+                log::debug!(
+                    "tls pin: the gateway's key is the pinned one of {}",
+                    pin.name
+                );
+                Ok(())
+            }
+            None => {
+                warn_unpinned(&hash);
+                Err(SslVerifyError::Invalid(
+                    boring::ssl::SslAlert::CERTIFICATE_UNKNOWN,
+                ))
+            }
         }
     });
+}
+
+fn warn_unpinned(key: &[u8; 32]) {
+    static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if WARNED.set(()).is_ok() {
+        log::warn!(
+            "[-] tls pin: the gateway's key {} is none of the keys aether pins; if Cloudflare has changed its key, AETHER_TLS_VERIFY=0 turns the check off until a release carries the new one",
+            hex::encode(key)
+        );
+    } else {
+        log::debug!("tls pin: an unpinned key {}", hex::encode(key));
+    }
 }
 
 fn announce_once(message: String) {
@@ -1458,6 +1478,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_pin_is_named_and_no_key_is_pinned_twice() {
+        for (at, pin) in consts::MASQUE_PINS.iter().enumerate() {
+            assert!(!pin.name.is_empty());
+            assert!(consts::MASQUE_PINS[at + 1..]
+                .iter()
+                .all(|other| other.spki_sha256 != pin.spki_sha256 && other.name != pin.name));
+        }
+    }
+
+    #[test]
     fn a_zero_trust_run_verifies_the_gateway_unless_told_otherwise() {
         assert!(!verification_wanted(None, None));
         assert!(!verification_wanted(None, Some("  ")));
@@ -1601,10 +1631,17 @@ mod tests {
             (address, pin)
         }
 
+        fn test_pin(spki_sha256: [u8; 32]) -> consts::Pin {
+            consts::Pin {
+                name: "the test server",
+                spki_sha256,
+            }
+        }
+
         fn connect(
             address: std::net::SocketAddr,
             offered: &EchKey,
-            pins: &[&[u8]],
+            pins: &[consts::Pin],
         ) -> std::result::Result<(), String> {
             let mut ctx = SslContextBuilder::new(SslMethod::tls()).unwrap();
             install_pins(&mut ctx, pins);
@@ -1633,7 +1670,7 @@ mod tests {
             let current = EchKey::generate("public.example", 1);
             let stale = EchKey::generate("public.example", 2);
             let (address, _) = serve(&current);
-            let error = connect(address, &stale, &[&[7u8; 32]]).unwrap_err();
+            let error = connect(address, &stale, &[test_pin([7; 32])]).unwrap_err();
             assert!(error.contains("ECH_REJECTED"), "{error}");
             assert!(error.contains("retry=true"), "{error}");
         }
@@ -1642,12 +1679,12 @@ mod tests {
         fn an_accepted_handshake_is_still_held_to_the_pins() {
             let current = EchKey::generate("public.example", 1);
             let (address, pin) = serve(&current);
-            assert!(connect(address, &current, &[&[7u8; 32]]).is_err());
+            assert!(connect(address, &current, &[test_pin([7; 32])]).is_err());
 
             let current = EchKey::generate("public.example", 1);
             let (address, pin_again) = serve(&current);
             assert_ne!(pin, pin_again);
-            assert_eq!(connect(address, &current, &[&pin_again]), Ok(()));
+            assert_eq!(connect(address, &current, &[test_pin(pin_again)]), Ok(()));
         }
     }
 

@@ -87,7 +87,7 @@ pub struct H2TunnelConfig {
     pub local_ipv4: Ipv4Addr,
     pub quiet: bool,
     pub pin_endpoint: bool,
-    pub expected_pins: Vec<Vec<u8>>,
+    pub expected_pins: &'static [crate::consts::Pin],
     /// The ECHConfigList the handshake offers: the session's, see `tls::session_ech`, or
     /// none, as on the inner hop of masque-in-masque, which rides inside the outer one.
     pub ech_config_list: Option<Vec<u8>>,
@@ -175,19 +175,13 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
         .set_private_key(&key)
         .map_err(|e| AetherError::Tls(e.to_string()))?;
 
-    // Install TLS verification:
-    // pin_endpoint=true with pins: pin-based verification (SNI can be spoofed)
-    // pin_endpoint=false: SslVerifyMode::NONE (default, required for Cloudflare MASQUE edges)
-    let pin_refs: Vec<&[u8]> = cfg.expected_pins.iter().map(|p| p.as_slice()).collect();
-    tls::install_verification(&mut builder, cfg.pin_endpoint, &pin_refs)?;
+    tls::install_verification(&mut builder, cfg.pin_endpoint, cfg.expected_pins)?;
 
     let connector = builder.build();
     let mut config = connector
         .configure()
         .map_err(|e| AetherError::Tls(e.to_string()))?;
 
-    // TLS server-certificate verification is unconditionally disabled
-    // (see tls::install_verification), so the hostname check is skipped too.
     config.set_verify_hostname(false);
     config.set_use_server_name_indication(true);
     fingerprint.prepare(&mut config, H2_ALPN)?;

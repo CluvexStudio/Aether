@@ -774,10 +774,7 @@ async fn verify_one(
             local_ipv4: probe.local_ipv4,
             quiet: true,
             pin_endpoint: true,
-            expected_pins: crate::consts::MASQUE_PINS
-                .iter()
-                .map(|p| p.to_vec())
-                .collect(),
+            expected_pins: crate::consts::MASQUE_PINS,
             ech_config_list: probe.ech_config_list.as_ref().map(|a| a.to_vec()),
         };
         return match crate::masque_h2::verify_h2(&cfg, timeout).await {
