@@ -81,7 +81,7 @@ pub fn configured() -> Option<Upstream> {
         return Some(proxy);
     }
     static SEEN: std::sync::Mutex<Option<(String, Option<Upstream>)>> = std::sync::Mutex::new(None);
-    let raw = std::env::var("AETHER_UPSTREAM").unwrap_or_default();
+    let raw = crate::settings::var("AETHER_UPSTREAM").unwrap_or_default();
     let mut seen = SEEN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -92,7 +92,7 @@ pub fn configured() -> Option<Upstream> {
 /// [`configured`] sets such a setting aside, and every connection would then go straight out,
 /// around the proxy the user named. A blank setting names none.
 pub fn check_setting() -> Result<()> {
-    usable(&std::env::var("AETHER_UPSTREAM").unwrap_or_default())
+    usable(&crate::settings::var("AETHER_UPSTREAM").unwrap_or_default())
 }
 
 /// Whether `raw`, a setting of AETHER_UPSTREAM, is blank or names a proxy aether can dial through.
@@ -117,7 +117,7 @@ pub(crate) struct SettingHeld(tokio::sync::MutexGuard<'static, ()>);
 #[cfg(test)]
 impl Drop for SettingHeld {
     fn drop(&mut self) {
-        std::env::remove_var("AETHER_UPSTREAM");
+        crate::settings::remove("AETHER_UPSTREAM");
     }
 }
 
@@ -129,7 +129,7 @@ pub(crate) async fn hold_setting() -> SettingHeld {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    std::env::remove_var("AETHER_UPSTREAM");
+    crate::settings::remove("AETHER_UPSTREAM");
     SettingHeld(held)
 }
 
@@ -148,7 +148,7 @@ fn remembered(seen: &mut Option<(String, Option<Upstream>)>, raw: String) -> Opt
 
 impl Upstream {
     pub fn from_env() -> Option<Self> {
-        Self::from_value(&std::env::var("AETHER_UPSTREAM").ok()?)
+        Self::from_value(&crate::settings::var("AETHER_UPSTREAM").ok()?)
     }
 
     /// The proxy `raw` names, announced in the log; none when it is blank or cannot be read.
@@ -987,7 +987,7 @@ mod tests {
     #[tokio::test]
     async fn a_task_through_a_proxy_of_its_own_leaves_the_rest_on_the_setting() {
         let _setting = hold_setting().await;
-        std::env::set_var("AETHER_UPSTREAM", "socks5://127.0.0.1:1080");
+        crate::settings::set("AETHER_UPSTREAM", "socks5://127.0.0.1:1080");
         let tunnel = Upstream::parse("socks5h://127.0.0.1:2080").expect("proxy");
 
         // Another task looks while the one inside is still there.
@@ -1012,7 +1012,7 @@ mod tests {
         assert_eq!(spawned.map(|proxy| proxy.port), Some(1080));
         // The setting itself was never touched, and the task is back on it once out.
         assert_eq!(
-            std::env::var("AETHER_UPSTREAM").as_deref(),
+            crate::settings::var("AETHER_UPSTREAM").as_deref(),
             Ok("socks5://127.0.0.1:1080")
         );
         assert_eq!(configured().map(|proxy| proxy.port), Some(1080));
@@ -1023,7 +1023,7 @@ mod tests {
         let _setting = hold_setting().await;
         // The setting names a proxy that only counts the connections it gets.
         let setting = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        std::env::set_var(
+        crate::settings::set(
             "AETHER_UPSTREAM",
             format!("socks5://{}", setting.local_addr().unwrap()),
         );
@@ -1278,7 +1278,7 @@ mod tests {
     async fn a_datagram_makes_the_round_trip_through_a_socks5_relay() {
         let _setting = hold_setting().await;
         let (proxy_address, server) = fake_socks_udp_server().await;
-        std::env::set_var("AETHER_UPSTREAM", format!("socks5://{proxy_address}"));
+        crate::settings::set("AETHER_UPSTREAM", format!("socks5://{proxy_address}"));
 
         let proxy = Upstream::parse(&format!("socks5://{proxy_address}")).unwrap();
         let relay = proxy.associate().await.unwrap();
@@ -1295,7 +1295,7 @@ mod tests {
         assert_eq!(&out[..len], b"pong:ping");
         assert_eq!(origin, peer);
 
-        std::env::remove_var("AETHER_UPSTREAM");
+        crate::settings::remove("AETHER_UPSTREAM");
         server.abort();
     }
 
@@ -1523,7 +1523,7 @@ mod tests {
     #[tokio::test]
     async fn a_local_peer_is_reached_without_the_proxy() {
         let _setting = hold_setting().await;
-        std::env::set_var("AETHER_UPSTREAM", "socks5://127.0.0.1:9");
+        crate::settings::set("AETHER_UPSTREAM", "socks5://127.0.0.1:9");
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
         for local in ["127.0.0.1:53", "10.0.0.1:2408", "192.168.1.1:443"] {
@@ -1539,7 +1539,7 @@ mod tests {
             );
         }
 
-        std::env::remove_var("AETHER_UPSTREAM");
+        crate::settings::remove("AETHER_UPSTREAM");
     }
 
     #[test]

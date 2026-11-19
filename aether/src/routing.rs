@@ -184,10 +184,10 @@ pub struct RuleSet {
 
 impl RuleSet {
     pub fn from_env() -> Self {
-        let mut block = std::env::var("AETHER_ROUTE_BLOCK").unwrap_or_default();
-        let mut direct = std::env::var("AETHER_ROUTE_DIRECT").unwrap_or_default();
+        let mut block = crate::settings::var("AETHER_ROUTE_BLOCK").unwrap_or_default();
+        let mut direct = crate::settings::var("AETHER_ROUTE_DIRECT").unwrap_or_default();
 
-        if let Ok(path) = std::env::var("AETHER_ROUTES_FILE") {
+        if let Ok(path) = crate::settings::var("AETHER_ROUTES_FILE") {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let (file_block, file_direct) = split_sections(&text);

@@ -48,7 +48,7 @@ fn max_tcp_pending() -> usize {
 }
 
 pub(crate) fn tcp_keepalive() -> std::time::Duration {
-    let secs = std::env::var("AETHER_TCP_KEEPALIVE_SECS")
+    let secs = crate::settings::var("AETHER_TCP_KEEPALIVE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -58,7 +58,7 @@ pub(crate) fn tcp_keepalive() -> std::time::Duration {
 }
 
 fn tcp_connect_timeout() -> std::time::Duration {
-    let secs = std::env::var("AETHER_TCP_CONNECT_SECS")
+    let secs = crate::settings::var("AETHER_TCP_CONNECT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)

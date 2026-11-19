@@ -555,8 +555,8 @@ pub async fn connect(
     cancel: &Cancel,
 ) -> Result<()> {
     match spec.http {
-        Some(listen) => std::env::set_var("AETHER_HTTP_PROXY", listen.to_string()),
-        None => std::env::remove_var("AETHER_HTTP_PROXY"),
+        Some(listen) => crate::settings::set("AETHER_HTTP_PROXY", listen.to_string()),
+        None => crate::settings::remove("AETHER_HTTP_PROXY"),
     }
     // Held for this one tunnel, from before it comes up until it ends; a cancel lets them go at once,
     // so the next tunnel can bind them as soon as this call returns. One that breaks ends it.

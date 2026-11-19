@@ -102,11 +102,11 @@ fn log_or_debug(quiet: bool, msg: String) {
 }
 
 fn data_check_enabled() -> bool {
-    std::env::var("AETHER_MASQUE_NO_DATA_CHECK").is_err()
+    crate::settings::var("AETHER_MASQUE_NO_DATA_CHECK").is_err()
 }
 
 fn validation_timeout() -> Duration {
-    let secs = std::env::var("AETHER_MASQUE_VALIDATE_SECS")
+    let secs = crate::settings::var("AETHER_MASQUE_VALIDATE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -119,7 +119,7 @@ const DATA_PROBE_REQUIRED_SUCCESSES: u32 = 2;
 const DATA_PROBE_RESEND: Duration = Duration::from_millis(700);
 
 fn h2_keepalive_interval() -> Duration {
-    let secs = std::env::var("AETHER_MASQUE_H2_KEEPALIVE_SECS")
+    let secs = crate::settings::var("AETHER_MASQUE_H2_KEEPALIVE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -129,7 +129,7 @@ fn h2_keepalive_interval() -> Duration {
 }
 
 fn h2_keepalive_timeout() -> Duration {
-    let secs = std::env::var("AETHER_MASQUE_H2_KEEPALIVE_TIMEOUT_SECS")
+    let secs = crate::settings::var("AETHER_MASQUE_H2_KEEPALIVE_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -139,7 +139,7 @@ fn h2_keepalive_timeout() -> Duration {
 }
 
 pub fn enabled() -> bool {
-    match std::env::var("AETHER_MASQUE_HTTP2") {
+    match crate::settings::var("AETHER_MASQUE_HTTP2") {
         Ok(v) => {
             let v = v.trim().to_lowercase();
             v == "1" || v == "true" || v == "h2" || v == "yes" || v == "on"
@@ -149,7 +149,7 @@ pub fn enabled() -> bool {
 }
 
 pub fn h2_peer(quic_peer: SocketAddr) -> SocketAddr {
-    if let Ok(v) = std::env::var("AETHER_MASQUE_H2_PEER") {
+    if let Ok(v) = crate::settings::var("AETHER_MASQUE_H2_PEER") {
         if let Ok(addr) = v.trim().parse::<SocketAddr>() {
             return addr;
         }

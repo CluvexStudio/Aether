@@ -357,7 +357,7 @@ pub fn api_ech_in_use() -> Option<Vec<u8>> {
 /// can offer, an error that says so: the API is not asked with its name in the clear.
 async fn api_ech() -> Result<Option<Vec<u8>>> {
     let option = &crate::tls::API_ECH_OPTION;
-    let setting = std::env::var(option.variable).ok();
+    let setting = crate::settings::var(option.variable).ok();
     if setting.as_deref().is_none_or(str::is_empty) {
         return Ok(None);
     }
@@ -438,7 +438,7 @@ fn extract_api_error(body: &str) -> Option<String> {
 /// or a domain name and its port: 443 unless `:port` follows the address, an IPv6 one then in
 /// brackets; none when it is not given, see `api_routes_of`. Only the connection goes there.
 fn api_address() -> Result<Option<(String, u16)>> {
-    let value = std::env::var("AETHER_API_ADDRESS").unwrap_or_default();
+    let value = crate::settings::var("AETHER_API_ADDRESS").unwrap_or_default();
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
@@ -478,7 +478,7 @@ fn api_name_of(flag: &str, value: &str) -> Result<Option<String>> {
 fn api_host() -> Result<Option<String>> {
     api_name_of(
         "--api-host",
-        &std::env::var("AETHER_API_HOST").unwrap_or_default(),
+        &crate::settings::var("AETHER_API_HOST").unwrap_or_default(),
     )
 }
 
@@ -487,7 +487,7 @@ fn api_host() -> Result<Option<String>> {
 fn api_sni() -> Result<Option<String>> {
     api_name_of(
         "--api-sni",
-        &std::env::var("AETHER_API_SNI").unwrap_or_default(),
+        &crate::settings::var("AETHER_API_SNI").unwrap_or_default(),
     )
 }
 
@@ -1427,21 +1427,23 @@ mod tests {
             "AETHER_MASQUE_H2_FRAGMENT_SIZE",
             "AETHER_MASQUE_H2_FRAGMENT_DELAY",
         ];
-        let before: Vec<Option<String>> =
-            SETTINGS.iter().map(|key| std::env::var(key).ok()).collect();
-        std::env::set_var(SETTINGS[0], "1");
-        std::env::set_var(SETTINGS[1], "4-6");
-        std::env::set_var(SETTINGS[2], "1-3");
+        let before: Vec<Option<String>> = SETTINGS
+            .iter()
+            .map(|key| crate::settings::var(key).ok())
+            .collect();
+        crate::settings::set(SETTINGS[0], "1");
+        crate::settings::set(SETTINGS[1], "4-6");
+        crate::settings::set(SETTINGS[2], "1-3");
         let on = api_fragment();
         // Off when the setting says so, and without --fragment.
-        std::env::set_var(SETTINGS[0], "0");
+        crate::settings::set(SETTINGS[0], "0");
         let off = api_fragment();
-        std::env::remove_var(SETTINGS[0]);
+        crate::settings::remove(SETTINGS[0]);
         let unset = api_fragment();
         for (key, value) in SETTINGS.iter().zip(before) {
             match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
+                Some(value) => crate::settings::set(key, value),
+                None => crate::settings::remove(key),
             }
         }
 
@@ -1492,7 +1494,7 @@ mod tests {
     impl Drop for ApiSettingsHeld {
         fn drop(&mut self) {
             for variable in API_SETTINGS {
-                std::env::remove_var(variable);
+                crate::settings::remove(variable);
             }
         }
     }
@@ -1503,7 +1505,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for variable in API_SETTINGS {
-            std::env::remove_var(variable);
+            crate::settings::remove(variable);
         }
         ApiSettingsHeld(held)
     }
@@ -1534,8 +1536,8 @@ mod tests {
         let _held = hold_api_settings();
         let address = |value: Option<&str>| {
             match value {
-                Some(value) => std::env::set_var("AETHER_API_ADDRESS", value),
-                None => std::env::remove_var("AETHER_API_ADDRESS"),
+                Some(value) => crate::settings::set("AETHER_API_ADDRESS", value),
+                None => crate::settings::remove("AETHER_API_ADDRESS"),
             }
             api_address().map_err(|e| e.to_string())
         };
@@ -1584,7 +1586,7 @@ mod tests {
             );
             assert!(check_api_settings().is_err());
         }
-        std::env::remove_var("AETHER_API_ADDRESS");
+        crate::settings::remove("AETHER_API_ADDRESS");
         assert!(check_api_settings().is_ok());
     }
 
@@ -1625,19 +1627,19 @@ mod tests {
         // As the core starts, the option that is wrong is named.
         let _held = hold_api_settings();
         assert!(check_api_settings().is_ok());
-        std::env::set_var("AETHER_API_SNI", "162.159.137.105");
+        crate::settings::set("AETHER_API_SNI", "162.159.137.105");
         assert_eq!(
             check_api_settings().map_err(|e| e.to_string()),
             Err("api: --api-sni: 162.159.137.105 is no domain name".to_string())
         );
-        std::env::remove_var("AETHER_API_SNI");
-        std::env::set_var("AETHER_API_HOST", "https://api.example.com");
+        crate::settings::remove("AETHER_API_SNI");
+        crate::settings::set("AETHER_API_HOST", "https://api.example.com");
         assert_eq!(
             check_api_settings().map_err(|e| e.to_string()),
             Err("api: --api-host: https://api.example.com is no domain name".to_string())
         );
-        std::env::set_var("AETHER_API_HOST", "api.example.com");
-        std::env::set_var("AETHER_API_SNI", "front.example.com");
+        crate::settings::set("AETHER_API_HOST", "api.example.com");
+        crate::settings::set("AETHER_API_SNI", "front.example.com");
         assert!(check_api_settings().is_ok());
         assert_eq!(
             api_routes().map_err(|e| e.to_string()),
@@ -1794,9 +1796,9 @@ mod tests {
         assert_eq!(routes[0].address, edge);
         assert_eq!(routes[0].host, consts::API_HOST);
 
-        std::env::set_var("AETHER_API_ADDRESS", "162.159.137.105");
+        crate::settings::set("AETHER_API_ADDRESS", "162.159.137.105");
         assert!(ways().iter().all(|route| !route.front));
-        std::env::remove_var("AETHER_API_ADDRESS");
+        crate::settings::remove("AETHER_API_ADDRESS");
 
         forget_answered_api_host();
         assert_eq!(answered_api_edge(), None);
@@ -1945,7 +1947,7 @@ mod tests {
             ],
         )])
         .await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
 
         // A key as the core gets one: the device registered, WARP enabled on it, and a MASQUE key
         // enrolled for it.
@@ -1985,7 +1987,7 @@ mod tests {
         ])
         .await;
         // Both names to the API on this machine, which tells them apart by the server name.
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
 
         let said = refresh().await.expect_err("the device is gone");
         // The API's answer, not the way that gave none.
@@ -2023,8 +2025,8 @@ mod tests {
         let _settings = hold_api_settings();
         let (port, seen) =
             api_server(vec![("api.example.com", vec![Answer::Reply(404, PAGE)])]).await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
-        std::env::set_var("AETHER_API_HOST", "api.example.com");
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_HOST", "api.example.com");
 
         // A name given: one way, which a 404 of any server ends, as before there were two names.
         let said = refresh().await.expect_err("refused");
@@ -2048,7 +2050,7 @@ mod tests {
             (old, vec![Answer::Reply(200, "not an account")]),
         ])
         .await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
 
         // A registration the API made is not made once more by the other name.
         let said = refresh().await.expect_err("no account");
@@ -2068,7 +2070,7 @@ mod tests {
             (old, vec![Answer::Reply(404, NOT_FOUND)]),
         ])
         .await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
 
         let started = std::time::Instant::now();
         let said = refresh().await.expect_err("the device is gone");
@@ -2097,7 +2099,7 @@ mod tests {
             (old, vec![Answer::Reply(401, PAGE)]),
         ])
         .await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
 
         // A 401 without the API's envelope still counts, as before there were two names, once
         // the other name has said the same.
@@ -2121,7 +2123,7 @@ mod tests {
             (old, vec![Answer::Reply(404, NOT_FOUND)]),
         ])
         .await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
 
         let said = refresh().await.expect_err("the device is gone");
         assert!(matches!(said, AetherError::IdentityRefused(_)), "{said}");
@@ -2144,7 +2146,7 @@ mod tests {
             (old, vec![Answer::Reply(404, PAGE)]),
         ])
         .await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
 
         let said = refresh().await.expect_err("no API answered");
         // A 404 page of another server is no refusal of the identity, which would be replaced.
@@ -2171,7 +2173,7 @@ mod tests {
             (old, vec![]),
         ])
         .await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
 
         let said = refresh().await.expect_err("the device is gone");
         assert!(matches!(said, AetherError::IdentityRefused(_)), "{said}");
@@ -2191,9 +2193,9 @@ mod tests {
         let _settings = hold_api_settings();
         let (port, seen) =
             api_server(vec![("front.example.com", vec![Answer::Reply(403, PAGE)])]).await;
-        std::env::set_var("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
-        std::env::set_var("AETHER_API_SNI", "front.example.com");
-        std::env::set_var("AETHER_API_HOST", "api.example.com");
+        crate::settings::set("AETHER_API_ADDRESS", format!("127.0.0.1:{port}"));
+        crate::settings::set("AETHER_API_SNI", "front.example.com");
+        crate::settings::set("AETHER_API_HOST", "api.example.com");
 
         let said = refresh().await.expect_err("refused");
         assert_eq!(

@@ -199,7 +199,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCEPT_WARN_EVERY: Duration = Duration::from_secs(10);
 
 fn client_limit() -> usize {
-    if let Some(limit) = std::env::var("AETHER_MAX_CLIENTS")
+    if let Some(limit) = crate::settings::var("AETHER_MAX_CLIENTS")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&v| v > 0)
@@ -579,7 +579,7 @@ enum DnsAnswer {
 }
 
 pub(crate) fn resolver_addresses() -> Vec<SocketAddr> {
-    let configured = std::env::var("AETHER_DNS").unwrap_or_default();
+    let configured = crate::settings::var("AETHER_DNS").unwrap_or_default();
     let mut servers: Vec<SocketAddr> = Vec::new();
 
     for token in configured.split([',', ' ', ';']) {
@@ -778,13 +778,13 @@ fn decide_route(set: &RuleSet, target: &Target, sniffed: Option<&str>, port: u16
 
 fn sniff_enabled() -> bool {
     !matches!(
-        std::env::var("AETHER_ROUTE_SNIFF").as_deref(),
+        crate::settings::var("AETHER_ROUTE_SNIFF").as_deref(),
         Ok("0") | Ok("off") | Ok("false")
     )
 }
 
 fn sniff_window() -> Duration {
-    let ms = std::env::var("AETHER_ROUTE_SNIFF_MS")
+    let ms = crate::settings::var("AETHER_ROUTE_SNIFF_MS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|&value| value > 0)
@@ -1155,7 +1155,7 @@ where
 const RELAY_CHUNK: usize = 16384;
 
 pub(crate) fn half_close_linger() -> Duration {
-    let secs = std::env::var("AETHER_HALF_CLOSE_SECS")
+    let secs = crate::settings::var("AETHER_HALF_CLOSE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -3103,7 +3103,7 @@ mod sniff_route_tests {
 
     #[tokio::test]
     async fn a_server_speaks_first_protocol_survives_the_sniff_window() {
-        std::env::set_var("AETHER_ROUTE_SNIFF_MS", "50");
+        crate::settings::set("AETHER_ROUTE_SNIFF_MS", "50");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
 
@@ -3114,7 +3114,7 @@ mod sniff_route_tests {
 
         let (mut server, _) = listener.accept().await.unwrap();
         let head = read_sniff_head(&mut server).await;
-        std::env::remove_var("AETHER_ROUTE_SNIFF_MS");
+        crate::settings::remove("AETHER_ROUTE_SNIFF_MS");
 
         assert_eq!(
             head,
@@ -3140,14 +3140,14 @@ mod sniff_route_tests {
 
     #[test]
     fn sniffing_is_on_unless_it_is_turned_off() {
-        std::env::remove_var("AETHER_ROUTE_SNIFF");
+        crate::settings::remove("AETHER_ROUTE_SNIFF");
         assert!(sniff_enabled());
-        std::env::set_var("AETHER_ROUTE_SNIFF", "0");
+        crate::settings::set("AETHER_ROUTE_SNIFF", "0");
         assert!(!sniff_enabled());
-        std::env::set_var("AETHER_ROUTE_SNIFF", "off");
+        crate::settings::set("AETHER_ROUTE_SNIFF", "off");
         assert!(!sniff_enabled());
-        std::env::set_var("AETHER_ROUTE_SNIFF", "1");
+        crate::settings::set("AETHER_ROUTE_SNIFF", "1");
         assert!(sniff_enabled());
-        std::env::remove_var("AETHER_ROUTE_SNIFF");
+        crate::settings::remove("AETHER_ROUTE_SNIFF");
     }
 }

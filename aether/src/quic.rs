@@ -76,7 +76,7 @@ impl TunnelConfig {
 }
 
 fn validation_timeout() -> Duration {
-    let secs = std::env::var("AETHER_MASQUE_VALIDATE_SECS")
+    let secs = crate::settings::var("AETHER_MASQUE_VALIDATE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -86,7 +86,7 @@ fn validation_timeout() -> Duration {
 }
 
 fn data_check_enabled() -> bool {
-    std::env::var("AETHER_MASQUE_NO_DATA_CHECK").is_err()
+    crate::settings::var("AETHER_MASQUE_NO_DATA_CHECK").is_err()
 }
 
 const DATA_PROBE_REQUIRED_SUCCESSES: u32 = 2;
@@ -176,7 +176,7 @@ const QUIC_V2_BAIT_LEN: usize = 1200;
 
 pub(crate) fn quic_v2_bait_enabled() -> bool {
     !matches!(
-        std::env::var("AETHER_QUIC_V2").as_deref(),
+        crate::settings::var("AETHER_QUIC_V2").as_deref(),
         Ok("0") | Ok("off") | Ok("false") | Ok("no")
     )
 }
@@ -808,7 +808,7 @@ pub fn default_sni() -> &'static str {
 /// that of --masque-sni (AETHER_MASQUE_SNI), see `masque_sni_of`. Only the TLS name changes;
 /// the HTTP host, the :authority of the CONNECT request, stays `default_authority`.
 pub fn masque_sni() -> Result<String> {
-    masque_sni_of(&std::env::var("AETHER_MASQUE_SNI").unwrap_or_default())
+    masque_sni_of(&crate::settings::var("AETHER_MASQUE_SNI").unwrap_or_default())
 }
 
 /// The server name `value`, given to --masque-sni, makes the MASQUE handshakes send: none
@@ -1103,15 +1103,15 @@ mod v2_bait_tests {
 
     #[test]
     fn the_bait_is_on_unless_it_is_turned_off() {
-        std::env::remove_var("AETHER_QUIC_V2");
+        crate::settings::remove("AETHER_QUIC_V2");
         assert!(quic_v2_bait_enabled());
-        std::env::set_var("AETHER_QUIC_V2", "0");
+        crate::settings::set("AETHER_QUIC_V2", "0");
         assert!(!quic_v2_bait_enabled());
-        std::env::set_var("AETHER_QUIC_V2", "off");
+        crate::settings::set("AETHER_QUIC_V2", "off");
         assert!(!quic_v2_bait_enabled());
-        std::env::set_var("AETHER_QUIC_V2", "1");
+        crate::settings::set("AETHER_QUIC_V2", "1");
         assert!(quic_v2_bait_enabled());
-        std::env::remove_var("AETHER_QUIC_V2");
+        crate::settings::remove("AETHER_QUIC_V2");
     }
 
     #[tokio::test]
@@ -1188,9 +1188,9 @@ mod masque_sni_tests {
     async fn the_masque_sni_is_that_of_its_variable() {
         let _options = tls::hold_options().await;
         assert_eq!(masque_sni().ok().as_deref(), Some("www.cloudflare.com"));
-        std::env::set_var("AETHER_MASQUE_SNI", consts::CONNECT_SNI);
+        crate::settings::set("AETHER_MASQUE_SNI", consts::CONNECT_SNI);
         assert_eq!(masque_sni().ok().as_deref(), Some(consts::CONNECT_SNI));
-        std::env::set_var("AETHER_MASQUE_SNI", "1.1.1.1");
+        crate::settings::set("AETHER_MASQUE_SNI", "1.1.1.1");
         assert!(masque_sni().is_err());
     }
 }

@@ -22,6 +22,7 @@ pub mod prober;
 pub mod psiphon;
 pub mod quic;
 pub mod routing;
+pub mod settings;
 pub mod sniff;
 pub mod socks;
 pub mod stats;
@@ -54,7 +55,7 @@ const INNER_MTU: usize = 1200;
 const H2_TUNNEL_MTU: usize = 1500;
 
 fn masque_tunnel_mtu() -> usize {
-    if let Some(mtu) = std::env::var("AETHER_MASQUE_MTU")
+    if let Some(mtu) = crate::settings::var("AETHER_MASQUE_MTU")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|mtu| (576..=1500).contains(mtu))
@@ -79,7 +80,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
-    let level = std::env::var("AETHER_LOG_LEVEL")
+    let level = crate::settings::var("AETHER_LOG_LEVEL")
         .ok()
         .map(|v| v.trim().to_lowercase())
         .filter(|v| matches!(v.as_str(), "error" | "warn" | "info" | "debug" | "trace"))
@@ -110,14 +111,15 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     account::forget_api_ech();
     account::forget_answered_api_host();
 
-    let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
+    let base_config =
+        crate::settings::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 
     // A registration serves no proxy, so it needs none of the listeners bound below.
     if let Some(wanted) = register_request()? {
         return register_identities(wanted, &base_config).await;
     }
 
-    let listen: SocketAddr = std::env::var("AETHER_SOCKS")
+    let listen: SocketAddr = crate::settings::var("AETHER_SOCKS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| "127.0.0.1:1819".parse().unwrap());
@@ -149,12 +151,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     let pinned_wiw = wiw_endpoints_from_env()?;
     let pinned_mim = mim_endpoints_from_env()?;
 
-    let protocol = match std::env::var("AETHER_PROTOCOL") {
+    let protocol = match crate::settings::var("AETHER_PROTOCOL") {
         Ok(v) => Protocol::parse(&v),
         Err(_) if !pinned_wiw.is_empty() => Protocol::WarpInWarp,
         Err(_) if !pinned_mim.is_empty() => Protocol::MasqueInMasque,
         Err(_)
-            if std::env::var("AETHER_PEER").is_ok() || std::env::var("AETHER_WG_PEER").is_ok() =>
+            if crate::settings::var("AETHER_PEER").is_ok()
+                || crate::settings::var("AETHER_WG_PEER").is_ok() =>
         {
             Protocol::Masque
         }
@@ -212,8 +215,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
             let (socks, carrier) = tor::start_reverse(tor::state_dir(&base_config)).await?;
             tor_and_psiphon.push(carrier);
-            std::env::set_var("AETHER_UPSTREAM", carrier_upstream("tor", socks)?);
-            std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+            crate::settings::set("AETHER_UPSTREAM", carrier_upstream("tor", socks)?);
+            crate::settings::set("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through tor on the http/2 carrier");
         }
         tor::Mode::Only | tor::Mode::Off => {}
@@ -238,8 +241,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
             let (socks, carrier) = psiphon::start_reverse(psiphon::state_dir(&base_config)).await?;
             tor_and_psiphon.push(carrier);
-            std::env::set_var("AETHER_UPSTREAM", carrier_upstream("psiphon", socks)?);
-            std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+            crate::settings::set("AETHER_UPSTREAM", carrier_upstream("psiphon", socks)?);
+            crate::settings::set("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through psiphon on the http/2 carrier");
         }
         psiphon::Mode::Only | psiphon::Mode::Off => {}
@@ -493,7 +496,7 @@ fn parse_endpoint_list(raw: &str) -> Result<Vec<SocketAddr>> {
 }
 
 fn env_value(key: &str) -> Option<String> {
-    std::env::var(key)
+    crate::settings::var(key)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -739,13 +742,13 @@ fn install_netstack_panic_guard() {
 }
 
 fn noize_config() -> noize::NoizeConfig {
-    let profile = std::env::var("AETHER_NOIZE").unwrap_or_else(|_| "firewall".to_string());
+    let profile = crate::settings::var("AETHER_NOIZE").unwrap_or_else(|_| "firewall".to_string());
     log::info!("[+] obfuscation profile: {profile}");
     noize::from_profile(&profile)
 }
 
 fn aethernoize_config() -> aethernoize::AetherNoizeConfig {
-    let profile = std::env::var("AETHER_NOIZE").unwrap_or_else(|_| "balanced".to_string());
+    let profile = crate::settings::var("AETHER_NOIZE").unwrap_or_else(|_| "balanced".to_string());
     log::info!("[+] aethernoize profile: {profile}");
     aethernoize::from_profile(&profile)
 }
@@ -824,7 +827,7 @@ async fn enrol_zero_trust(base: &str) {
         }
     };
 
-    std::env::set_var("AETHER_TEAM", &team);
+    crate::settings::set("AETHER_TEAM", &team);
 
     if known.contains(&team) {
         log::info!("[+] reusing the saved enrolment for team {team}; no sign-in needed");
@@ -836,7 +839,7 @@ async fn enrol_zero_trust(base: &str) {
             !(settings.token.is_some() || settings.has_service_token() || settings.email.is_some())
         }
         None => {
-            std::env::remove_var("AETHER_TEAM");
+            crate::settings::remove("AETHER_TEAM");
             return;
         }
     };
@@ -849,17 +852,17 @@ async fn enrol_zero_trust(base: &str) {
 
         if email.is_empty() {
             log::warn!("[-] no email given; staying on personal WARP");
-            std::env::remove_var("AETHER_TEAM");
+            crate::settings::remove("AETHER_TEAM");
             return;
         }
 
-        std::env::set_var("AETHER_ACCESS_EMAIL", &email);
+        crate::settings::set("AETHER_ACCESS_EMAIL", &email);
     }
 
     let settings = match zerotrust::TeamSettings::from_env() {
         Some(settings) => settings,
         None => {
-            std::env::remove_var("AETHER_TEAM");
+            crate::settings::remove("AETHER_TEAM");
             return;
         }
     };
@@ -869,8 +872,8 @@ async fn enrol_zero_trust(base: &str) {
         Err(error) => {
             log::error!("[-] Zero Trust sign-in failed: {error}");
             log::warn!("[-] staying on personal WARP");
-            std::env::remove_var("AETHER_TEAM");
-            std::env::remove_var("AETHER_ACCESS_EMAIL");
+            crate::settings::remove("AETHER_TEAM");
+            crate::settings::remove("AETHER_ACCESS_EMAIL");
         }
     }
 }
@@ -900,7 +903,7 @@ async fn adopt_team_profile(identity: account::Identity) -> account::Identity {
     let identity = account::refresh_profile(identity).await;
 
     if !identity.gateway_proxy.is_empty() {
-        if std::env::var("AETHER_GATEWAY").is_ok() {
+        if crate::settings::var("AETHER_GATEWAY").is_ok() {
             socks::set_gateway_proxy(&identity.gateway_proxy);
         } else {
             log::debug!(
@@ -910,8 +913,8 @@ async fn adopt_team_profile(identity: account::Identity) -> account::Identity {
         }
     }
 
-    if !identity.assigned_endpoint.is_empty() && std::env::var("AETHER_PEER").is_err() {
-        let port = if std::env::var("AETHER_PROTOCOL")
+    if !identity.assigned_endpoint.is_empty() && crate::settings::var("AETHER_PEER").is_err() {
+        let port = if crate::settings::var("AETHER_PROTOCOL")
             .map(|value| value == "wg" || value == "gool")
             .unwrap_or(false)
         {
@@ -922,7 +925,7 @@ async fn adopt_team_profile(identity: account::Identity) -> account::Identity {
         let peer = format!("{}:{port}", identity.assigned_endpoint);
         if peer.parse::<SocketAddr>().is_ok() {
             log::info!("[+] the organization assigned endpoint {peer}; trying it before scanning");
-            std::env::set_var("AETHER_TEAM_ENDPOINT", &peer);
+            crate::settings::set("AETHER_TEAM_ENDPOINT", &peer);
         }
     }
 
@@ -930,7 +933,7 @@ async fn adopt_team_profile(identity: account::Identity) -> account::Identity {
 }
 
 fn warp_config_path(base: &str) -> String {
-    if let Ok(p) = std::env::var("AETHER_WG_CONFIG") {
+    if let Ok(p) = crate::settings::var("AETHER_WG_CONFIG") {
         return p;
     }
     match team_scope() {
@@ -940,7 +943,7 @@ fn warp_config_path(base: &str) -> String {
 }
 
 fn masque_config_path(base: &str) -> String {
-    if let Ok(p) = std::env::var("AETHER_MASQUE_CONFIG") {
+    if let Ok(p) = crate::settings::var("AETHER_MASQUE_CONFIG") {
         return p;
     }
     match team_scope() {
@@ -968,7 +971,7 @@ fn derive_sibling_path(base: &str, suffix: &str) -> String {
 
 fn keep_saved_identity() -> bool {
     !matches!(
-        std::env::var("AETHER_REPROVISION").as_deref(),
+        crate::settings::var("AETHER_REPROVISION").as_deref(),
         Ok("0") | Ok("off") | Ok("false")
     )
 }
@@ -1167,7 +1170,7 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
     let mut carried = TaskGuard::new();
     if let Some((name, (socks, carrier))) = carrier {
         carried.push(carrier);
-        std::env::set_var("AETHER_UPSTREAM", carrier_upstream(name, socks)?);
+        crate::settings::set("AETHER_UPSTREAM", carrier_upstream(name, socks)?);
         log::info!("[+] the identities are registered through {name}");
     }
 
@@ -1226,10 +1229,10 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
 
 async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result<SocketAddr> {
     let force_peer = match protocol {
-        Protocol::Masque | Protocol::MasqueInMasque => std::env::var("AETHER_PEER").ok(),
-        Protocol::WireGuard | Protocol::WarpInWarp => std::env::var("AETHER_WG_PEER")
+        Protocol::Masque | Protocol::MasqueInMasque => crate::settings::var("AETHER_PEER").ok(),
+        Protocol::WireGuard | Protocol::WarpInWarp => crate::settings::var("AETHER_WG_PEER")
             .ok()
-            .or_else(|| std::env::var("AETHER_PEER").ok()),
+            .or_else(|| crate::settings::var("AETHER_PEER").ok()),
     };
 
     if let Some(p) = force_peer {
@@ -1357,7 +1360,7 @@ async fn select_wg_peers(
 /// ECH asked for and no key BoringSSL can offer, the session does not start, so that the
 /// server name never goes out in the clear.
 async fn resolve_ech() -> Result<Option<Vec<u8>>> {
-    let setting = std::env::var(tls::SESSION_ECH_OPTION.variable).ok();
+    let setting = crate::settings::var(tls::SESSION_ECH_OPTION.variable).ok();
     if setting.as_deref().is_some_and(|value| !value.is_empty()) {
         if let Some(key) = account::api_ech_in_use() {
             log::info!(
@@ -1378,7 +1381,7 @@ async fn resolve_ech() -> Result<Option<Vec<u8>>> {
 }
 
 fn masque_reconnect_delay() -> std::time::Duration {
-    let secs = std::env::var("AETHER_MASQUE_RECONNECT_SECS")
+    let secs = crate::settings::var("AETHER_MASQUE_RECONNECT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -1388,7 +1391,7 @@ fn masque_reconnect_delay() -> std::time::Duration {
 }
 
 fn masque_startup_timeout() -> std::time::Duration {
-    let secs = std::env::var("AETHER_MASQUE_STARTUP_SECS")
+    let secs = crate::settings::var("AETHER_MASQUE_STARTUP_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -1494,7 +1497,7 @@ async fn quick_verify_masque_peer(
 }
 
 async fn want_quick_reconnect(cached: &lastconn::LastConnection) -> bool {
-    match std::env::var("AETHER_QUICK_RECONNECT").as_deref() {
+    match crate::settings::var("AETHER_QUICK_RECONNECT").as_deref() {
         Ok("1") | Ok("true") | Ok("yes") | Ok("on") => return true,
         Ok("0") | Ok("false") | Ok("no") | Ok("off") => return false,
         _ => {}
@@ -1515,12 +1518,12 @@ async fn run_masque(
     lastconn_path: String,
     gool_inner: Option<String>,
 ) -> Result<()> {
-    let forced = std::env::var("AETHER_PEER").ok();
+    let forced = crate::settings::var("AETHER_PEER").ok();
 
     let mut quick_peer: Option<SocketAddr> = None;
 
     if forced.is_none() {
-        if let Some(assigned) = std::env::var("AETHER_TEAM_ENDPOINT")
+        if let Some(assigned) = crate::settings::var("AETHER_TEAM_ENDPOINT")
             .ok()
             .and_then(|value| value.parse::<SocketAddr>().ok())
         {
@@ -1631,7 +1634,8 @@ async fn run_masque(
         log::info!("[+] using cloudflare edge {peer}");
 
         if forced.is_none() {
-            let profile = std::env::var("AETHER_NOIZE").unwrap_or_else(|_| "firewall".to_string());
+            let profile =
+                crate::settings::var("AETHER_NOIZE").unwrap_or_else(|_| "firewall".to_string());
             lastconn::save(
                 &lastconn_path,
                 &peer.to_string(),
@@ -1938,7 +1942,7 @@ fn edge_network(ip: IpAddr) -> Option<[u8; 3]> {
 fn verified_scan_selected(settings: &Option<(String, prober::IpScan)>) -> bool {
     let named = match settings {
         Some((mode, _)) => mode.clone(),
-        None => std::env::var("AETHER_SCAN").unwrap_or_default(),
+        None => crate::settings::var("AETHER_SCAN").unwrap_or_default(),
     };
     prober::ScanMode::parse(&named) == prober::ScanMode::Verified
 }
@@ -2324,7 +2328,7 @@ async fn run_mim(
 }
 
 fn wg_keepalive_secs() -> u16 {
-    std::env::var("AETHER_WG_KEEPALIVE")
+    crate::settings::var("AETHER_WG_KEEPALIVE")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&v| v > 0)
@@ -2332,11 +2336,11 @@ fn wg_keepalive_secs() -> u16 {
 }
 
 fn wg_profile_candidates() -> Vec<(String, aethernoize::AetherNoizeConfig)> {
-    let primary = std::env::var("AETHER_NOIZE").unwrap_or_else(|_| "balanced".to_string());
+    let primary = crate::settings::var("AETHER_NOIZE").unwrap_or_else(|_| "balanced".to_string());
     log::info!("[+] aethernoize primary profile: {primary}");
 
     let mut names = vec![primary.clone()];
-    if std::env::var("AETHER_WG_NO_PROFILE_RETRY").is_err() {
+    if crate::settings::var("AETHER_WG_NO_PROFILE_RETRY").is_err() {
         for fallback in ["balanced", "aggressive", "light", "off"] {
             if !names.iter().any(|n| n.eq_ignore_ascii_case(fallback)) {
                 names.push(fallback.to_string());
@@ -2383,7 +2387,7 @@ async fn hunt_wg_peer_with_profile(
 }
 
 fn wg_reconnect_delay() -> std::time::Duration {
-    let secs = std::env::var("AETHER_WG_RECONNECT_SECS")
+    let secs = crate::settings::var("AETHER_WG_RECONNECT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -2393,7 +2397,7 @@ fn wg_reconnect_delay() -> std::time::Duration {
 }
 
 fn wg_endpoint_cooldown() -> std::time::Duration {
-    let secs = std::env::var("AETHER_WG_ENDPOINT_COOLDOWN_SECS")
+    let secs = crate::settings::var("AETHER_WG_ENDPOINT_COOLDOWN_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -2440,9 +2444,9 @@ async fn run_wireguard(
 ) -> Result<()> {
     let candidates = wg_profile_candidates();
 
-    let forced = std::env::var("AETHER_WG_PEER")
+    let forced = crate::settings::var("AETHER_WG_PEER")
         .ok()
-        .or_else(|| std::env::var("AETHER_PEER").ok());
+        .or_else(|| crate::settings::var("AETHER_PEER").ok());
 
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
@@ -2454,7 +2458,7 @@ async fn run_wireguard(
     let mut quick: Option<(SocketAddr, aethernoize::AetherNoizeConfig, String)> = None;
 
     if forced.is_none() {
-        if let Some(assigned) = std::env::var("AETHER_TEAM_ENDPOINT")
+        if let Some(assigned) = crate::settings::var("AETHER_TEAM_ENDPOINT")
             .ok()
             .and_then(|value| value.parse::<SocketAddr>().ok())
         {
@@ -2688,7 +2692,7 @@ async fn run_wireguard(
 }
 
 fn wg_tunnel_validate_timeout() -> std::time::Duration {
-    let secs = std::env::var("AETHER_WG_VALIDATE_SECS")
+    let secs = crate::settings::var("AETHER_WG_VALIDATE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -2778,7 +2782,7 @@ fn carrier_upstream(name: &str, socks: SocketAddr) -> Result<String> {
 }
 
 fn http_proxy_listen() -> Option<SocketAddr> {
-    let raw = std::env::var("AETHER_HTTP_PROXY").ok()?;
+    let raw = crate::settings::var("AETHER_HTTP_PROXY").ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -3008,7 +3012,7 @@ fn needs_udp_to_warp(protocol: Protocol, classic_gool: bool) -> bool {
 
 fn gool_classic() -> bool {
     matches!(
-        std::env::var("AETHER_GOOL_MODE").as_deref(),
+        crate::settings::var("AETHER_GOOL_MODE").as_deref(),
         Ok("wiw") | Ok("wg") | Ok("classic")
     ) || [
         "AETHER_WIW_OUTER_PEER",
@@ -3247,7 +3251,7 @@ const MIM_MANUAL_TIP: &str = "\n(tip: you can skip this scan and give the two ma
 const WIW_MANUAL_TIP: &str = "\n(tip: you can skip this scan and give the two gool hops yourself:\n        aether --gool --wiw-outer <ip:port> --wiw-inner <ip:port>\n      the port is required, and naming just one of the two lets the scan\n      find the other)\n";
 
 async fn select_scan_mode() -> prober::ScanMode {
-    if let Ok(v) = std::env::var("AETHER_SCAN") {
+    if let Ok(v) = crate::settings::var("AETHER_SCAN") {
         return prober::ScanMode::parse(&v);
     }
 
@@ -3263,7 +3267,7 @@ async fn select_scan_mode() -> prober::ScanMode {
 }
 
 async fn select_scan_mode_str(tip: &str) -> String {
-    if let Ok(v) = std::env::var("AETHER_SCAN") {
+    if let Ok(v) = crate::settings::var("AETHER_SCAN") {
         return v;
     }
 
@@ -3279,7 +3283,7 @@ async fn select_scan_mode_str(tip: &str) -> String {
 }
 
 async fn select_protocol(base: &str) -> Protocol {
-    if let Ok(v) = std::env::var("AETHER_PROTOCOL") {
+    if let Ok(v) = crate::settings::var("AETHER_PROTOCOL") {
         return Protocol::parse(&v);
     }
 
@@ -3347,12 +3351,12 @@ async fn select_protocol(base: &str) -> Protocol {
                 continue;
             }
             _ if !tor_alone.is_empty() && choice == tor_alone => {
-                std::env::set_var("AETHER_TOR", "only");
+                crate::settings::set("AETHER_TOR", "only");
                 return Protocol::Masque;
             }
             _ if !tor_chain.is_empty() && choice == tor_chain => return select_tor_chain().await,
             _ if choice == psiphon_alone => {
-                std::env::set_var("AETHER_PSIPHON", "only");
+                crate::settings::set("AETHER_PSIPHON", "only");
                 return Protocol::Masque;
             }
             _ if choice == psiphon_chain => return select_psiphon_chain().await,
@@ -3372,7 +3376,7 @@ async fn select_gool() -> Protocol {
     .await;
 
     if matches!(answer.as_deref(), Some("2")) {
-        std::env::set_var("AETHER_GOOL_MODE", "classic");
+        crate::settings::set("AETHER_GOOL_MODE", "classic");
     }
     Protocol::WarpInWarp
 }
@@ -3389,12 +3393,12 @@ async fn select_psiphon_chain() -> Protocol {
     .await;
 
     if matches!(answer.as_deref(), Some("2")) {
-        std::env::set_var("AETHER_PSIPHON", "reverse");
+        crate::settings::set("AETHER_PSIPHON", "reverse");
         log::info!("[*] the tunnel will be dialled through psiphon, on the http/2 carrier");
         return Protocol::Masque;
     }
 
-    std::env::set_var("AETHER_PSIPHON", "chain");
+    crate::settings::set("AETHER_PSIPHON", "chain");
     log::info!("[*] psiphon will be carried inside the tunnel");
     select_chain_carrier("psiphon").await
 }
@@ -3411,12 +3415,12 @@ async fn select_tor_chain() -> Protocol {
     .await;
 
     if matches!(answer.as_deref(), Some("2")) {
-        std::env::set_var("AETHER_TOR", "reverse");
+        crate::settings::set("AETHER_TOR", "reverse");
         log::info!("[*] the tunnel will be dialled through tor, on the http/2 carrier");
         return Protocol::Masque;
     }
 
-    std::env::set_var("AETHER_TOR", "chain");
+    crate::settings::set("AETHER_TOR", "chain");
     log::info!("[*] tor will be carried inside the tunnel");
     select_chain_carrier("tor").await
 }
@@ -3469,7 +3473,9 @@ impl Protocol {
 }
 
 async fn select_masque_transport() {
-    if std::env::var("AETHER_MASQUE_HTTP2").is_ok() || std::env::var("AETHER_PEER").is_ok() {
+    if crate::settings::var("AETHER_MASQUE_HTTP2").is_ok()
+        || crate::settings::var("AETHER_PEER").is_ok()
+    {
         return;
     }
 
@@ -3479,20 +3485,20 @@ async fn select_masque_transport() {
     .await;
 
     if matches!(answer.as_deref(), Some("2")) {
-        std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+        crate::settings::set("AETHER_MASQUE_HTTP2", "1");
     }
 }
 
 fn scan_settings_from_env() -> (String, prober::IpScan) {
-    let mode = std::env::var("AETHER_SCAN").unwrap_or_default();
-    let ip = std::env::var("AETHER_IP")
+    let mode = crate::settings::var("AETHER_SCAN").unwrap_or_default();
+    let ip = crate::settings::var("AETHER_IP")
         .map(|value| prober::IpScan::parse(&value))
         .unwrap_or(prober::IpScan::V4);
     (mode, ip)
 }
 
 async fn select_ip_version() -> prober::IpScan {
-    if let Ok(v) = std::env::var("AETHER_IP") {
+    if let Ok(v) = crate::settings::var("AETHER_IP") {
         return prober::IpScan::parse(&v);
     }
 
@@ -4462,14 +4468,14 @@ mod tests {
             (Some(consts::CONNECT_SNI), consts::CONNECT_SNI),
         ] {
             match option {
-                Some(name) => std::env::set_var("AETHER_MASQUE_SNI", name),
-                None => std::env::remove_var("AETHER_MASQUE_SNI"),
+                Some(name) => crate::settings::set("AETHER_MASQUE_SNI", name),
+                None => crate::settings::remove("AETHER_MASQUE_SNI"),
             }
             for h2 in [false, true] {
                 if h2 {
-                    std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+                    crate::settings::set("AETHER_MASQUE_HTTP2", "1");
                 } else {
-                    std::env::remove_var("AETHER_MASQUE_HTTP2");
+                    crate::settings::remove("AETHER_MASQUE_HTTP2");
                 }
                 // The check of a gateway, and the tunnel.
                 for tunnel in [false, true] {
@@ -4606,15 +4612,15 @@ mod tests {
         let _setting = upstream::hold_setting().await;
         let _options = tls::hold_options().await;
         // Firefox's: its TLS 1.3 order, and key shares for three of its groups.
-        std::env::set_var(
+        crate::settings::set(
             "AETHER_TLS13_CIPHERS",
             "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
         );
-        std::env::set_var(
+        crate::settings::set(
             "AETHER_TLS_GROUPS",
             "X25519MLKEM768:X25519:P-256:P-384:P-521",
         );
-        std::env::set_var("AETHER_TLS_KEY_SHARES", "X25519MLKEM768:X25519:P-256");
+        crate::settings::set("AETHER_TLS_KEY_SHARES", "X25519MLKEM768:X25519:P-256");
         let identity = account::handshake_identity();
         for h2 in [false, true] {
             // The check of a gateway, and the tunnel.
@@ -4637,9 +4643,9 @@ mod tests {
         case: &str,
     ) -> tls::client_hello::ClientHello {
         if h2 {
-            std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+            crate::settings::set("AETHER_MASQUE_HTTP2", "1");
         } else {
-            std::env::remove_var("AETHER_MASQUE_HTTP2");
+            crate::settings::remove("AETHER_MASQUE_HTTP2");
         }
         let (address, hello) = if h2 {
             tls::client_hello::catch().await
@@ -4660,16 +4666,16 @@ mod tests {
         let _setting = upstream::hold_setting().await;
         let _options = tls::hold_options().await;
         // Chrome's, as its ClientHello of October 2026 has them, with fewer trust anchors.
-        std::env::set_var("AETHER_ENABLE_GREASE_SIGALGS", "1");
-        std::env::set_var(
+        crate::settings::set("AETHER_ENABLE_GREASE_SIGALGS", "1");
+        crate::settings::set(
             "AETHER_TLS_SIGALGS",
             "mldsa44:mldsa65:mldsa87:ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256",
         );
-        std::env::set_var("AETHER_TLS_CERT_COMPRESSION", "brotli");
-        std::env::set_var("AETHER_TLS_ALPS", "new");
-        std::env::set_var("AETHER_TLS_TRUST_ANCHORS", "11129.9.1");
-        std::env::set_var("AETHER_TLS_SERVER_PADDING", "6000");
-        std::env::set_var("AETHER_ENABLE_ECH_GREASE", "1");
+        crate::settings::set("AETHER_TLS_CERT_COMPRESSION", "brotli");
+        crate::settings::set("AETHER_TLS_ALPS", "new");
+        crate::settings::set("AETHER_TLS_TRUST_ANCHORS", "11129.9.1");
+        crate::settings::set("AETHER_TLS_SERVER_PADDING", "6000");
+        crate::settings::set("AETHER_ENABLE_ECH_GREASE", "1");
         let identity = account::handshake_identity();
         for h2 in [false, true] {
             for tunnel in [false, true] {
@@ -4706,10 +4712,10 @@ mod tests {
             "AETHER_TLS_SERVER_PADDING",
             "AETHER_ENABLE_ECH_GREASE",
         ] {
-            std::env::remove_var(variable);
+            crate::settings::remove(variable);
         }
-        std::env::set_var("AETHER_DISABLE_OCSP_STAPLING", "1");
-        std::env::set_var("AETHER_DISABLE_SCT", "1");
+        crate::settings::set("AETHER_DISABLE_OCSP_STAPLING", "1");
+        crate::settings::set("AETHER_DISABLE_SCT", "1");
         for h2 in [false, true] {
             let case = format!("h2 {h2}");
             let hello = masque_hello(&identity, h2, false, &case).await;

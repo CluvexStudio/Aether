@@ -230,7 +230,7 @@ pub const SESSION_ECH: EchLookup = EchLookup {
 
 /// The resolver `lookup` names, or the default one.
 fn configured_dns(lookup: &EchLookup) -> std::result::Result<EchDns, String> {
-    let value = std::env::var(lookup.dns_variable).unwrap_or_default();
+    let value = crate::settings::var(lookup.dns_variable).unwrap_or_default();
     let value = value.trim();
     EchDns::parse(if value.is_empty() {
         DEFAULT_ECH_DNS
@@ -241,7 +241,7 @@ fn configured_dns(lookup: &EchLookup) -> std::result::Result<EchDns, String> {
 
 /// The domain `lookup` names, or the default one.
 fn configured_domain(lookup: &EchLookup) -> std::result::Result<String, String> {
-    let value = std::env::var(lookup.domain_variable).unwrap_or_default();
+    let value = crate::settings::var(lookup.domain_variable).unwrap_or_default();
     let value = value.trim();
     let name = if value.is_empty() {
         DEFAULT_ECH_DOMAIN
@@ -910,9 +910,9 @@ mod tests {
     /// hangs up.
     async fn doh_hello(lookup: &EchLookup) -> crate::tls::client_hello::ClientHello {
         let (server, hello) = crate::tls::client_hello::catch().await;
-        std::env::set_var(lookup.dns_variable, format!("https://{server}/dns-query"));
+        crate::settings::set(lookup.dns_variable, format!("https://{server}/dns-query"));
         assert!(fetch_ech_config(lookup).await.is_err());
-        std::env::remove_var(lookup.dns_variable);
+        crate::settings::remove(lookup.dns_variable);
         hello.await.expect("the ClientHello")
     }
 
@@ -928,12 +928,12 @@ mod tests {
             domain_variable: "AETHER_DOH_TEST_DOMAIN",
         };
         let own = doh_hello(&LOOKUP).await;
-        std::env::set_var(
+        crate::settings::set(
             "AETHER_TLS_CIPHERS",
             "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:AES256-SHA",
         );
-        std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
-        std::env::set_var("AETHER_DISABLE_GREASE", "1");
+        crate::settings::set("AETHER_TLS_GROUPS", "X25519:P-256");
+        crate::settings::set("AETHER_DISABLE_GREASE", "1");
         let changed = doh_hello(&LOOKUP).await;
         // The core's ClientHello, Chrome's, offering HTTP/2 first, never ECH: the key it looks
         // up is the one ECH would need.
@@ -1097,12 +1097,12 @@ mod tests {
         const KEY: &[u8] = b"\x00\x05a key";
         for alpn in [&b"\x02h2"[..], &b"\x08http/1.1"[..]] {
             let (server, served) = doh_server(alpn, KEY).await;
-            std::env::set_var(
+            crate::settings::set(
                 LOOKUP.dns_variable,
                 format!("https://{server}/dns-query?ct"),
             );
             let key = fetch_ech_config_with(&LOOKUP, &crate::tls::Fingerprint::default()).await;
-            std::env::remove_var(LOOKUP.dns_variable);
+            crate::settings::remove(LOOKUP.dns_variable);
             assert_eq!(key.expect("the key").as_slice(), KEY, "{alpn:?}");
             let asked = served.await.expect("the server");
             assert_eq!(asked.method, "POST");
@@ -1127,7 +1127,7 @@ mod tests {
         for alpn in [&b"\x02h2"[..], &b"\x08http/1.1"[..]] {
             let (server, served) = doh_server(alpn, KEY).await;
             // doh.example.test is never looked up: the connection goes to the address.
-            std::env::set_var(
+            crate::settings::set(
                 LOOKUP.dns_variable,
                 format!(
                     "https://doh.example.test:{}/dns-query@address=127.0.0.1@sni=front.example.test",
@@ -1135,7 +1135,7 @@ mod tests {
                 ),
             );
             let key = fetch_ech_config_with(&LOOKUP, &crate::tls::Fingerprint::default()).await;
-            std::env::remove_var(LOOKUP.dns_variable);
+            crate::settings::remove(LOOKUP.dns_variable);
             assert_eq!(key.expect("the key").as_slice(), KEY, "{alpn:?}");
             let asked = served.await.expect("the server");
             assert_eq!(asked.server_name.as_deref(), Some("front.example.test"));

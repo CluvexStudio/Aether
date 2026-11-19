@@ -25,10 +25,10 @@ pub struct TeamSettings {
 
 impl TeamSettings {
     pub fn from_env() -> Option<Self> {
-        let team = normalize_team(&std::env::var("AETHER_TEAM").unwrap_or_default())?;
+        let team = normalize_team(&crate::settings::var("AETHER_TEAM").unwrap_or_default())?;
 
         let non_empty = |key: &str| {
-            std::env::var(key)
+            crate::settings::var(key)
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())

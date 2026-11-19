@@ -23,7 +23,7 @@ impl Mode {
 }
 
 pub fn mode() -> Mode {
-    let raw = match std::env::var("AETHER_TOR") {
+    let raw = match crate::settings::var("AETHER_TOR") {
         Ok(value) => value.trim().to_lowercase(),
         Err(_) => return Mode::Off,
     };
@@ -37,14 +37,14 @@ pub fn mode() -> Mode {
 }
 
 pub fn listen_address() -> SocketAddr {
-    std::env::var("AETHER_TOR_BIND")
+    crate::settings::var("AETHER_TOR_BIND")
         .ok()
         .and_then(|value| value.trim().parse().ok())
         .unwrap_or_else(|| "127.0.0.1:1820".parse().expect("a literal address"))
 }
 
 pub fn http_listen_address() -> Option<SocketAddr> {
-    std::env::var("AETHER_TOR_HTTP")
+    crate::settings::var("AETHER_TOR_HTTP")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty() && value != "off")
@@ -52,7 +52,7 @@ pub fn http_listen_address() -> Option<SocketAddr> {
 }
 
 pub fn state_dir(base_config: &str) -> PathBuf {
-    if let Some(dir) = std::env::var("AETHER_TOR_DIR")
+    if let Some(dir) = crate::settings::var("AETHER_TOR_DIR")
         .ok()
         .filter(|d| !d.trim().is_empty())
     {
@@ -79,7 +79,7 @@ pub enum Bridges {
 }
 
 pub fn bridges_from_file() -> Vec<String> {
-    let path = match std::env::var("AETHER_TOR_BRIDGE_FILE") {
+    let path = match crate::settings::var("AETHER_TOR_BRIDGE_FILE") {
         Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
         _ => return Vec::new(),
     };
@@ -118,7 +118,7 @@ pub fn read_bridge_lines(text: &str) -> Vec<String> {
 
 pub fn bridges() -> Bridges {
     let from_file = bridges_from_file();
-    let raw = std::env::var("AETHER_TOR_BRIDGES").unwrap_or_default();
+    let raw = crate::settings::var("AETHER_TOR_BRIDGES").unwrap_or_default();
     let trimmed = raw.trim();
 
     if !from_file.is_empty() {
@@ -170,7 +170,7 @@ pub fn bridge_lines() -> Vec<String> {
 }
 
 pub fn transports() -> Vec<(String, String)> {
-    std::env::var("AETHER_TOR_PT")
+    crate::settings::var("AETHER_TOR_PT")
         .unwrap_or_default()
         .split(['\n', ';'])
         .filter_map(|entry| {
@@ -247,13 +247,15 @@ mod with_tor {
     fn init_tracing() {
         use tracing_subscriber::filter::EnvFilter;
 
-        let wanted = std::env::var("AETHER_TOR_LOG")
+        let wanted = crate::settings::var("AETHER_TOR_LOG")
             .ok()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| match std::env::var("AETHER_LOG_LEVEL").as_deref() {
-                Ok("debug") | Ok("trace") => "debug".to_string(),
-                _ => "info".to_string(),
-            });
+            .unwrap_or_else(
+                || match crate::settings::var("AETHER_LOG_LEVEL").as_deref() {
+                    Ok("debug") | Ok("trace") => "debug".to_string(),
+                    _ => "info".to_string(),
+                },
+            );
 
         let filter = EnvFilter::try_new(&wanted).unwrap_or_else(|_| EnvFilter::new("info"));
         let _ = tracing_subscriber::fmt()
@@ -265,7 +267,7 @@ mod with_tor {
     const REVERSE_ATTEMPTS: usize = 3;
 
     fn direct_probe() -> Duration {
-        std::env::var("AETHER_TOR_DIRECT_SECS")
+        crate::settings::var("AETHER_TOR_DIRECT_SECS")
             .ok()
             .and_then(|value| value.trim().parse().ok())
             .map(Duration::from_secs)
@@ -536,7 +538,7 @@ mod with_tor {
     }
 
     fn proof_target() -> (String, u16) {
-        let raw = std::env::var("AETHER_TOR_CHECK").unwrap_or_default();
+        let raw = crate::settings::var("AETHER_TOR_CHECK").unwrap_or_default();
         let raw = raw.trim();
 
         if raw.is_empty() {
@@ -692,7 +694,7 @@ mod with_tor {
     }
 
     fn bridge_probe() -> Duration {
-        std::env::var("AETHER_TOR_BRIDGE_SECS")
+        crate::settings::var("AETHER_TOR_BRIDGE_SECS")
             .ok()
             .and_then(|value| value.trim().parse().ok())
             .map(Duration::from_secs)
@@ -700,7 +702,7 @@ mod with_tor {
     }
 
     fn stall_limit() -> Duration {
-        std::env::var("AETHER_TOR_STALL_SECS")
+        crate::settings::var("AETHER_TOR_STALL_SECS")
             .ok()
             .and_then(|value| value.trim().parse().ok())
             .map(Duration::from_secs)
@@ -980,11 +982,11 @@ mod tests {
     }
 
     fn clear() {
-        std::env::remove_var("AETHER_TOR");
-        std::env::remove_var("AETHER_TOR_DIR");
-        std::env::remove_var("AETHER_TOR_BIND");
-        std::env::remove_var("AETHER_TOR_BRIDGES");
-        std::env::remove_var("AETHER_TOR_PT");
+        crate::settings::remove("AETHER_TOR");
+        crate::settings::remove("AETHER_TOR_DIR");
+        crate::settings::remove("AETHER_TOR_BIND");
+        crate::settings::remove("AETHER_TOR_BRIDGES");
+        crate::settings::remove("AETHER_TOR_PT");
     }
 
     #[test]
@@ -992,19 +994,19 @@ mod tests {
         let _settings = hold_settings();
         assert_eq!(mode(), Mode::Off);
         for written in ["1", "on", "chain", "yes"] {
-            std::env::set_var("AETHER_TOR", written);
+            crate::settings::set("AETHER_TOR", written);
             assert_eq!(mode(), Mode::Chain, "{written}");
         }
         for written in ["reverse", "rev", "warp-over-tor"] {
-            std::env::set_var("AETHER_TOR", written);
+            crate::settings::set("AETHER_TOR", written);
             assert_eq!(mode(), Mode::Reverse, "{written}");
         }
         for written in ["only", "alone", "tor-only", "direct"] {
-            std::env::set_var("AETHER_TOR", written);
+            crate::settings::set("AETHER_TOR", written);
             assert_eq!(mode(), Mode::Only, "{written}");
         }
         for written in ["0", "off", "false", "no"] {
-            std::env::set_var("AETHER_TOR", written);
+            crate::settings::set("AETHER_TOR", written);
             assert_eq!(mode(), Mode::Off, "{written}");
         }
     }
@@ -1017,7 +1019,7 @@ mod tests {
             state_dir("/etc/aether/aether.toml"),
             PathBuf::from("/etc/aether/aether-tor")
         );
-        std::env::set_var("AETHER_TOR_DIR", "/var/lib/aether-tor");
+        crate::settings::set("AETHER_TOR_DIR", "/var/lib/aether-tor");
         assert_eq!(
             state_dir("aether.toml"),
             PathBuf::from("/var/lib/aether-tor")
@@ -1028,7 +1030,7 @@ mod tests {
     fn the_tor_listener_has_a_default_of_its_own() {
         let _settings = hold_settings();
         assert_eq!(listen_address(), "127.0.0.1:1820".parse().unwrap());
-        std::env::set_var("AETHER_TOR_BIND", "127.0.0.1:9150");
+        crate::settings::set("AETHER_TOR_BIND", "127.0.0.1:9150");
         assert_eq!(listen_address(), "127.0.0.1:9150".parse().unwrap());
     }
 
@@ -1036,7 +1038,7 @@ mod tests {
     fn bridges_are_read_one_per_entry() {
         let _settings = hold_settings();
         assert!(bridge_lines().is_empty());
-        std::env::set_var(
+        crate::settings::set(
             "AETHER_TOR_BRIDGES",
             "obfs4 192.0.2.55:38114 316E64 cert=abc iat-mode=0 ; obfs4 198.51.100.25:443 7DD627 cert=def",
         );
@@ -1050,12 +1052,12 @@ mod tests {
     fn a_transport_may_be_named_or_assumed_to_be_obfs4() {
         let _settings = hold_settings();
         assert!(transports().is_empty());
-        std::env::set_var("AETHER_TOR_PT", "/usr/bin/lyrebird");
+        crate::settings::set("AETHER_TOR_PT", "/usr/bin/lyrebird");
         assert_eq!(
             transports(),
             vec![("obfs4".to_string(), "/usr/bin/lyrebird".to_string())]
         );
-        std::env::set_var(
+        crate::settings::set(
             "AETHER_TOR_PT",
             "obfs4=/usr/bin/lyrebird;snowflake=/usr/bin/snowflake-client",
         );

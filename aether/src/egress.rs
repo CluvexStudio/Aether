@@ -14,7 +14,7 @@ use crate::error::{AetherError, Result};
 static MARK: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() -> Result<()> {
-    let raw = match std::env::var("AETHER_MARK") {
+    let raw = match crate::settings::var("AETHER_MARK") {
         Ok(value) if !value.trim().is_empty() => value,
         _ => {
             MARK.store(0, Ordering::Relaxed);

@@ -376,7 +376,7 @@ pub const MASQUE_ZT_CIDRS_V4: &[&str] = &["162.159.197.0/24"];
 pub const MASQUE_ZT_CIDRS_V6: &[&str] = &["2606:4700:102::/48"];
 
 pub fn zero_trust_mode() -> bool {
-    std::env::var("AETHER_TEAM")
+    crate::settings::var("AETHER_TEAM")
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
 }
@@ -1147,7 +1147,7 @@ mod tests {
 
     #[test]
     fn without_a_team_the_range_order_is_left_alone() {
-        std::env::remove_var("AETHER_TEAM");
+        crate::settings::remove("AETHER_TEAM");
         assert_eq!(
             prioritize(MASQUE_CIDRS_V4, MASQUE_ZT_CIDRS_V4),
             MASQUE_CIDRS_V4.to_vec()
@@ -1269,20 +1269,20 @@ mod tests {
         const TAILS: &[u8] = &[1, 2, 3];
 
         let timeout = Duration::from_millis(
-            std::env::var("AETHER_PROBE_TIMEOUT_MS")
+            crate::settings::var("AETHER_PROBE_TIMEOUT_MS")
                 .ok()
                 .and_then(|raw| raw.trim().parse::<u64>().ok())
                 .filter(|ms| *ms > 0)
                 .unwrap_or(10_000),
         );
 
-        let attempts = std::env::var("AETHER_PROBE_ATTEMPTS")
+        let attempts = crate::settings::var("AETHER_PROBE_ATTEMPTS")
             .ok()
             .and_then(|raw| raw.trim().parse::<u32>().ok())
             .filter(|n| *n > 0)
             .unwrap_or(2);
 
-        let ports: Vec<u16> = match std::env::var("AETHER_PROBE_PORTS") {
+        let ports: Vec<u16> = match crate::settings::var("AETHER_PROBE_PORTS") {
             Ok(raw) => raw
                 .split(',')
                 .filter_map(|p| p.trim().parse::<u16>().ok())

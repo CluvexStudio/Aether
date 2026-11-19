@@ -24,7 +24,7 @@ pub enum Mode {
 }
 
 pub fn mode() -> Mode {
-    let raw = std::env::var("AETHER_PSIPHON")
+    let raw = crate::settings::var("AETHER_PSIPHON")
         .unwrap_or_default()
         .trim()
         .to_lowercase();
@@ -38,14 +38,14 @@ pub fn mode() -> Mode {
 }
 
 pub fn listen_address() -> SocketAddr {
-    std::env::var("AETHER_PSIPHON_BIND")
+    crate::settings::var("AETHER_PSIPHON_BIND")
         .ok()
         .and_then(|value| value.trim().parse().ok())
         .unwrap_or_else(|| DEFAULT_BIND.parse().expect("a literal address"))
 }
 
 pub fn http_listen_address() -> Option<SocketAddr> {
-    std::env::var("AETHER_PSIPHON_HTTP")
+    crate::settings::var("AETHER_PSIPHON_HTTP")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty() && value != "off")
@@ -53,7 +53,7 @@ pub fn http_listen_address() -> Option<SocketAddr> {
 }
 
 pub fn state_dir(base_config: &str) -> PathBuf {
-    if let Some(dir) = std::env::var("AETHER_PSIPHON_DIR")
+    if let Some(dir) = crate::settings::var("AETHER_PSIPHON_DIR")
         .ok()
         .filter(|d| !d.trim().is_empty())
     {
@@ -65,14 +65,14 @@ pub fn state_dir(base_config: &str) -> PathBuf {
 }
 
 fn region() -> Option<String> {
-    std::env::var("AETHER_PSIPHON_REGION")
+    crate::settings::var("AETHER_PSIPHON_REGION")
         .ok()
         .map(|value| value.trim().to_uppercase())
         .filter(|value| value.len() == 2 && value.chars().all(|c| c.is_ascii_alphabetic()))
 }
 
 fn ready_timeout() -> Duration {
-    let secs = std::env::var("AETHER_PSIPHON_READY_SECS")
+    let secs = crate::settings::var("AETHER_PSIPHON_READY_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -102,7 +102,7 @@ fn search_dirs() -> Vec<PathBuf> {
     dirs.push(PathBuf::from("."));
     dirs.push(PathBuf::from("pt"));
 
-    if let Ok(path) = std::env::var("PATH") {
+    if let Ok(path) = crate::settings::var("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
 
@@ -110,7 +110,7 @@ fn search_dirs() -> Vec<PathBuf> {
 }
 
 pub fn binary() -> Option<PathBuf> {
-    if let Some(given) = std::env::var("AETHER_PSIPHON_BIN")
+    if let Some(given) = crate::settings::var("AETHER_PSIPHON_BIN")
         .ok()
         .map(|v| PathBuf::from(v.trim()))
         .filter(|p| p.is_file())
@@ -135,7 +135,7 @@ pub fn binary() -> Option<PathBuf> {
 /// a list carried along, in the form the remote list unpacks to, so the first connection does not
 /// depend on downloading that list. A fetched list is merged on top of it, as the client does.
 pub fn server_entries() -> Option<PathBuf> {
-    std::env::var("AETHER_PSIPHON_SERVER_ENTRIES")
+    crate::settings::var("AETHER_PSIPHON_SERVER_ENTRIES")
         .ok()
         .map(|v| PathBuf::from(v.trim()))
         .filter(|p| !p.as_os_str().is_empty() && p.is_file())
@@ -286,7 +286,7 @@ pub enum Shape {
 }
 
 pub fn shape() -> Shape {
-    match std::env::var("AETHER_PSIPHON_MODE")
+    match crate::settings::var("AETHER_PSIPHON_MODE")
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase()
@@ -330,7 +330,7 @@ fn client_platform() -> String {
 }
 
 fn env_or(name: &str, fallback: &str) -> String {
-    std::env::var(name)
+    crate::settings::var(name)
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -345,9 +345,10 @@ fn cdn_candidates(raw: &str) -> Vec<String> {
 }
 
 fn put_cdn_fronting(map: &mut serde_json::Map<String, serde_json::Value>) {
-    let addresses = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_IPS").unwrap_or_default());
-    let names = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_SNI").unwrap_or_default());
-    let sets = cdn_candidates(&std::env::var("AETHER_PSIPHON_CDN_SETS").unwrap_or_default());
+    let addresses =
+        cdn_candidates(&crate::settings::var("AETHER_PSIPHON_CDN_IPS").unwrap_or_default());
+    let names = cdn_candidates(&crate::settings::var("AETHER_PSIPHON_CDN_SNI").unwrap_or_default());
+    let sets = cdn_candidates(&crate::settings::var("AETHER_PSIPHON_CDN_SETS").unwrap_or_default());
 
     if !addresses.is_empty() {
         let mut spec = serde_json::Map::new();
@@ -379,7 +380,7 @@ fn put_cdn_fronting(map: &mut serde_json::Map<String, serde_json::Value>) {
 }
 
 fn read_base_config() -> Result<Option<serde_json::Value>> {
-    let path = match std::env::var("AETHER_PSIPHON_CONFIG")
+    let path = match crate::settings::var("AETHER_PSIPHON_CONFIG")
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -455,7 +456,7 @@ fn json5_ish(text: &str) -> std::result::Result<serde_json::Value, serde_json::E
 }
 
 fn listen_interface(socks: SocketAddr) -> Option<String> {
-    if let Some(name) = std::env::var("AETHER_PSIPHON_INTERFACE")
+    if let Some(name) = crate::settings::var("AETHER_PSIPHON_INTERFACE")
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -616,7 +617,7 @@ fn build_config(
         // Not even one that a config of the user's own names, written in any case: Psiphon reads
         // the keys of its config regardless of case.
         Placement::BehindHeld => {
-            let named = std::env::var("AETHER_PSIPHON_INTERFACE")
+            let named = crate::settings::var("AETHER_PSIPHON_INTERFACE")
                 .is_ok_and(|name| !name.trim().is_empty())
                 || map
                     .keys()
@@ -1105,7 +1106,7 @@ mod tests {
             "AETHER_PSIPHON_SERVER_ENTRIES",
             "AETHER_PSIPHON_CONFIG",
         ] {
-            std::env::remove_var(name);
+            crate::settings::remove(name);
         }
     }
 
@@ -1115,7 +1116,7 @@ mod tests {
 
         clear();
         assert!(server_entries().is_none());
-        std::env::set_var("AETHER_PSIPHON_SERVER_ENTRIES", "/nowhere/entries.txt");
+        crate::settings::set("AETHER_PSIPHON_SERVER_ENTRIES", "/nowhere/entries.txt");
         assert!(
             server_entries().is_none(),
             "a file that is not there is no file"
@@ -1124,7 +1125,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("aether-psi-entries-{}.txt", std::process::id()));
         std::fs::write(&path, "0 0 0 0 {}\n").expect("write");
-        std::env::set_var("AETHER_PSIPHON_SERVER_ENTRIES", &path);
+        crate::settings::set("AETHER_PSIPHON_SERVER_ENTRIES", path.to_string_lossy());
         assert_eq!(server_entries(), Some(path.clone()));
 
         let with = client_arguments(
@@ -1157,19 +1158,19 @@ mod tests {
         clear();
         assert_eq!(mode(), Mode::Off);
         for written in ["1", "on", "chain", "yes"] {
-            std::env::set_var("AETHER_PSIPHON", written);
+            crate::settings::set("AETHER_PSIPHON", written);
             assert_eq!(mode(), Mode::Chain, "{written}");
         }
         for written in ["reverse", "rev", "warp-over-psiphon"] {
-            std::env::set_var("AETHER_PSIPHON", written);
+            crate::settings::set("AETHER_PSIPHON", written);
             assert_eq!(mode(), Mode::Reverse, "{written}");
         }
         for written in ["only", "alone", "psiphon-only", "direct"] {
-            std::env::set_var("AETHER_PSIPHON", written);
+            crate::settings::set("AETHER_PSIPHON", written);
             assert_eq!(mode(), Mode::Only, "{written}");
         }
         for written in ["off", "0", "no", "false"] {
-            std::env::set_var("AETHER_PSIPHON", written);
+            crate::settings::set("AETHER_PSIPHON", written);
             assert_eq!(mode(), Mode::Off, "{written}");
         }
 
@@ -1182,7 +1183,7 @@ mod tests {
 
         clear();
         assert_eq!(state_dir("/tmp/id"), PathBuf::from("/tmp/id-psiphon"));
-        std::env::set_var("AETHER_PSIPHON_DIR", "/var/psi");
+        crate::settings::set("AETHER_PSIPHON_DIR", "/var/psi");
         assert_eq!(state_dir("/tmp/id"), PathBuf::from("/var/psi"));
 
         clear();
@@ -1194,9 +1195,9 @@ mod tests {
 
         clear();
         assert!(region().is_none());
-        std::env::set_var("AETHER_PSIPHON_REGION", "de");
+        crate::settings::set("AETHER_PSIPHON_REGION", "de");
         assert_eq!(region().as_deref(), Some("DE"));
-        std::env::set_var("AETHER_PSIPHON_REGION", "germany");
+        crate::settings::set("AETHER_PSIPHON_REGION", "germany");
         assert!(region().is_none());
 
         clear();
@@ -1359,7 +1360,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("aether-psi-{}.json", std::process::id()));
         std::fs::write(&path, r#"{"SponsorId": "MINE"}"#).expect("write");
-        std::env::set_var("AETHER_PSIPHON_CONFIG", &path);
+        crate::settings::set("AETHER_PSIPHON_CONFIG", path.to_string_lossy());
 
         let text = build_config(
             &dir,
@@ -1373,7 +1374,7 @@ mod tests {
         assert_eq!(parsed["SponsorId"], "MINE");
         assert_eq!(parsed["PropagationChannelId"], PROPAGATION_CHANNEL_ID);
 
-        std::env::remove_var("AETHER_PSIPHON_CONFIG");
+        crate::settings::remove("AETHER_PSIPHON_CONFIG");
         let _ = std::fs::remove_file(&path);
 
         clear();
@@ -1384,13 +1385,13 @@ mod tests {
         let _held = hold();
 
         clear();
-        std::env::set_var("AETHER_PSIPHON_MODE", "cdn");
+        crate::settings::set("AETHER_PSIPHON_MODE", "cdn");
         assert_eq!(shape(), Shape::Cdn);
         for name in chained_protocols(Shape::Cdn) {
             assert!(name.starts_with("FRONTED-MEEK-CDN"));
             assert!(!name.contains("QUIC"));
         }
-        std::env::remove_var("AETHER_PSIPHON_MODE");
+        crate::settings::remove("AETHER_PSIPHON_MODE");
 
         clear();
     }
@@ -1408,7 +1409,7 @@ mod tests {
         assert!(!map.contains_key("FrontedMeekCDNScanSpec"));
 
         // Sets named: those lists alone.
-        std::env::set_var("AETHER_PSIPHON_CDN_SETS", "cloudflare, fastly");
+        crate::settings::set("AETHER_PSIPHON_CDN_SETS", "cloudflare, fastly");
         let mut map = serde_json::Map::new();
         put_cdn_fronting(&mut map);
         assert_eq!(map["FrontedMeekCDNScanUseBuiltInSpec"], true);
@@ -1419,7 +1420,7 @@ mod tests {
         assert!(!map.contains_key("FrontedMeekCDNScanSpec"));
 
         // Addresses of one's own beside the named sets: both are scanned, one's own first.
-        std::env::set_var("AETHER_PSIPHON_CDN_IPS", "203.0.113.7");
+        crate::settings::set("AETHER_PSIPHON_CDN_IPS", "203.0.113.7");
         let mut map = serde_json::Map::new();
         put_cdn_fronting(&mut map);
         assert_eq!(
@@ -1433,7 +1434,7 @@ mod tests {
         );
 
         // Addresses alone: no built-in list at all, as before.
-        std::env::remove_var("AETHER_PSIPHON_CDN_SETS");
+        crate::settings::remove("AETHER_PSIPHON_CDN_SETS");
         let mut map = serde_json::Map::new();
         put_cdn_fronting(&mut map);
         assert!(map.contains_key("FrontedMeekCDNScanSpec"));
@@ -1483,12 +1484,12 @@ mod tests {
         let _held = hold();
 
         clear();
-        std::env::set_var("AETHER_PSIPHON_INTERFACE", "eth0");
+        crate::settings::set("AETHER_PSIPHON_INTERFACE", "eth0");
         assert_eq!(
             listen_interface("127.0.0.1:1821".parse().expect("an address")).as_deref(),
             Some("eth0")
         );
-        std::env::remove_var("AETHER_PSIPHON_INTERFACE");
+        crate::settings::remove("AETHER_PSIPHON_INTERFACE");
 
         clear();
     }
@@ -1500,7 +1501,7 @@ mod tests {
         clear();
         // Another interface is asked for both ways: by name, and in a config of the user's own,
         // where Psiphon reads a key whatever its case.
-        std::env::set_var("AETHER_PSIPHON_INTERFACE", "eth0");
+        crate::settings::set("AETHER_PSIPHON_INTERFACE", "eth0");
         let dir = std::env::temp_dir();
         let path = dir.join(format!("aether-psi-behind-{}.json", std::process::id()));
         std::fs::write(
@@ -1508,7 +1509,7 @@ mod tests {
             r#"{"ListenInterface": "wlan0", "listenInterface": "any"}"#,
         )
         .expect("write");
-        std::env::set_var("AETHER_PSIPHON_CONFIG", &path);
+        crate::settings::set("AETHER_PSIPHON_CONFIG", path.to_string_lossy());
 
         let text = build_config(
             &dir,
@@ -1544,7 +1545,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
         assert_eq!(parsed["ListenInterface"], "eth0");
 
-        std::env::remove_var("AETHER_PSIPHON_CONFIG");
+        crate::settings::remove("AETHER_PSIPHON_CONFIG");
         let _ = std::fs::remove_file(&path);
 
         clear();

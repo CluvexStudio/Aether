@@ -746,14 +746,14 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
 }
 
 fn set(key: &str, value: &str) {
-    std::env::set_var(key, value);
+    crate::settings::set(key, value);
 }
 
 fn append(key: &str, value: &str) {
-    match std::env::var(key) {
+    match crate::settings::var(key) {
         Ok(existing) if !existing.trim().is_empty() => {
-            std::env::set_var(key, format!("{existing};{value}"))
+            crate::settings::set(key, format!("{existing};{value}"))
         }
-        _ => std::env::set_var(key, value),
+        _ => crate::settings::set(key, value),
     }
 }

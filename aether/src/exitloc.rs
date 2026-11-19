@@ -19,7 +19,7 @@ pub struct Policy {
 
 impl Policy {
     pub fn from_env() -> Option<Self> {
-        Self::parse(&std::env::var("AETHER_EXIT_LOC").unwrap_or_default())
+        Self::parse(&crate::settings::var("AETHER_EXIT_LOC").unwrap_or_default())
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
@@ -79,7 +79,7 @@ impl Policy {
 }
 
 fn interval_from_env() -> Duration {
-    let secs = std::env::var("AETHER_EXIT_LOC_SECS")
+    let secs = crate::settings::var("AETHER_EXIT_LOC_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)

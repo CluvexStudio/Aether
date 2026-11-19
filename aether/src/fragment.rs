@@ -30,23 +30,23 @@ impl FragmentConfig {
     }
 
     pub fn from_env() -> Self {
-        let enabled = std::env::var("AETHER_MASQUE_H2_FRAGMENT")
+        let enabled = crate::settings::var("AETHER_MASQUE_H2_FRAGMENT")
             .map(|v| is_truthy(&v))
             .unwrap_or(false);
 
         let (size_min, size_max) = parse_range(
-            &std::env::var("AETHER_MASQUE_H2_FRAGMENT_SIZE").unwrap_or_default(),
+            &crate::settings::var("AETHER_MASQUE_H2_FRAGMENT_SIZE").unwrap_or_default(),
             (8, 16),
         );
         let (delay_min_ms, delay_max_ms) = parse_range(
-            &std::env::var("AETHER_MASQUE_H2_FRAGMENT_DELAY").unwrap_or_default(),
+            &crate::settings::var("AETHER_MASQUE_H2_FRAGMENT_DELAY").unwrap_or_default(),
             (2, 10),
         );
 
         let size_min = size_min.max(1) as usize;
         let size_max = (size_max.max(size_min as u64)) as usize;
 
-        let sni_split = std::env::var("AETHER_MASQUE_H2_FRAGMENT_SNI")
+        let sni_split = crate::settings::var("AETHER_MASQUE_H2_FRAGMENT_SNI")
             .map(|v| is_truthy(&v))
             .unwrap_or(false);
 

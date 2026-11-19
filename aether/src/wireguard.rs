@@ -359,7 +359,7 @@ fn health_check_pause() -> Duration {
 }
 
 fn wg_stale_timeout() -> Duration {
-    let secs = std::env::var("AETHER_WG_STALE_SECS")
+    let secs = crate::settings::var("AETHER_WG_STALE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -540,7 +540,7 @@ pub async fn verify_endpoint_keep_session(
     timeout: Duration,
     keepalive: Option<u16>,
 ) -> Result<(Duration, EstablishedSession)> {
-    let data_check = std::env::var("AETHER_WG_NO_DATA_CHECK").is_err();
+    let data_check = crate::settings::var("AETHER_WG_NO_DATA_CHECK").is_err();
     log::trace!(
         "[wg] verify {} obf={} data_check={}",
         peer,
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn the_consumer_range_leads_when_no_team_is_configured() {
-        std::env::remove_var("AETHER_TEAM");
+        crate::settings::remove("AETHER_TEAM");
         assert_eq!(wg_prefixes_v4().first(), Some(&"162.159.192.0/24"));
         assert_eq!(wg_prefixes_v6().first(), Some(&"2606:4700:d0::/64"));
     }

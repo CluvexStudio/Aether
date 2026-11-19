@@ -126,7 +126,7 @@ fn total_mem_mb() -> Option<u64> {
 }
 
 fn detect_tier(cpus: usize, mem_mb: Option<u64>) -> Tier {
-    if let Ok(v) = std::env::var("AETHER_PERF_PROFILE") {
+    if let Ok(v) = crate::settings::var("AETHER_PERF_PROFILE") {
         match v.trim().to_lowercase().as_str() {
             "low" => return Tier::Low,
             "medium" | "mid" => return Tier::Medium,
@@ -150,7 +150,7 @@ fn detect_tier(cpus: usize, mem_mb: Option<u64>) -> Tier {
 /// Reads a buffer size in bytes from the environment, ignoring anything
 /// outside what a TCP socket can sensibly be given.
 fn buffer_override(key: &str, fallback: usize) -> usize {
-    std::env::var(key)
+    crate::settings::var(key)
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|bytes| (16 * 1024..=64 * 1024 * 1024).contains(bytes))

@@ -25,7 +25,7 @@ impl<T> Drop for AbortGuard<T> {
 }
 
 fn http_probe_port() -> u16 {
-    std::env::var("AETHER_IRONCLAD_PORT")
+    crate::settings::var("AETHER_IRONCLAD_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(80)

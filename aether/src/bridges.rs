@@ -172,7 +172,10 @@ pub fn transport_of(line: &str) -> Option<String> {
 
 fn home() -> Option<PathBuf> {
     for name in ["HOME", "USERPROFILE"] {
-        if let Some(value) = std::env::var(name).ok().filter(|v| !v.trim().is_empty()) {
+        if let Some(value) = crate::settings::var(name)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+        {
             return Some(PathBuf::from(value));
         }
     }
@@ -188,7 +191,7 @@ fn search_dirs() -> Vec<PathBuf> {
         }
     };
 
-    if let Ok(extra) = std::env::var("AETHER_TOR_PT_DIR") {
+    if let Ok(extra) = crate::settings::var("AETHER_TOR_PT_DIR") {
         for part in extra.split(';') {
             for entry in std::env::split_paths(part) {
                 if !entry.as_os_str().is_empty() {
@@ -205,7 +208,7 @@ fn search_dirs() -> Vec<PathBuf> {
         }
     }
 
-    if let Ok(path) = std::env::var("PATH") {
+    if let Ok(path) = crate::settings::var("PATH") {
         for entry in std::env::split_paths(&path) {
             if !entry.as_os_str().is_empty() {
                 push(entry, &mut dirs, &mut seen);
@@ -223,7 +226,10 @@ fn search_dirs() -> Vec<PathBuf> {
         }
     }
 
-    if let Some(local) = std::env::var("LOCALAPPDATA").ok().filter(|v| !v.is_empty()) {
+    if let Some(local) = crate::settings::var("LOCALAPPDATA")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
         let base = PathBuf::from(local);
         push(
             base.join("Programs/Tor Browser/Browser/TorBrowser/Tor/PluggableTransports"),
@@ -408,7 +414,7 @@ fn http_client(through: Option<std::net::SocketAddr>) -> Result<reqwest::Client>
 }
 
 async fn detect_country(client: &reqwest::Client) -> Option<String> {
-    if let Some(told) = std::env::var("AETHER_TOR_COUNTRY")
+    if let Some(told) = crate::settings::var("AETHER_TOR_COUNTRY")
         .ok()
         .map(|code| code.trim().to_lowercase())
         .filter(|code| code.len() == 2)
@@ -565,7 +571,7 @@ pub enum Relays {
 }
 
 pub fn relay_policy() -> Relays {
-    let raw = std::env::var("AETHER_TOR_RELAYS").unwrap_or_default();
+    let raw = crate::settings::var("AETHER_TOR_RELAYS").unwrap_or_default();
     let spec = raw.trim().to_ascii_lowercase();
 
     match spec.as_str() {
@@ -587,7 +593,7 @@ pub fn relay_policy() -> Relays {
 }
 
 fn relay_ports_are_open() -> bool {
-    std::env::var("AETHER_TOR_RELAY_PORTS")
+    crate::settings::var("AETHER_TOR_RELAY_PORTS")
         .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "any" | "all"))
         .unwrap_or(false)
 }

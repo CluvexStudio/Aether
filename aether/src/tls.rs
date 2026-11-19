@@ -123,7 +123,7 @@ pub const TLS_CIPHERS: CipherOption = CipherOption {
 impl CipherOption {
     /// The cipher string given to the option; None when it is not given.
     pub fn configured(&self) -> Option<String> {
-        std::env::var(self.variable)
+        crate::settings::var(self.variable)
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
@@ -256,7 +256,7 @@ impl Default for Fingerprint {
 
 /// The value of the environment variable `variable`, trimmed, unless it is not set or blank.
 fn listed(variable: &str) -> Option<String> {
-    std::env::var(variable)
+    crate::settings::var(variable)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -275,7 +275,7 @@ impl Fingerprint {
     /// --disable-extension-permutation (AETHER_DISABLE_EXTENSION_PERMUTATION).
     pub fn configured() -> Self {
         let on = |variable: &str| {
-            std::env::var(variable).is_ok_and(|value| crate::fragment::is_truthy(&value))
+            crate::settings::var(variable).is_ok_and(|value| crate::fragment::is_truthy(&value))
         };
         Fingerprint {
             ciphers: TLS_CIPHERS.configured(),
@@ -909,7 +909,7 @@ pub(crate) struct OptionsHeld(tokio::sync::MutexGuard<'static, ()>);
 impl Drop for OptionsHeld {
     fn drop(&mut self) {
         for variable in OPTION_VARIABLES {
-            std::env::remove_var(variable);
+            crate::settings::remove(variable);
         }
     }
 }
@@ -923,7 +923,7 @@ pub(crate) async fn hold_options() -> OptionsHeld {
         .lock()
         .await;
     for variable in OPTION_VARIABLES {
-        std::env::remove_var(variable);
+        crate::settings::remove(variable);
     }
     OptionsHeld(held)
 }
@@ -942,8 +942,8 @@ pub struct TlsParams<'a> {
 
 fn verify_enabled() -> bool {
     verification_wanted(
-        std::env::var("AETHER_TLS_VERIFY").ok().as_deref(),
-        std::env::var("AETHER_TEAM").ok().as_deref(),
+        crate::settings::var("AETHER_TLS_VERIFY").ok().as_deref(),
+        crate::settings::var("AETHER_TEAM").ok().as_deref(),
     )
 }
 
@@ -1862,15 +1862,15 @@ mod tests {
         );
         assert!(check_tls_options().is_ok());
 
-        std::env::set_var("AETHER_TLS_CIPHERS", " ECDHE-RSA-AES128-GCM-SHA256 ");
-        std::env::set_var(
+        crate::settings::set("AETHER_TLS_CIPHERS", " ECDHE-RSA-AES128-GCM-SHA256 ");
+        crate::settings::set(
             "AETHER_TLS13_CIPHERS",
             " TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256 ",
         );
-        std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
-        std::env::set_var("AETHER_TLS_KEY_SHARES", " X25519:P-256 ");
+        crate::settings::set("AETHER_TLS_GROUPS", "X25519:P-256");
+        crate::settings::set("AETHER_TLS_KEY_SHARES", " X25519:P-256 ");
         for (value, greased) in [("1", false), ("on", false), ("TRUE", false), ("0", true)] {
-            std::env::set_var("AETHER_DISABLE_GREASE", value);
+            crate::settings::set("AETHER_DISABLE_GREASE", value);
             assert_eq!(
                 Fingerprint::configured(),
                 Fingerprint {
@@ -1888,17 +1888,17 @@ mod tests {
         }
         assert!(check_tls_options().is_ok());
         for (value, on) in [("1", true), ("yes", true), ("0", false), ("", false)] {
-            std::env::set_var("AETHER_ENABLE_GREASE_SIGALGS", value);
+            crate::settings::set("AETHER_ENABLE_GREASE_SIGALGS", value);
             assert_eq!(Fingerprint::configured().grease_sigalgs, on, "{value}");
-            std::env::set_var("AETHER_ENABLE_ECH_GREASE", value);
+            crate::settings::set("AETHER_ENABLE_ECH_GREASE", value);
             assert_eq!(Fingerprint::configured().ech_grease, on, "{value}");
-            std::env::set_var("AETHER_DISABLE_OCSP_STAPLING", value);
+            crate::settings::set("AETHER_DISABLE_OCSP_STAPLING", value);
             assert_eq!(Fingerprint::configured().ocsp_stapling, !on, "{value}");
-            std::env::set_var("AETHER_DISABLE_SCT", value);
+            crate::settings::set("AETHER_DISABLE_SCT", value);
             assert_eq!(Fingerprint::configured().sct, !on, "{value}");
-            std::env::set_var("AETHER_DISABLE_SESSION_TICKET", value);
+            crate::settings::set("AETHER_DISABLE_SESSION_TICKET", value);
             assert_eq!(Fingerprint::configured().session_ticket, !on, "{value}");
-            std::env::set_var("AETHER_DISABLE_EXTENSION_PERMUTATION", value);
+            crate::settings::set("AETHER_DISABLE_EXTENSION_PERMUTATION", value);
             assert_eq!(Fingerprint::configured().permute_extensions, !on, "{value}");
         }
         for variable in [
@@ -1909,15 +1909,15 @@ mod tests {
             "AETHER_DISABLE_SESSION_TICKET",
             "AETHER_DISABLE_EXTENSION_PERMUTATION",
         ] {
-            std::env::remove_var(variable);
+            crate::settings::remove(variable);
         }
 
         // The options with a value: trimmed, and none when blank.
-        std::env::set_var("AETHER_TLS_SIGALGS", " ecdsa_secp256r1_sha256:mldsa65 ");
-        std::env::set_var("AETHER_TLS_CERT_COMPRESSION", " zlib:brotli:zstd ");
-        std::env::set_var("AETHER_TLS_ALPS", " old ");
-        std::env::set_var("AETHER_TLS_TRUST_ANCHORS", " 11129.9.1:44947.2.6 ");
-        std::env::set_var("AETHER_TLS_SERVER_PADDING", " 6000 ");
+        crate::settings::set("AETHER_TLS_SIGALGS", " ecdsa_secp256r1_sha256:mldsa65 ");
+        crate::settings::set("AETHER_TLS_CERT_COMPRESSION", " zlib:brotli:zstd ");
+        crate::settings::set("AETHER_TLS_ALPS", " old ");
+        crate::settings::set("AETHER_TLS_TRUST_ANCHORS", " 11129.9.1:44947.2.6 ");
+        crate::settings::set("AETHER_TLS_SERVER_PADDING", " 6000 ");
         let given = Fingerprint::configured();
         assert_eq!(
             given.sigalgs.as_deref(),
@@ -1976,14 +1976,14 @@ mod tests {
             ("AETHER_TLS_SERVER_PADDING", "-1", "--tls-server-padding"),
         ] {
             let (variable, value, flag) = refused;
-            let kept = std::env::var(variable).expect("a value given above");
-            std::env::set_var(variable, value);
+            let kept = crate::settings::var(variable).expect("a value given above");
+            crate::settings::set(variable, value);
             let error = check_tls_options().expect_err(value);
             assert!(
                 error.to_string().starts_with(&format!("tls: {flag}: ")),
                 "{value}: {error}"
             );
-            std::env::set_var(variable, kept);
+            crate::settings::set(variable, kept);
         }
         assert!(check_tls_options().is_ok());
         for variable in [
@@ -1993,7 +1993,7 @@ mod tests {
             "AETHER_TLS_TRUST_ANCHORS",
             "AETHER_TLS_SERVER_PADDING",
         ] {
-            std::env::remove_var(variable);
+            crate::settings::remove(variable);
         }
 
         // A TLS 1.3 suite list BoringSSL takes: standard names of TLS 1.3 suites, each once.
@@ -2003,24 +2003,24 @@ mod tests {
             "TLS_AES_128_GCM_SHA256:",
             "AES128-GCM-SHA256",
         ] {
-            std::env::set_var("AETHER_TLS13_CIPHERS", list);
+            crate::settings::set("AETHER_TLS13_CIPHERS", list);
             let refused = check_tls_options().expect_err(list);
             assert!(
                 refused.to_string().starts_with("tls: --tls13-ciphers: "),
                 "{list}: {refused}"
             );
         }
-        std::env::remove_var("AETHER_TLS13_CIPHERS");
+        crate::settings::remove("AETHER_TLS13_CIPHERS");
 
         // Key shares: groups of the list, in its order, each once, as --tls-groups names them
         // (x25519 for X25519).
-        std::env::set_var("AETHER_TLS_GROUPS", "X25519MLKEM768:X25519:P-256:P-384");
+        crate::settings::set("AETHER_TLS_GROUPS", "X25519MLKEM768:X25519:P-256:P-384");
         for list in [
             "X25519MLKEM768",
             "X25519MLKEM768:x25519:prime256v1",
             "P-256:P-384",
         ] {
-            std::env::set_var("AETHER_TLS_KEY_SHARES", list);
+            crate::settings::set("AETHER_TLS_KEY_SHARES", list);
             assert!(check_tls_options().is_ok(), "{list}");
         }
         for list in [
@@ -2030,24 +2030,24 @@ mod tests {
             "X25519:P-999",
             "X25519:",
         ] {
-            std::env::set_var("AETHER_TLS_KEY_SHARES", list);
+            crate::settings::set("AETHER_TLS_KEY_SHARES", list);
             let refused = check_tls_options().expect_err(list);
             assert!(
                 refused.to_string().starts_with("tls: --tls-key-shares: "),
                 "{list}: {refused}"
             );
         }
-        std::env::remove_var("AETHER_TLS_KEY_SHARES");
-        std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-256");
+        crate::settings::remove("AETHER_TLS_KEY_SHARES");
+        crate::settings::set("AETHER_TLS_GROUPS", "X25519:P-256");
 
-        std::env::set_var("AETHER_TLS_GROUPS", "X25519:P-999");
+        crate::settings::set("AETHER_TLS_GROUPS", "X25519:P-999");
         let refused = check_tls_options().expect_err("a group BoringSSL does not know");
         assert!(
             refused.to_string().starts_with("tls: --tls-groups: "),
             "{refused}"
         );
-        std::env::set_var("AETHER_TLS_GROUPS", "X25519");
-        std::env::set_var(
+        crate::settings::set("AETHER_TLS_GROUPS", "X25519");
+        crate::settings::set(
             "AETHER_TLS_CIPHERS",
             "ECDHE-RSA-AES128-GCM-SHA256:NO-SUCH-SUITE",
         );

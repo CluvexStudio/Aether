@@ -16,7 +16,7 @@ pub struct Counters {
 }
 
 pub fn init() {
-    let on = std::env::var("AETHER_STATS")
+    let on = crate::settings::var("AETHER_STATS")
         .map(|v| {
             matches!(
                 v.trim().to_ascii_lowercase().as_str(),
@@ -85,7 +85,7 @@ pub fn format_uptime(uptime: Duration) -> String {
 }
 
 fn report_interval() -> Duration {
-    let secs = std::env::var("AETHER_STATS_SECS")
+    let secs = crate::settings::var("AETHER_STATS_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)

@@ -830,7 +830,7 @@ mod tests {
         let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let resolver = closed.local_addr().expect("its address");
         drop(closed);
-        std::env::set_var("AETHER_ECH_DNS", format!("tcp://{resolver}"));
+        crate::settings::set("AETHER_ECH_DNS", format!("tcp://{resolver}"));
 
         // WireGuard has no TLS handshake to hide a name in, and a job that does not ask for
         // ECH looks no key up.
@@ -859,7 +859,7 @@ mod tests {
             let error = result["error"].as_str().expect("an error");
             assert!(error.contains(crate::tls::NO_ECH_KEY), "{error}");
         }
-        std::env::remove_var("AETHER_ECH_DNS");
+        crate::settings::remove("AETHER_ECH_DNS");
         identities().lock().remove(&identity);
 
         // Neither job sent the peer anything.
