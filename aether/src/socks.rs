@@ -10,6 +10,60 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::error::{AetherError, Result};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SocksError {
+    #[error("the {kind} listener cannot use {listen}: {reason}")]
+    Bind {
+        kind: String,
+        listen: SocketAddr,
+        reason: String,
+    },
+    #[error("the client did not finish the socks5 handshake in time")]
+    HandshakeTimeout,
+    #[error("unsupported socks command")]
+    UnsupportedCommand,
+    #[error("bad socks version")]
+    BadVersion,
+    #[error("bad greeting version")]
+    BadGreeting,
+    #[error("bad atyp")]
+    BadAddressType,
+    #[error("only connect and udp associate are carried on this listener")]
+    NotCarried,
+    #[error("{0} does not exist")]
+    NoSuchName(String),
+    #[error("no A or AAAA record for {0}")]
+    NoRecord(String),
+    #[error("dns timeout")]
+    DnsTimeout,
+    #[error("dns channel closed")]
+    DnsClosed,
+    #[error("dns timeout from {0}")]
+    DnsTimeoutFrom(SocketAddr),
+    #[error("{host}:{port}: {reason}")]
+    Unreachable {
+        host: String,
+        port: u16,
+        reason: String,
+    },
+    #[error("gateway {0} did not accept a connection")]
+    GatewayNotAccepting(SocketAddr),
+    #[error("gateway {0} did not answer in time")]
+    GatewaySilent(SocketAddr),
+    #[error("gateway {0} closed the connection")]
+    GatewayClosed(SocketAddr),
+    #[error("gateway {0} sent a malformed response")]
+    GatewayMalformed(SocketAddr),
+    #[error("gateway refused {authority}:{port} ({status})")]
+    GatewayRefused {
+        authority: String,
+        port: u16,
+        status: String,
+    },
+    #[error("gateway {0} sent an oversized response head")]
+    GatewayOversized(SocketAddr),
+}
 use crate::netstack::{StackHandle, TcpSender, UdpSender};
 use crate::routing::{Action, Host, RuleSet};
 
@@ -149,10 +203,11 @@ pub fn dialable(bound: SocketAddr) -> SocketAddr {
 /// bind says.
 pub async fn bind_listener(kind: &str, listen: SocketAddr, flag: &str) -> Result<TcpListener> {
     TcpListener::bind(listen).await.map_err(|error| {
-        AetherError::Other(format!(
-            "the {kind} listener cannot use {listen}: {error}{}",
-            bind_hint(&error, flag)
-        ))
+        AetherError::from(SocksError::Bind {
+            kind: kind.to_string(),
+            listen,
+            reason: format!("{error}{}", bind_hint(&error, flag)),
+        })
     })
 }
 
@@ -445,16 +500,14 @@ fn failed_while_queued(code: i32) -> bool {
 async fn handle_client(mut sock: TcpStream, stack: StackHandle, bind_ip: IpAddr) -> Result<()> {
     let (cmd, target, port) = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut sock))
         .await
-        .map_err(|_| {
-            AetherError::Other("the client did not finish the socks5 handshake in time".into())
-        })??;
+        .map_err(|_| AetherError::from(SocksError::HandshakeTimeout))??;
 
     match cmd {
         CMD_CONNECT => handle_connect(sock, stack, target, port).await,
         CMD_UDP_ASSOCIATE => handle_udp_associate(sock, stack, bind_ip, target, port).await,
         _ => {
             reply(&mut sock, REP_NOT_SUPPORTED).await?;
-            Err(AetherError::Other("unsupported socks command".into()))
+            Err(AetherError::from(SocksError::UnsupportedCommand))
         }
     }
 }
@@ -465,7 +518,7 @@ async fn read_request(sock: &mut TcpStream) -> Result<(u8, Target, u16)> {
     let mut head = [0u8; 4];
     sock.read_exact(&mut head).await?;
     if head[0] != VER {
-        return Err(AetherError::Other("bad socks version".into()));
+        return Err(AetherError::from(SocksError::BadVersion));
     }
 
     let (target, port) = read_target(sock, head[3]).await?;
@@ -476,7 +529,7 @@ async fn handshake(sock: &mut TcpStream) -> Result<()> {
     let mut prefix = [0u8; 2];
     sock.read_exact(&mut prefix).await?;
     if prefix[0] != VER {
-        return Err(AetherError::Other("bad greeting version".into()));
+        return Err(AetherError::from(SocksError::BadGreeting));
     }
     let nmethods = prefix[1] as usize;
     let mut methods = vec![0u8; nmethods];
@@ -504,7 +557,7 @@ async fn read_target(sock: &mut TcpStream, atyp: u8) -> Result<(Target, u16)> {
             sock.read_exact(&mut name).await?;
             Target::Domain(String::from_utf8_lossy(&name).to_string())
         }
-        _ => return Err(AetherError::Other("bad atyp".into())),
+        _ => return Err(AetherError::from(SocksError::BadAddressType)),
     };
 
     let mut port = [0u8; 2];
@@ -562,12 +615,10 @@ async fn resolve_preferring_v4(
 ) -> Result<IpAddr> {
     match dns_exchange(sender, from_stack, name, QTYPE_A).await? {
         DnsAnswer::Found(ip) => Ok(ip),
-        DnsAnswer::NoSuchName => Err(AetherError::Other(format!("{name} does not exist"))),
+        DnsAnswer::NoSuchName => Err(AetherError::from(SocksError::NoSuchName(name.to_string()))),
         DnsAnswer::NoRecord => match dns_exchange(sender, from_stack, name, QTYPE_AAAA).await? {
             DnsAnswer::Found(ip) => Ok(ip),
-            _ => Err(AetherError::Other(format!(
-                "no A or AAAA record for {name}"
-            ))),
+            _ => Err(AetherError::from(SocksError::NoRecord(name.to_string()))),
         },
     }
 }
@@ -613,7 +664,7 @@ async fn dns_exchange(
     name: &str,
     qtype: u16,
 ) -> Result<DnsAnswer> {
-    let mut last = AetherError::Other("dns timeout".into());
+    let mut last = AetherError::from(SocksError::DnsTimeout);
 
     for server in resolver_addresses() {
         let (query, id) = crate::dns::build_query(name, qtype);
@@ -627,9 +678,9 @@ async fn dns_exchange(
         loop {
             let resp = match tokio::time::timeout_at(deadline, from_stack.recv()).await {
                 Ok(Some(resp)) => resp,
-                Ok(None) => return Err(AetherError::Other("dns channel closed".into())),
+                Ok(None) => return Err(AetherError::from(SocksError::DnsClosed)),
                 Err(_) => {
-                    last = AetherError::Other(format!("dns timeout from {server}"));
+                    last = AetherError::from(SocksError::DnsTimeoutFrom(server));
                     break;
                 }
             };
@@ -956,9 +1007,7 @@ where
 {
     let (cmd, target, port) = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut sock))
         .await
-        .map_err(|_| {
-            AetherError::Other("the client did not finish the socks5 handshake in time".into())
-        })??;
+        .map_err(|_| AetherError::from(SocksError::HandshakeTimeout))??;
 
     if cmd == CMD_UDP_ASSOCIATE {
         return handle_udp_over_connector(sock, connect, target).await;
@@ -966,9 +1015,7 @@ where
 
     if cmd != CMD_CONNECT {
         let _ = reply(&mut sock, REP_NOT_SUPPORTED).await;
-        return Err(AetherError::Other(
-            "only connect and udp associate are carried on this listener".into(),
-        ));
+        return Err(AetherError::from(SocksError::NotCarried));
     }
 
     let host = match &target {
@@ -984,7 +1031,11 @@ where
         }
         Err(error) => {
             let _ = reply(&mut sock, REP_GENERAL).await;
-            Err(AetherError::Other(format!("{host}:{port}: {error}")))
+            Err(AetherError::from(SocksError::Unreachable {
+                host: host.to_string(),
+                port,
+                reason: error.to_string(),
+            }))
         }
     }
 }
@@ -1450,9 +1501,7 @@ async fn open_through_gateway(
 ) -> Result<GatewayChannel> {
     let conn = tokio::time::timeout(GATEWAY_PROBE_TIMEOUT, stack.open_tcp(proxy))
         .await
-        .map_err(|_| {
-            AetherError::Other(format!("gateway {proxy} did not accept a connection"))
-        })??;
+        .map_err(|_| AetherError::from(SocksError::GatewayNotAccepting(proxy)))??;
     let (sender, mut from_stack) = conn.into_split();
 
     sender.send(build_proxy_connect(authority, port)).await?;
@@ -1461,15 +1510,14 @@ async fn open_through_gateway(
     loop {
         let chunk = tokio::time::timeout(GATEWAY_PROBE_TIMEOUT, from_stack.recv())
             .await
-            .map_err(|_| AetherError::Other(format!("gateway {proxy} did not answer in time")))?
-            .ok_or_else(|| AetherError::Other(format!("gateway {proxy} closed the connection")))?;
+            .map_err(|_| AetherError::from(SocksError::GatewaySilent(proxy)))?
+            .ok_or_else(|| AetherError::from(SocksError::GatewayClosed(proxy)))?;
 
         head.extend_from_slice(&chunk);
 
         if let Some(at) = find_head_end(&head) {
-            let accepted = proxy_connect_succeeded(&head).ok_or_else(|| {
-                AetherError::Other(format!("gateway {proxy} sent a malformed response"))
-            })?;
+            let accepted = proxy_connect_succeeded(&head)
+                .ok_or_else(|| AetherError::from(SocksError::GatewayMalformed(proxy)))?;
 
             if !accepted {
                 let status = String::from_utf8_lossy(&head[..at])
@@ -1479,9 +1527,11 @@ async fn open_through_gateway(
                     .trim()
                     .to_string();
                 sender.close().await;
-                return Err(AetherError::Other(format!(
-                    "gateway refused {authority}:{port} ({status})"
-                )));
+                return Err(AetherError::from(SocksError::GatewayRefused {
+                    authority: authority.to_string(),
+                    port,
+                    status: status.to_string(),
+                }));
             }
 
             return Ok((sender, from_stack, head[at..].to_vec()));
@@ -1489,9 +1539,7 @@ async fn open_through_gateway(
 
         if head.len() > GATEWAY_HEAD_LIMIT {
             sender.close().await;
-            return Err(AetherError::Other(format!(
-                "gateway {proxy} sent an oversized response head"
-            )));
+            return Err(AetherError::from(SocksError::GatewayOversized(proxy)));
         }
     }
 }
@@ -2290,6 +2338,29 @@ mod tests {
         msg.extend_from_slice(&qtype.to_be_bytes());
         msg.extend_from_slice(&1u16.to_be_bytes());
         msg
+    }
+
+    #[test]
+    fn socks_errors_read_as_they_did_before_they_had_a_type() {
+        let detail = |error: SocksError| AetherError::from(error).detail();
+        let proxy: SocketAddr = "10.0.0.1:443".parse().expect("an address");
+        assert_eq!(
+            detail(SocksError::GatewaySilent(proxy)),
+            "gateway 10.0.0.1:443 did not answer in time"
+        );
+        assert_eq!(
+            detail(SocksError::GatewayRefused {
+                authority: "example.com".into(),
+                port: 443,
+                status: "HTTP/1.1 403 Forbidden".into(),
+            }),
+            "gateway refused example.com:443 (HTTP/1.1 403 Forbidden)"
+        );
+        assert_eq!(
+            detail(SocksError::NoRecord("example.com".into())),
+            "no A or AAAA record for example.com"
+        );
+        assert_eq!(detail(SocksError::BadAddressType), "bad atyp");
     }
 
     #[test]

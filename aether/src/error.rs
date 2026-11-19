@@ -44,6 +44,9 @@ pub enum AetherError {
     #[error(transparent)]
     Netstack(#[from] crate::netstack::NetstackError),
 
+    #[error(transparent)]
+    Socks(#[from] crate::socks::SocksError),
+
     #[error("other: {0}")]
     Other(String),
 }
