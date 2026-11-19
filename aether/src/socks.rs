@@ -910,6 +910,10 @@ async fn handle_connect(
             };
             match open_through_gateway(&stack, proxy, &authority, port).await {
                 Ok(conn) => conn,
+                Err(refused @ AetherError::Socks(SocksError::GatewayRefused { .. })) => {
+                    let _ = reply(&mut sock, REP_NOT_ALLOWED).await;
+                    return Err(refused);
+                }
                 Err(e) => {
                     retire_gateway(&e.to_string());
                     let ip = match resolve(&stack, target).await {
@@ -2887,6 +2891,9 @@ async fn open_tunneled(stack: &StackHandle, target: Target, port: u16) -> Result
         };
         match open_through_gateway(stack, proxy, &authority, port).await {
             Ok(conn) => return Ok(conn),
+            Err(refused @ AetherError::Socks(SocksError::GatewayRefused { .. })) => {
+                return Err(refused)
+            }
             Err(e) => retire_gateway(&e.to_string()),
         }
     }
