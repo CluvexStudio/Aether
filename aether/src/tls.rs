@@ -1005,9 +1005,7 @@ pub fn install_verification(
         ));
     } else {
         builder.set_verify(SslVerifyMode::NONE);
-        announce_once(
-            "tls verification: none (--tls-verify set but no pins configured)".to_string(),
-        );
+        announce_once("tls verification: none, this connection has no pins to check".to_string());
     }
     Ok(())
 }
