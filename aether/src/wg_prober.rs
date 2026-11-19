@@ -289,14 +289,16 @@ async fn verify_one_wg(
     let peer = SocketAddr::new(ip, port);
 
     let (rtt, session) = match wireguard::verify_endpoint_keep_session(
-        peer,
-        *probe.private_key,
-        *probe.peer_public_key,
-        probe.client_id,
-        probe.local_ipv4,
-        &probe.aethernoize,
+        &wireguard::Probe {
+            peer,
+            private_key: *probe.private_key,
+            peer_public: *probe.peer_public_key,
+            client_id: probe.client_id,
+            local_ipv4: probe.local_ipv4,
+            aethernoize: &probe.aethernoize,
+            keepalive: None,
+        },
         timeout,
-        None,
     )
     .await
     {

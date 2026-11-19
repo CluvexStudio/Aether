@@ -521,16 +521,16 @@ pub async fn verify_endpoint(
             let private_key = identity.private_key_bytes()?;
             let peer_public = identity.peer_public_key_bytes()?;
             let local_ipv4 = identity.local_ipv4()?;
-            let attempt = wireguard::verify_endpoint(
+            let probe = wireguard::Probe {
                 peer,
                 private_key,
                 peer_public,
-                identity.client_id,
+                client_id: identity.client_id,
                 local_ipv4,
-                &spec.aethernoize,
-                spec.verify_timeout,
-                Some(spec.keepalive),
-            );
+                aethernoize: &spec.aethernoize,
+                keepalive: Some(spec.keepalive),
+            };
+            let attempt = wireguard::verify_endpoint(&probe, spec.verify_timeout);
             match guard(cancel, attempt).await {
                 Ok(_) => Ok(true),
                 Err(AetherError::Cancelled) => Err(AetherError::Cancelled),

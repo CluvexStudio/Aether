@@ -524,27 +524,19 @@ async fn verify_dataplane(
     }
 }
 
-pub async fn verify_endpoint(
-    peer: SocketAddr,
-    private_key: [u8; 32],
-    peer_public: [u8; 32],
-    client_id: [u8; 3],
-    local_ipv4: Ipv4Addr,
-    aethernoize: &AetherNoizeConfig,
-    timeout: Duration,
-    keepalive: Option<u16>,
-) -> Result<Duration> {
-    let (elapsed, _session) = verify_endpoint_keep_session(
-        peer,
-        private_key,
-        peer_public,
-        client_id,
-        local_ipv4,
-        aethernoize,
-        timeout,
-        keepalive,
-    )
-    .await?;
+#[derive(Clone, Copy)]
+pub struct Probe<'a> {
+    pub peer: SocketAddr,
+    pub private_key: [u8; 32],
+    pub peer_public: [u8; 32],
+    pub client_id: [u8; 3],
+    pub local_ipv4: Ipv4Addr,
+    pub aethernoize: &'a AetherNoizeConfig,
+    pub keepalive: Option<u16>,
+}
+
+pub async fn verify_endpoint(probe: &Probe<'_>, timeout: Duration) -> Result<Duration> {
+    let (elapsed, _session) = verify_endpoint_keep_session(probe, timeout).await?;
     Ok(elapsed)
 }
 
@@ -553,15 +545,18 @@ fn data_check_enabled() -> bool {
 }
 
 pub async fn verify_endpoint_keep_session(
-    peer: SocketAddr,
-    private_key: [u8; 32],
-    peer_public: [u8; 32],
-    client_id: [u8; 3],
-    local_ipv4: Ipv4Addr,
-    aethernoize: &AetherNoizeConfig,
+    probe: &Probe<'_>,
     timeout: Duration,
-    keepalive: Option<u16>,
 ) -> Result<(Duration, EstablishedSession)> {
+    let Probe {
+        peer,
+        private_key,
+        peer_public,
+        client_id,
+        local_ipv4,
+        aethernoize,
+        keepalive,
+    } = *probe;
     let data_check = data_check_enabled();
     log::trace!(
         "[wg] verify {} obf={} data_check={}",
@@ -908,14 +903,16 @@ mod tests {
         let profile = aethernoize::from_profile("off");
         let verifier = tokio::spawn(async move {
             verify_endpoint(
-                peer,
-                [7u8; 32],
-                [9u8; 32],
-                [1u8, 2, 3],
-                "172.16.0.2".parse().unwrap(),
-                &profile,
+                &Probe {
+                    peer,
+                    private_key: [7u8; 32],
+                    peer_public: [9u8; 32],
+                    client_id: [1u8, 2, 3],
+                    local_ipv4: "172.16.0.2".parse().unwrap(),
+                    aethernoize: &profile,
+                    keepalive: None,
+                },
                 Duration::from_secs(4),
-                None,
             )
             .await
         });

@@ -215,14 +215,16 @@ pub(crate) async fn run_wireguard(
             log::info!("[*] verifying the endpoint the organization assigned: {assigned}");
             for (name, profile) in &candidates {
                 match wireguard::verify_endpoint(
-                    assigned,
-                    private_key,
-                    peer_public,
-                    identity.client_id,
-                    ipv4,
-                    profile,
+                    &wireguard::Probe {
+                        peer: assigned,
+                        private_key,
+                        peer_public,
+                        client_id: identity.client_id,
+                        local_ipv4: ipv4,
+                        aethernoize: profile,
+                        keepalive: None,
+                    },
                     std::time::Duration::from_secs(8),
-                    None,
                 )
                 .await
                 {
@@ -256,14 +258,16 @@ pub(crate) async fn run_wireguard(
                 for peer in ring {
                     log::info!("[*] verifying cached WireGuard endpoint {peer} before reuse");
                     match wireguard::verify_endpoint(
-                        peer,
-                        private_key,
-                        peer_public,
-                        identity.client_id,
-                        ipv4,
-                        &profile,
+                        &wireguard::Probe {
+                            peer,
+                            private_key,
+                            peer_public,
+                            client_id: identity.client_id,
+                            local_ipv4: ipv4,
+                            aethernoize: &profile,
+                            keepalive: None,
+                        },
                         std::time::Duration::from_secs(6),
-                        None,
                     )
                     .await
                     {
@@ -326,14 +330,16 @@ pub(crate) async fn run_wireguard(
                         "[*] retrying last known-good WireGuard endpoint {p} before rescanning"
                     );
                     match wireguard::verify_endpoint(
-                        *p,
-                        private_key,
-                        peer_public,
-                        identity.client_id,
-                        ipv4,
-                        profile,
+                        &wireguard::Probe {
+                            peer: *p,
+                            private_key,
+                            peer_public,
+                            client_id: identity.client_id,
+                            local_ipv4: ipv4,
+                            aethernoize: profile,
+                            keepalive: None,
+                        },
                         std::time::Duration::from_secs(6),
-                        None,
                     )
                     .await
                     {
@@ -362,14 +368,16 @@ pub(crate) async fn run_wireguard(
                                 "[*] testing forced peer {peer} with aethernoize profile '{name}'"
                             );
                             match wireguard::verify_endpoint(
-                                peer,
-                                private_key,
-                                peer_public,
-                                identity.client_id,
-                                ipv4,
-                                profile,
+                                &wireguard::Probe {
+                                    peer,
+                                    private_key,
+                                    peer_public,
+                                    client_id: identity.client_id,
+                                    local_ipv4: ipv4,
+                                    aethernoize: profile,
+                                    keepalive: None,
+                                },
                                 std::time::Duration::from_secs(10),
-                                None,
                             )
                             .await
                             {
@@ -463,14 +471,16 @@ pub(crate) async fn run_wireguard_tunnel(
 
     log::info!("[*] validating WireGuard tunnel with {peer} (handshake + data-plane) before serving socks5...");
     let (_, session) = wireguard::verify_endpoint_keep_session(
-        peer,
-        private_key,
-        peer_public,
-        identity.client_id,
-        ipv4,
-        &aethernoize,
+        &wireguard::Probe {
+            peer,
+            private_key,
+            peer_public,
+            client_id: identity.client_id,
+            local_ipv4: ipv4,
+            aethernoize: &aethernoize,
+            keepalive: Some(wg_keepalive_secs()),
+        },
         wg_tunnel_validate_timeout(),
-        Some(wg_keepalive_secs()),
     )
     .await
     .map_err(|e| AetherError::from(TunnelError::Validation(e.to_string())))?;
@@ -534,14 +544,16 @@ pub(crate) async fn establish_wg(
 
     log::info!("[*] [{label}] validating WireGuard tunnel with {peer} (handshake + data-plane)...");
     let (_, session) = wireguard::verify_endpoint_keep_session(
-        peer,
-        private_key,
-        peer_public,
-        identity.client_id,
-        ipv4,
-        &profile,
+        &wireguard::Probe {
+            peer,
+            private_key,
+            peer_public,
+            client_id: identity.client_id,
+            local_ipv4: ipv4,
+            aethernoize: &profile,
+            keepalive: Some(keepalive),
+        },
         wg_tunnel_validate_timeout(),
-        Some(keepalive),
     )
     .await
     .map_err(|e| {
