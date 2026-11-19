@@ -74,6 +74,9 @@ pub enum AetherError {
     #[error(transparent)]
     Egress(#[from] crate::egress::EgressError),
 
+    #[error(transparent)]
+    Bridge(#[from] crate::bridges::BridgeError),
+
     #[error("other: {0}")]
     Other(String),
 }

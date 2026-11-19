@@ -6,6 +6,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+#[derive(Debug, thiserror::Error)]
+pub enum BridgeError {
+    #[error("bridge fetch through {proxy}: {error}")]
+    Proxy {
+        proxy: String,
+        error: reqwest::Error,
+    },
+    #[error("bridge fetch: {0}")]
+    Client(reqwest::Error),
+}
+
 const MOAT: &str = "https://bridges.torproject.org/moat/circumvention";
 const ONIONOO: &str = "https://onionoo.torproject.org/details";
 const TRACE: &str = "https://www.cloudflare.com/cdn-cgi/trace";
@@ -397,9 +408,13 @@ fn http_client(through: Option<std::net::SocketAddr>) -> Result<reqwest::Client>
     match through {
         Some(proxy) => {
             log::info!("[*] fetching bridges through the tunnel on {proxy}");
-            builder = builder.proxy(reqwest::Proxy::all(format!("socks5h://{proxy}")).map_err(
-                |e| crate::error::AetherError::Other(format!("bridge fetch through {proxy}: {e}")),
-            )?);
+            let socks = reqwest::Proxy::all(format!("socks5h://{proxy}")).map_err(|error| {
+                BridgeError::Proxy {
+                    proxy: proxy.to_string(),
+                    error,
+                }
+            })?;
+            builder = builder.proxy(socks);
         }
         None => {
             if let Some(upstream) = crate::upstream::configured() {
@@ -410,7 +425,7 @@ fn http_client(through: Option<std::net::SocketAddr>) -> Result<reqwest::Client>
 
     builder
         .build()
-        .map_err(|e| crate::error::AetherError::Other(format!("bridge fetch: {e}")))
+        .map_err(|error| BridgeError::Client(error).into())
 }
 
 async fn detect_country(client: &reqwest::Client) -> Option<String> {
