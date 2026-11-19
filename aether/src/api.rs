@@ -414,7 +414,12 @@ pub async fn scan(identity: &Identity, request: &ScanRequest, cancel: &Cancel) -
                 local_ipv4: crate::modes::parse_local_v4(&identity.ipv4),
             };
             let mode = prober::ScanMode::parse(&request.mode);
-            let best = guard(cancel, prober::hunt_best_gateway(&probe, mode)).await?;
+            let avoid: HashSet<IpAddr> = request.excluded.iter().map(|peer| peer.ip()).collect();
+            let best = guard(
+                cancel,
+                prober::hunt_best_gateway_avoiding(&probe, mode, &avoid),
+            )
+            .await?;
             Ok(Endpoint {
                 ip: best.ip,
                 port: best.port,
