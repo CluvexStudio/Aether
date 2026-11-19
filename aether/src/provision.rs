@@ -157,7 +157,7 @@ async fn adopt_team_profile(identity: account::Identity) -> account::Identity {
     let identity = account::refresh_profile(identity).await;
 
     if !identity.gateway_proxy.is_empty() {
-        if crate::settings::var("AETHER_GATEWAY").is_ok() {
+        if crate::settings::flag("AETHER_GATEWAY") {
             socks::set_gateway_proxy(&identity.gateway_proxy);
         } else {
             log::debug!(
