@@ -71,6 +71,9 @@ pub enum AetherError {
     #[error(transparent)]
     Cli(#[from] crate::cli::CliError),
 
+    #[error(transparent)]
+    Egress(#[from] crate::egress::EgressError),
+
     #[error("other: {0}")]
     Other(String),
 }

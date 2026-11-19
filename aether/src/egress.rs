@@ -9,7 +9,15 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
-use crate::error::{AetherError, Result};
+use crate::error::Result;
+
+#[derive(Debug, thiserror::Error)]
+pub enum EgressError {
+    #[error("'{0}' is not a socket mark; give a number such as 255 or 0xff")]
+    NotAMark(String),
+    #[error("cannot mark sockets with {mark:#x}: {error}; marking needs root or CAP_NET_ADMIN")]
+    CannotMark { mark: u32, error: io::Error },
+}
 
 static MARK: AtomicU32 = AtomicU32::new(0);
 
@@ -22,12 +30,7 @@ pub fn init() -> Result<()> {
         }
     };
 
-    let mark = parse_mark(&raw).ok_or_else(|| {
-        AetherError::Other(format!(
-            "'{}' is not a socket mark; give a number such as 255 or 0xff",
-            raw.trim()
-        ))
-    })?;
+    let mark = parse_mark(&raw).ok_or_else(|| EgressError::NotAMark(raw.trim().to_string()))?;
 
     if mark == 0 {
         MARK.store(0, Ordering::Relaxed);
@@ -37,11 +40,9 @@ pub fn init() -> Result<()> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let probe = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
-        probe.set_mark(mark).map_err(|error| {
-            AetherError::Other(format!(
-                "cannot mark sockets with {mark:#x}: {error}; marking needs root or CAP_NET_ADMIN"
-            ))
-        })?;
+        probe
+            .set_mark(mark)
+            .map_err(|error| EgressError::CannotMark { mark, error })?;
         MARK.store(mark, Ordering::Relaxed);
         log::info!("[+] outgoing sockets carry firewall mark {mark:#x}");
     }
