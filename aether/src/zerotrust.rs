@@ -94,17 +94,14 @@ pub fn team_domain(team: &str) -> String {
 
 pub fn extract_jwt_from_html(html: &str) -> Option<String> {
     let marker = "token=";
-    let start = html.find(marker)? + marker.len();
-    let rest = &html[start..];
-    let end = rest
-        .find(|c: char| c == '"' || c == '\'' || c == '&' || c == '<' || c.is_whitespace())
-        .unwrap_or(rest.len());
-    let candidate = rest[..end].trim();
-    if looks_like_jwt(candidate) {
-        Some(candidate.to_string())
-    } else {
-        None
-    }
+    html.match_indices(marker).find_map(|(at, _)| {
+        let rest = &html[at + marker.len()..];
+        let end = rest
+            .find(|c: char| c == '"' || c == '\'' || c == '&' || c == '<' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let candidate = rest[..end].trim();
+        looks_like_jwt(candidate).then(|| candidate.to_string())
+    })
 }
 
 pub fn extract_jwt_from_cookie(header: &str) -> Option<String> {
@@ -790,6 +787,16 @@ mod tests {
     fn a_page_without_a_token_yields_nothing() {
         assert_eq!(extract_jwt_from_html("<html>please sign in</html>"), None);
         assert_eq!(extract_jwt_from_html("token=not-a-jwt"), None);
+    }
+
+    #[test]
+    fn the_token_is_found_after_another_parameter_ending_in_token() {
+        let token = jwt("{\"exp\":9999999999}");
+        let html = format!(
+            "<form><input name=\"csrf\" value=\"csrf_token=abc123\"></form>\
+             <a href=\"com.cloudflare.warp://acme/auth?token={token}\">continue</a>"
+        );
+        assert_eq!(extract_jwt_from_html(&html), Some(token));
     }
 
     #[test]
