@@ -251,13 +251,11 @@ pub fn decode_entities(raw: &str) -> String {
 
 pub fn query_value(url: &str, key: &str) -> Option<String> {
     let query = url.split_once('?')?.1;
-    for pair in query.split('&') {
-        let (name, value) = pair.split_once('=')?;
-        if name == key {
-            return Some(percent_decode(value));
-        }
-    }
-    None
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(name, _)| *name == key)
+        .map(|(_, value)| percent_decode(value))
 }
 
 fn percent_decode(raw: &str) -> String {
@@ -906,6 +904,13 @@ mod tests {
         assert_eq!(query_value(url, "redirect_url"), Some("/warp".to_string()));
         assert_eq!(query_value(url, "missing"), None);
         assert_eq!(query_value("https://team/x", "nonce"), None);
+    }
+
+    #[test]
+    fn a_parameter_without_a_value_does_not_hide_the_ones_after_it() {
+        let url = "https://team.cloudflareaccess.com/x?flag&nonce=abc123";
+        assert_eq!(query_value(url, "nonce"), Some("abc123".to_string()));
+        assert_eq!(query_value(url, "flag"), None);
     }
 
     #[test]
