@@ -1,13 +1,19 @@
 use std::net::SocketAddr;
 
 use crate::error::{AetherError, Result};
+use crate::relay::TaskGuard;
+use crate::upstream;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CarrierError {
-    #[error("{0} inside the tunnel stopped")]
-    Stopped(String),
-    #[error("{name} inside the tunnel failed: {reason}")]
-    Failed { name: String, reason: String },
+    #[error("{name} {place} stopped")]
+    Stopped { name: String, place: &'static str },
+    #[error("{name} {place} failed: {reason}")]
+    Failed {
+        name: String,
+        place: &'static str,
+        reason: String,
+    },
     #[error(
         "{name} listens on {socks}, which the tunnel cannot be dialled through ({reason}); \
          aether ends rather than dial around {name}"
@@ -18,12 +24,16 @@ pub enum CarrierError {
         reason: String,
     },
 }
-use crate::relay::TaskGuard;
-use crate::upstream;
+
+pub(crate) const INSIDE_THE_TUNNEL: &str = "inside the tunnel";
+pub(crate) const CARRYING_THE_TUNNEL: &str = "carrying the tunnel";
+
+pub(crate) type Carrier = tokio::task::JoinHandle<Result<()>>;
 
 pub(crate) fn watch_chain(
     name: &'static str,
-    chain: tokio::task::JoinHandle<Result<()>>,
+    place: &'static str,
+    chain: Carrier,
     core_end: tokio::sync::mpsc::UnboundedSender<AetherError>,
     guard: &mut TaskGuard,
 ) {
@@ -31,10 +41,14 @@ pub(crate) fn watch_chain(
     let watch = tokio::spawn(async move {
         let e = match chain.await {
             Ok(Err(e)) => e,
-            Ok(Ok(())) => AetherError::from(CarrierError::Stopped(name.to_string())),
+            Ok(Ok(())) => AetherError::from(CarrierError::Stopped {
+                name: name.to_string(),
+                place,
+            }),
             Err(failed) if failed.is_cancelled() => return,
             Err(failed) => AetherError::from(CarrierError::Failed {
                 name: name.to_string(),
+                place,
                 reason: failed.to_string(),
             }),
         };
@@ -170,7 +184,7 @@ mod tests {
         let next = |name: &'static str, chain: tokio::task::JoinHandle<Result<()>>| async move {
             let (end, mut ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
             let mut chains = TaskGuard::new();
-            watch_chain(name, chain, end, &mut chains);
+            watch_chain(name, INSIDE_THE_TUNNEL, chain, end, &mut chains);
             let reported = tokio::time::timeout(std::time::Duration::from_secs(2), ended.recv())
                 .await
                 .expect("the end is reported")
@@ -230,7 +244,13 @@ mod tests {
         });
         let (end, mut ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
         let mut chains = TaskGuard::new();
-        watch_chain("ended-with-the-core", chain, end, &mut chains);
+        watch_chain(
+            "ended-with-the-core",
+            INSIDE_THE_TUNNEL,
+            chain,
+            end,
+            &mut chains,
+        );
 
         drop(chains);
         tokio::time::timeout(std::time::Duration::from_secs(2), gone)

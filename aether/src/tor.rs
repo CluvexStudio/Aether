@@ -248,7 +248,7 @@ pub async fn run_only(
 }
 
 #[cfg(not(feature = "tor"))]
-pub async fn start_reverse(_state: PathBuf) -> Result<(SocketAddr, tokio::task::AbortHandle)> {
+pub async fn start_reverse(_state: PathBuf) -> Result<(SocketAddr, crate::carrier::Carrier)> {
     Err(unsupported())
 }
 
@@ -961,7 +961,7 @@ mod with_tor {
 
     /// Starts Tor for the tunnel to be dialled through: its socks5 address, and the handle that
     /// ends it with the core.
-    pub async fn start_reverse(state: PathBuf) -> Result<(SocketAddr, tokio::task::AbortHandle)> {
+    pub async fn start_reverse(state: PathBuf) -> Result<(SocketAddr, crate::carrier::Carrier)> {
         init_tracing();
         let listen = listen_address();
         let listener = crate::socks::bind_listener("tor socks5", listen, "--tor-bind").await?;
@@ -978,13 +978,10 @@ mod with_tor {
         log::info!("[+] tor is ready; the tunnel goes out through {dialled}");
         announce_exit(dialled, "tor");
 
-        let serving = tokio::spawn(async move {
-            if let Err(e) = serve(listener, http, client, "tor socks5").await {
-                log::error!("[-] the tor proxy stopped: {e}");
-            }
-        });
+        let serving =
+            tokio::spawn(async move { serve(listener, http, client, "tor socks5").await });
 
-        Ok((dialled, serving.abort_handle()))
+        Ok((dialled, serving))
     }
 
     fn prepare_dir(path: &Path) -> Result<()> {

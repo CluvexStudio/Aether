@@ -400,7 +400,7 @@ pub(crate) async fn register_identities(wanted: RegisterSet, base_config: &str) 
     };
     let mut carried = TaskGuard::new();
     if let Some((name, (socks, carrier))) = carrier {
-        carried.push(carrier);
+        carried.push(carrier.abort_handle());
         crate::settings::set("AETHER_UPSTREAM", carrier_upstream(name, socks)?);
         log::info!("[+] the identities are registered through {name}");
     }

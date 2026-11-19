@@ -41,7 +41,9 @@ pub mod zerotrust;
 
 use std::net::SocketAddr;
 
-use crate::carrier::{carrier_upstream, until_core_end, watch_chain};
+use crate::carrier::{
+    carrier_upstream, until_core_end, watch_chain, CARRYING_THE_TUNNEL, INSIDE_THE_TUNNEL,
+};
 use crate::error::{AetherError, Result};
 use crate::modes::endpoints::{mim_endpoints_from_env, wiw_endpoints_from_env};
 use crate::modes::gool::{gool_classic, run_gool};
@@ -173,7 +175,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             let through = held;
             let state = tor::state_dir(&base_config);
             let chain = tokio::spawn(tor::run_chain(through, state));
-            watch_chain("tor", chain, core_end.clone(), &mut tor_and_psiphon);
+            watch_chain(
+                "tor",
+                INSIDE_THE_TUNNEL,
+                chain,
+                core_end.clone(),
+                &mut tor_and_psiphon,
+            );
         }
         tor::Mode::Reverse => {
             if needs_udp_to_warp(protocol, gool_classic()) {
@@ -183,7 +191,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             }
 
             let (socks, carrier) = tor::start_reverse(tor::state_dir(&base_config)).await?;
-            tor_and_psiphon.push(carrier);
+            watch_chain(
+                "tor",
+                CARRYING_THE_TUNNEL,
+                carrier,
+                core_end.clone(),
+                &mut tor_and_psiphon,
+            );
             crate::settings::set("AETHER_UPSTREAM", carrier_upstream("tor", socks)?);
             crate::settings::set("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through tor on the http/2 carrier");
@@ -196,7 +210,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             let through = held;
             let state = psiphon::state_dir(&base_config);
             let chain = tokio::spawn(psiphon::run_chain(through, state));
-            watch_chain("psiphon", chain, core_end.clone(), &mut tor_and_psiphon);
+            watch_chain(
+                "psiphon",
+                INSIDE_THE_TUNNEL,
+                chain,
+                core_end.clone(),
+                &mut tor_and_psiphon,
+            );
         }
         psiphon::Mode::Reverse => {
             if needs_udp_to_warp(protocol, gool_classic()) {
@@ -206,7 +226,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
             }
 
             let (socks, carrier) = psiphon::start_reverse(psiphon::state_dir(&base_config)).await?;
-            tor_and_psiphon.push(carrier);
+            watch_chain(
+                "psiphon",
+                CARRYING_THE_TUNNEL,
+                carrier,
+                core_end.clone(),
+                &mut tor_and_psiphon,
+            );
             crate::settings::set("AETHER_UPSTREAM", carrier_upstream("psiphon", socks)?);
             crate::settings::set("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through psiphon on the http/2 carrier");

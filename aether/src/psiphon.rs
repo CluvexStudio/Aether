@@ -1067,7 +1067,7 @@ const BEHIND_HELD: SocketAddr =
 
 /// Starts Psiphon for the tunnel to be dialled through: its socks5 address, and the handle that ends
 /// it with the core.
-pub async fn start_reverse(state: PathBuf) -> Result<(SocketAddr, tokio::task::AbortHandle)> {
+pub async fn start_reverse(state: PathBuf) -> Result<(SocketAddr, crate::carrier::Carrier)> {
     let listen = listen_address();
     let http = http_listen_address();
     log::info!("[*] starting psiphon; the tunnel will be dialled through it");
@@ -1082,13 +1082,9 @@ pub async fn start_reverse(state: PathBuf) -> Result<(SocketAddr, tokio::task::A
     announce(socks, "psiphon");
 
     // Ended, it drops `running`, which stops the program.
-    let waiting = tokio::spawn(async move {
-        if let Err(e) = running.wait().await {
-            log::error!("[-] psiphon: {e}");
-        }
-    });
+    let waiting = tokio::spawn(async move { running.wait().await });
 
-    Ok((socks, waiting.abort_handle()))
+    Ok((socks, waiting))
 }
 
 /// Waits for the core's socks5 server on `through`: the core holds its listener from its start
