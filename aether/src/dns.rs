@@ -475,7 +475,7 @@ pub fn response_matches(
     u16::from_be_bytes([msg[pos], msg[pos + 1]]) == expected_qtype
 }
 
-fn build_query(name: &str, qtype: u16) -> (Vec<u8>, u16) {
+pub(crate) fn build_query(name: &str, qtype: u16) -> (Vec<u8>, u16) {
     let mut q = Vec::with_capacity(32 + name.len());
     let id: u16 = rand::random();
     q.extend_from_slice(&id.to_be_bytes());

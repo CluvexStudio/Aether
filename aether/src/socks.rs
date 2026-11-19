@@ -616,7 +616,7 @@ async fn dns_exchange(
     let mut last = AetherError::Other("dns timeout".into());
 
     for server in resolver_addresses() {
-        let (query, id) = build_dns_query(name, qtype);
+        let (query, id) = crate::dns::build_query(name, qtype);
         if let Err(error) = sender.send_to(server, query).await {
             last = error;
             continue;
@@ -656,23 +656,6 @@ const RCODE_NXDOMAIN: u8 = 3;
 
 fn dns_rcode(resp: &[u8]) -> Option<u8> {
     resp.get(3).map(|flags| flags & 0x0f)
-}
-
-fn build_dns_query(name: &str, qtype: u16) -> (Vec<u8>, u16) {
-    let mut q = Vec::with_capacity(32 + name.len());
-    let id: u16 = rand::random();
-    q.extend_from_slice(&id.to_be_bytes());
-    q.extend_from_slice(&[0x01, 0x00]);
-    q.extend_from_slice(&[0x00, 0x01]);
-    q.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-    for label in name.split('.') {
-        q.push(label.len() as u8);
-        q.extend_from_slice(label.as_bytes());
-    }
-    q.push(0x00);
-    q.extend_from_slice(&qtype.to_be_bytes());
-    q.extend_from_slice(&[0x00, 0x01]);
-    (q, id)
 }
 
 pub(crate) fn dns_response_matches(
@@ -2310,9 +2293,13 @@ mod tests {
     }
 
     #[test]
-    fn build_dns_query_reports_the_id_it_wrote() {
-        let (query, id) = build_dns_query("example.com", QTYPE_A);
-        assert_eq!(u16::from_be_bytes([query[0], query[1]]), id);
+    fn a_name_ending_in_a_dot_asks_the_same_question_as_without_it() {
+        let (dotted, _) = crate::dns::build_query("example.com.", QTYPE_A);
+        let (plain, _) = crate::dns::build_query("example.com", QTYPE_A);
+        assert_eq!(dotted[2..], plain[2..]);
+
+        let msg = reply(0x4242, "example.com", QTYPE_A, true);
+        assert!(dns_response_matches(&msg, 0x4242, "example.com.", QTYPE_A));
     }
 
     #[test]
