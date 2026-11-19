@@ -1,5 +1,13 @@
 use std::env;
 
+#[derive(Debug, thiserror::Error)]
+pub enum CliError {
+    #[error("{0} requires a value")]
+    MissingValue(String),
+    #[error("unknown option '{0}'\n\n{usage}", usage = USAGE)]
+    UnknownOption(String),
+}
+
 const USAGE: &str = "\
 Aether — a censorship circumvention client. It finds a way out of a filtered
 network, opens an encrypted tunnel, and serves it as a local SOCKS5 proxy.
@@ -561,9 +569,8 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
         macro_rules! next_value {
             () => {{
                 i += 1;
-                args.get(i).ok_or_else(|| {
-                    crate::error::AetherError::Other(format!("{arg} requires a value"))
-                })?
+                args.get(i)
+                    .ok_or_else(|| CliError::MissingValue(arg.to_string()))?
             }};
         }
 
@@ -733,9 +740,7 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--verbose" => set("AETHER_LOG_LEVEL", "debug"),
 
             other => {
-                return Err(crate::error::AetherError::Other(format!(
-                    "unknown option '{other}'\n\n{USAGE}"
-                )));
+                return Err(CliError::UnknownOption(other.to_string()).into());
             }
         }
 
