@@ -935,8 +935,12 @@ fn service_tcp(s: &mut NetStack) -> bool {
         if matches!(st_state, tcp::State::Closed | tcp::State::TimeWait)
             && s.tcp_conns[&id].established
         {
-            s.sockets.remove(handle);
-            s.tcp_conns.remove(&id);
+            if s.sockets.get_mut::<tcp::Socket>(handle).can_recv() {
+                backpressured = true;
+            } else {
+                s.sockets.remove(handle);
+                s.tcp_conns.remove(&id);
+            }
         }
     }
 
