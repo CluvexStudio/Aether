@@ -56,6 +56,9 @@ pub enum AetherError {
     #[error(transparent)]
     ExitLocation(#[from] crate::exitloc::ExitLocationError),
 
+    #[error(transparent)]
+    Config(#[from] crate::config::ConfigError),
+
     #[error("other: {0}")]
     Other(String),
 }

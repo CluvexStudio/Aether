@@ -6,6 +6,38 @@ use serde::{Deserialize, Serialize};
 use crate::account::Identity;
 use crate::error::{AetherError, Result};
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("config field {field} is not valid base64: {reason}")]
+    NotBase64 { field: String, reason: String },
+    #[error("config field {field} must decode to {expected} bytes, found {found}")]
+    WrongLength {
+        field: String,
+        expected: usize,
+        found: usize,
+    },
+    #[error("{reason}; {}", remedy(.path, .moved.as_deref()))]
+    Damaged {
+        reason: String,
+        path: String,
+        moved: Option<std::path::PathBuf>,
+    },
+    #[error("config encode: {0}")]
+    Encode(String),
+    #[error("config parse: {0}")]
+    Parse(String),
+}
+
+fn remedy(path: &str, moved: Option<&Path>) -> String {
+    match moved {
+        Some(target) => format!(
+            "the damaged file was moved to {} so a fresh identity can be provisioned",
+            target.display()
+        ),
+        None => format!("delete {path} to provision a fresh identity"),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedIdentity {
     pub device_id: String,
@@ -55,14 +87,18 @@ fn decode_fixed<const N: usize>(field: &str, value: &str) -> Result<[u8; N]> {
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(value)
         .map_err(|e| {
-            AetherError::Other(format!("config field {field} is not valid base64: {e}"))
+            AetherError::from(ConfigError::NotBase64 {
+                field: field.to_string(),
+                reason: e.to_string(),
+            })
         })?;
 
     if decoded.len() != N {
-        return Err(AetherError::Other(format!(
-            "config field {field} must decode to {N} bytes, found {}",
-            decoded.len()
-        )));
+        return Err(AetherError::from(ConfigError::WrongLength {
+            field: field.to_string(),
+            expected: N,
+            found: decoded.len(),
+        }));
     }
 
     let mut out = [0u8; N];
@@ -131,13 +167,12 @@ pub fn load(path: &str) -> Result<Option<Identity>> {
         Ok(value) => value,
         Err(e) => {
             let moved = quarantine(path);
-            return Err(AetherError::Other(match moved {
-                Some(target) => format!(
-                    "config parse: {e}; the damaged file was moved to {} so a fresh identity can be provisioned",
-                    target.display()
-                ),
-                None => format!("config parse: {e}; delete {path} to provision a fresh identity"),
-            }));
+            return Err(ConfigError::Damaged {
+                reason: format!("config parse: {e}"),
+                path: path.to_string(),
+                moved,
+            }
+            .into());
         }
     };
 
@@ -145,13 +180,12 @@ pub fn load(path: &str) -> Result<Option<Identity>> {
         Ok(identity) => Ok(Some(identity)),
         Err(e) => {
             let moved = quarantine(path);
-            Err(AetherError::Other(match moved {
-                Some(target) => format!(
-                    "{e}; the damaged file was moved to {} so a fresh identity can be provisioned",
-                    target.display()
-                ),
-                None => format!("{e}; delete {path} to provision a fresh identity"),
-            }))
+            Err(ConfigError::Damaged {
+                reason: e.to_string(),
+                path: path.to_string(),
+                moved,
+            }
+            .into())
         }
     }
 }
@@ -209,7 +243,7 @@ fn write_private(path: &str, contents: &str) -> Result<()> {
 pub fn save(path: &str, identity: &Identity) -> Result<()> {
     let persisted = PersistedIdentity::from(identity);
     let text = toml::to_string_pretty(&persisted)
-        .map_err(|e| AetherError::Other(format!("config encode: {e}")))?;
+        .map_err(|e| AetherError::from(ConfigError::Encode(e.to_string())))?;
     write_private(path, &text)
 }
 
@@ -225,20 +259,40 @@ pub fn save_masque_creds(
 
     let text = std::fs::read_to_string(path)?;
     let mut persisted: PersistedIdentity =
-        toml::from_str(&text).map_err(|e| AetherError::Other(format!("config parse: {e}")))?;
+        toml::from_str(&text).map_err(|e| AetherError::from(ConfigError::Parse(e.to_string())))?;
 
     persisted.cert_pem = String::from_utf8_lossy(cert_pem).to_string();
     persisted.key_pem = String::from_utf8_lossy(key_pem).to_string();
     persisted.cert_issued_at = issued_at;
 
     let updated = toml::to_string_pretty(&persisted)
-        .map_err(|e| AetherError::Other(format!("config encode: {e}")))?;
+        .map_err(|e| AetherError::from(ConfigError::Encode(e.to_string())))?;
     write_private(path, &updated)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_damaged_file_says_what_became_of_it_as_before() {
+        let damaged = |moved: Option<&str>| {
+            AetherError::from(ConfigError::Damaged {
+                reason: "config parse: bad key".into(),
+                path: "aether.toml".into(),
+                moved: moved.map(std::path::PathBuf::from),
+            })
+            .detail()
+        };
+        assert_eq!(
+            damaged(None),
+            "config parse: bad key; delete aether.toml to provision a fresh identity"
+        );
+        assert_eq!(
+            damaged(Some("aether.toml.corrupt")),
+            "config parse: bad key; the damaged file was moved to aether.toml.corrupt so a fresh identity can be provisioned"
+        );
+    }
     use crate::account::Identity;
 
     fn scratch(name: &str) -> PathBuf {
