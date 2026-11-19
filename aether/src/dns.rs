@@ -315,6 +315,10 @@ async fn query_udp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
         while let Ok(received) = timeout_at(resend_at, sock.recv(&mut buf)).await {
             let n = received?;
             if response_matches(&buf[..n], id, domain, RR_HTTPS) {
+                if buf[2] & 0x02 != 0 {
+                    log::debug!("the ech dns reply over udp was truncated; asking again over tcp");
+                    return query_tcp(server, domain).await;
+                }
                 return answer_ech(&buf[..n], domain);
             }
             log::debug!("discarding an ech dns reply that does not match the query");
