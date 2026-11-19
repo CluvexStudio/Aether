@@ -314,7 +314,9 @@ pub(crate) async fn run_mim(
                     }
                 };
 
-                match hunt_masque_peer(&primary, &mode_str, ip, &HashSet::new()).await {
+                let avoid: HashSet<IpAddr> =
+                    pinned.inner.map(|peer| peer.ip()).into_iter().collect();
+                match hunt_masque_peer(&primary, &mode_str, ip, &avoid).await {
                     Ok(peer) => peer,
                     Err(e) => {
                         log::warn!("[-] no usable MASQUE gateway found: {e}; rescanning shortly");
