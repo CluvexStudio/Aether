@@ -8,6 +8,62 @@ use tokio::net::{TcpStream, UdpSocket};
 use crate::error::AetherError;
 use crate::Result;
 
+#[derive(Debug, thiserror::Error)]
+pub enum UpstreamError {
+    #[error("--upstream cannot be used: {0}; aether ends rather than connect around it")]
+    Unusable(String),
+    #[error("{0} is not an upstream proxy kind aether understands")]
+    UnknownKind(String),
+    #[error(
+        "an https:// upstream with a password is refused: aether talks to its upstream over \
+         plain http, which would send the password in the clear; use http:// only if that is \
+         acceptable, or socks5://"
+    )]
+    PasswordOverHttps,
+    #[error("{url} is unusable: {reason}")]
+    UnusableUrl { url: String, reason: String },
+    #[error("the upstream proxy at {0} did not answer in time")]
+    Silent(String),
+    #[error("only a socks5 proxy can carry udp, an http proxy cannot")]
+    UdpNeedsSocks5,
+    #[error("the upstream proxy at {0} never opened a udp relay")]
+    NoUdpRelay(String),
+    #[error("the upstream proxy did not speak socks5")]
+    NotSocks5,
+    #[error("the upstream proxy skipped authentication even though credentials are configured")]
+    SkippedAuthentication,
+    #[error("the upstream proxy rejected every authentication method offered")]
+    NoAcceptableMethod,
+    #[error("the upstream proxy asked for authentication method {0}, which aether cannot do")]
+    UnknownMethod(u8),
+    #[error("the upstream proxy credentials are longer than socks5 allows")]
+    CredentialsTooLong,
+    #[error("the upstream proxy answered the password negotiation with the wrong version")]
+    WrongAuthVersion,
+    #[error("the upstream proxy refused the credentials supplied")]
+    CredentialsRefused,
+    #[error("the upstream proxy sent an oversized answer")]
+    OversizedAnswer,
+    #[error("the upstream proxy closed before answering the connect")]
+    ClosedBeforeAnswer,
+    #[error("the upstream proxy answer was not http")]
+    NotHttp,
+    #[error("the upstream proxy answered {0} to the connect")]
+    ConnectRefused(u16),
+    #[error("{0} is not a host and port an upstream proxy can live at")]
+    BadEndpoint(String),
+    #[error("{0:?} is no name a socks5 proxy can be asked for")]
+    BadName(String),
+    #[error("the upstream proxy answered with something other than socks5")]
+    AnsweredNotSocks5,
+    #[error("the upstream proxy refused the request with code {0}")]
+    RequestRefused(u8),
+    #[error("the upstream proxy sent address type {0}, which aether cannot read")]
+    UnknownAddressType(u8),
+    #[error("{0} does not resolve to a usable relay address")]
+    Unresolvable(String),
+}
+
 const VER: u8 = 0x05;
 const AUTH_NONE: u8 = 0x00;
 const AUTH_USERPASS: u8 = 0x02;
@@ -100,12 +156,9 @@ fn usable(raw: &str) -> Result<()> {
     if raw.trim().is_empty() {
         return Ok(());
     }
-    Upstream::parse(raw).map(|_| ()).map_err(|e| {
-        AetherError::Other(format!(
-            "--upstream cannot be used: {}; aether ends rather than connect around it",
-            e.detail()
-        ))
-    })
+    Upstream::parse(raw)
+        .map(|_| ())
+        .map_err(|e| AetherError::from(UpstreamError::Unusable(e.detail())))
 }
 
 /// The hold on AETHER_UPSTREAM of a test: the variable is the whole process's, and the tests run
@@ -186,8 +239,8 @@ impl Upstream {
             "socks5" | "socks5h" | "socks" => Kind::Socks5,
             "http" | "https" => Kind::Http,
             other => {
-                return Err(AetherError::Other(format!(
-                    "{other} is not an upstream proxy kind aether understands"
+                return Err(AetherError::from(UpstreamError::UnknownKind(
+                    other.to_string(),
                 )))
             }
         };
@@ -199,12 +252,7 @@ impl Upstream {
 
         if scheme == "https" {
             if credentials.is_some() {
-                return Err(AetherError::Other(
-                    "an https:// upstream with a password is refused: aether talks to its upstream \
-                     over plain http, which would send the password in the clear; use http:// \
-                     only if that is acceptable, or socks5://"
-                        .into(),
-                ));
+                return Err(AetherError::from(UpstreamError::PasswordOverHttps));
             }
             log::warn!(
                 "[-] the upstream is written as https:// but aether talks to it over plain http; \
@@ -298,8 +346,12 @@ impl Upstream {
     }
 
     pub fn as_reqwest_proxy(&self) -> Result<reqwest::Proxy> {
-        let proxy = reqwest::Proxy::all(self.url())
-            .map_err(|error| AetherError::Other(format!("{} is unusable: {error}", self.url())))?;
+        let proxy = reqwest::Proxy::all(self.url()).map_err(|error| {
+            AetherError::from(UpstreamError::UnusableUrl {
+                url: self.url(),
+                reason: error.to_string(),
+            })
+        })?;
 
         match &self.user {
             Some(user) => Ok(proxy.basic_auth(user, self.password.as_deref().unwrap_or(""))),
@@ -346,18 +398,13 @@ impl Upstream {
 
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, attempt).await {
             Ok(result) => result,
-            Err(_) => Err(AetherError::Other(format!(
-                "the upstream proxy at {} did not answer in time",
-                self.endpoint()
-            ))),
+            Err(_) => Err(AetherError::from(UpstreamError::Silent(self.endpoint()))),
         }
     }
 
     pub async fn associate(&self) -> Result<UdpRelay> {
         if self.kind != Kind::Socks5 {
-            return Err(AetherError::Other(
-                "only a socks5 proxy can carry udp, an http proxy cannot".into(),
-            ));
+            return Err(AetherError::from(UpstreamError::UdpNeedsSocks5));
         }
 
         let attempt = async {
@@ -388,9 +435,8 @@ impl Upstream {
 
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, attempt).await {
             Ok(result) => result,
-            Err(_) => Err(AetherError::Other(format!(
-                "the upstream proxy at {} never opened a udp relay",
-                self.endpoint()
+            Err(_) => Err(AetherError::from(UpstreamError::NoUdpRelay(
+                self.endpoint(),
             ))),
         }
     }
@@ -407,24 +453,15 @@ impl Upstream {
         let mut answer = [0u8; 2];
         stream.read_exact(&mut answer).await?;
         if answer[0] != VER {
-            return Err(AetherError::Other(
-                "the upstream proxy did not speak socks5".into(),
-            ));
+            return Err(AetherError::from(UpstreamError::NotSocks5));
         }
 
         match answer[1] {
-            AUTH_NONE if wants_auth => Err(AetherError::Other(
-                "the upstream proxy skipped authentication even though credentials are configured"
-                    .into(),
-            )),
+            AUTH_NONE if wants_auth => Err(AetherError::from(UpstreamError::SkippedAuthentication)),
             AUTH_NONE => Ok(()),
             AUTH_USERPASS => self.socks_authenticate(stream).await,
-            AUTH_REJECTED => Err(AetherError::Other(
-                "the upstream proxy rejected every authentication method offered".into(),
-            )),
-            other => Err(AetherError::Other(format!(
-                "the upstream proxy asked for authentication method {other}, which aether cannot do"
-            ))),
+            AUTH_REJECTED => Err(AetherError::from(UpstreamError::NoAcceptableMethod)),
+            other => Err(AetherError::from(UpstreamError::UnknownMethod(other))),
         }
     }
 
@@ -433,9 +470,7 @@ impl Upstream {
         let password = self.password.clone().unwrap_or_default();
 
         if user.len() > 255 || password.len() > 255 {
-            return Err(AetherError::Other(
-                "the upstream proxy credentials are longer than socks5 allows".into(),
-            ));
+            return Err(AetherError::from(UpstreamError::CredentialsTooLong));
         }
 
         let mut message = Vec::with_capacity(3 + user.len() + password.len());
@@ -449,15 +484,10 @@ impl Upstream {
         let mut answer = [0u8; 2];
         stream.read_exact(&mut answer).await?;
         if answer[0] != 0x01 {
-            return Err(AetherError::Other(
-                "the upstream proxy answered the password negotiation with the wrong version"
-                    .into(),
-            ));
+            return Err(AetherError::from(UpstreamError::WrongAuthVersion));
         }
         if answer[1] != 0x00 {
-            return Err(AetherError::Other(
-                "the upstream proxy refused the credentials supplied".into(),
-            ));
+            return Err(AetherError::from(UpstreamError::CredentialsRefused));
         }
         Ok(())
     }
@@ -481,14 +511,10 @@ impl Upstream {
         let mut byte = [0u8; 1];
         loop {
             if head.len() > 8192 {
-                return Err(AetherError::Other(
-                    "the upstream proxy sent an oversized answer".into(),
-                ));
+                return Err(AetherError::from(UpstreamError::OversizedAnswer));
             }
             if stream.read(&mut byte).await? == 0 {
-                return Err(AetherError::Other(
-                    "the upstream proxy closed before answering the connect".into(),
-                ));
+                return Err(AetherError::from(UpstreamError::ClosedBeforeAnswer));
             }
             head.push(byte[0]);
             if head.ends_with(b"\r\n\r\n") {
@@ -496,13 +522,10 @@ impl Upstream {
             }
         }
 
-        let status = http_status(&head)
-            .ok_or_else(|| AetherError::Other("the upstream proxy answer was not http".into()))?;
+        let status = http_status(&head).ok_or_else(|| AetherError::from(UpstreamError::NotHttp))?;
 
         if !(200..300).contains(&status) {
-            return Err(AetherError::Other(format!(
-                "the upstream proxy answered {status} to the connect"
-            )));
+            return Err(AetherError::from(UpstreamError::ConnectRefused(status)));
         }
         Ok(())
     }
@@ -716,11 +739,7 @@ async fn pump(
 }
 
 fn split_endpoint(endpoint: &str) -> Result<(String, u16)> {
-    let malformed = || {
-        AetherError::Other(format!(
-            "{endpoint} is not a host and port an upstream proxy can live at"
-        ))
-    };
+    let malformed = || AetherError::from(UpstreamError::BadEndpoint(endpoint.to_string()));
 
     if let Some(rest) = endpoint.strip_prefix('[') {
         let (host, tail) = rest.split_once(']').ok_or_else(malformed)?;
@@ -812,11 +831,7 @@ pub fn encode_name_request(command: u8, name: &str, port: u16) -> Result<Vec<u8>
     let length = u8::try_from(name.len())
         .ok()
         .filter(|length| *length > 0)
-        .ok_or_else(|| {
-            AetherError::Other(format!(
-                "{name:?} is no name a socks5 proxy can be asked for"
-            ))
-        })?;
+        .ok_or_else(|| AetherError::from(UpstreamError::BadName(name.to_string())))?;
     let mut out = Vec::with_capacity(7 + name.len());
     out.extend_from_slice(&[VER, command, 0x00, ATYP_NAME, length]);
     out.extend_from_slice(name.as_bytes());
@@ -876,15 +891,10 @@ async fn read_reply(stream: &mut TcpStream) -> Result<SocketAddr> {
     stream.read_exact(&mut head).await?;
 
     if head[0] != VER {
-        return Err(AetherError::Other(
-            "the upstream proxy answered with something other than socks5".into(),
-        ));
+        return Err(AetherError::from(UpstreamError::AnsweredNotSocks5));
     }
     if head[1] != REP_OK {
-        return Err(AetherError::Other(format!(
-            "the upstream proxy refused the request with code {}",
-            head[1]
-        )));
+        return Err(AetherError::from(UpstreamError::RequestRefused(head[1])));
     }
 
     let ip = match head[3] {
@@ -907,11 +917,7 @@ async fn read_reply(stream: &mut TcpStream) -> Result<SocketAddr> {
                 .parse::<IpAddr>()
                 .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
         }
-        other => {
-            return Err(AetherError::Other(format!(
-                "the upstream proxy sent address type {other}, which aether cannot read"
-            )))
-        }
+        other => return Err(AetherError::from(UpstreamError::UnknownAddressType(other))),
     };
 
     let mut port = [0u8; 2];
@@ -937,9 +943,7 @@ async fn relay_address(bound: SocketAddr, host: &str, port: u16) -> Result<Socke
     tokio::net::lookup_host((host, relay_port))
         .await?
         .next()
-        .ok_or_else(|| {
-            AetherError::Other(format!("{host} does not resolve to a usable relay address"))
-        })
+        .ok_or_else(|| AetherError::from(UpstreamError::Unresolvable(host.to_string())))
 }
 
 #[cfg(test)]
@@ -969,7 +973,7 @@ mod tests {
         ] {
             let error = usable(raw).unwrap_err().to_string();
             assert!(
-                error.starts_with("other: --upstream cannot be used: ")
+                error.starts_with("--upstream cannot be used: ")
                     && error.ends_with("aether ends rather than connect around it")
                     && !error.contains("used: other: "),
                 "{raw}: {error}"
@@ -979,7 +983,7 @@ mod tests {
         }
         assert_eq!(
             usable("socks5://127.0.0.1:0").unwrap_err().to_string(),
-            "other: --upstream cannot be used: 127.0.0.1:0 is not a host and port an upstream \
+            "--upstream cannot be used: 127.0.0.1:0 is not a host and port an upstream \
              proxy can live at; aether ends rather than connect around it"
         );
     }

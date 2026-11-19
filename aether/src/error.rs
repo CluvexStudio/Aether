@@ -62,6 +62,9 @@ pub enum AetherError {
     #[error(transparent)]
     QuicSession(#[from] crate::quic::QuicError),
 
+    #[error(transparent)]
+    Upstream(#[from] crate::upstream::UpstreamError),
+
     #[error("other: {0}")]
     Other(String),
 }
