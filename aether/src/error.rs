@@ -38,6 +38,9 @@ pub enum AetherError {
     #[error(transparent)]
     Psiphon(#[from] crate::psiphon::PsiphonError),
 
+    #[error(transparent)]
+    Tor(#[from] crate::tor::TorError),
+
     #[error("other: {0}")]
     Other(String),
 }

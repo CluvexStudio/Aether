@@ -3,6 +3,46 @@ use std::path::PathBuf;
 
 use crate::error::{AetherError, Result};
 
+#[derive(Debug, thiserror::Error)]
+pub enum TorError {
+    #[error("this build has no tor support; rebuild with `cargo build --release --features tor`")]
+    NotBuiltIn,
+    #[error("tor cannot dial through {tunnel}: {reason}")]
+    Tunnel { tunnel: SocketAddr, reason: String },
+    #[error("tor cannot dial through the upstream proxy at {0}: it takes a socks5 address, with a password only on this machine")]
+    UpstreamProxy(String),
+    #[error("none of the bridges could be read by tor")]
+    NoReadableBridges,
+    #[error("transport '{protocol}': {reason}")]
+    Transport { protocol: String, reason: String },
+    #[error("tor configuration: {0}")]
+    Configuration(String),
+    #[error("tor client: {0}")]
+    Client(String),
+    #[error("{0}")]
+    Bootstrap(String),
+    #[error("no headway for {0}s")]
+    NoHeadway(u64),
+    #[error("tor came up but could not reach {host}:{port}: {reason}")]
+    Unreachable {
+        host: String,
+        port: u16,
+        reason: String,
+    },
+    #[error("tor came up but {host}:{port} stayed silent for {seconds}s")]
+    Silent {
+        host: String,
+        port: u16,
+        seconds: u64,
+    },
+    #[error("no answer in {0}s")]
+    NoAnswer(u64),
+    #[error("the bridges you gave need a pluggable transport that is not installed; {0}")]
+    TransportMissing(&'static str),
+    #[error("tor is blocked on this network and no pluggable transport is installed, so no bridge can be used; {0}")]
+    BlockedWithoutTransport(&'static str),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Off,
@@ -190,9 +230,7 @@ pub fn transports() -> Vec<(String, String)> {
 
 #[cfg(not(feature = "tor"))]
 fn unsupported() -> AetherError {
-    AetherError::Other(
-        "this build has no tor support; rebuild with `cargo build --release --features tor`".into(),
-    )
+    TorError::NotBuiltIn.into()
 }
 
 #[cfg(not(feature = "tor"))]
@@ -364,19 +402,23 @@ mod with_tor {
 
         // Without a tunnel to dial through, tor leaves through the upstream proxy, if there is one.
         let proxy = match through {
-            Some(tunnel) => Some(format!("socks5://{tunnel}").parse().map_err(|e| {
-                AetherError::Other(format!("tor cannot dial through {tunnel}: {e}"))
-            })?),
+            Some(tunnel) => {
+                Some(
+                    format!("socks5://{tunnel}")
+                        .parse()
+                        .map_err(|e| TorError::Tunnel {
+                            tunnel,
+                            reason: format!("{e}"),
+                        })?,
+                )
+            }
             None => upstream_proxy(),
         };
         if let Some(proxy) = proxy {
             builder.channel().outbound_proxy(proxy);
         } else if let Some(proxy) = crate::upstream::configured() {
             // Connecting directly would leave outside the proxy aether was told to dial through.
-            return Err(AetherError::Other(format!(
-                "tor cannot dial through the upstream proxy at {}: it takes a socks5 address, with a password only on this machine",
-                proxy.endpoint()
-            )));
+            return Err(TorError::UpstreamProxy(proxy.endpoint()).into());
         }
 
         if let Some(plan) = plan {
@@ -392,19 +434,16 @@ mod with_tor {
             }
 
             if taken == 0 {
-                return Err(AetherError::Other(
-                    "none of the bridges could be read by tor".into(),
-                ));
+                return Err(TorError::NoReadableBridges.into());
             }
 
             for transport in &plan.transports {
                 let mut named = Vec::new();
                 for protocol in &transport.protocols {
-                    named.push(
-                        protocol.parse().map_err(|e| {
-                            AetherError::Other(format!("transport '{protocol}': {e}"))
-                        })?,
-                    );
+                    named.push(protocol.parse().map_err(|e| TorError::Transport {
+                        protocol: protocol.to_string(),
+                        reason: format!("{e}"),
+                    })?);
                 }
 
                 let mut entry = arti_client::config::pt::TransportConfigBuilder::default();
@@ -418,7 +457,7 @@ mod with_tor {
 
         builder
             .build()
-            .map_err(|e| AetherError::Other(format!("tor configuration: {e}")))
+            .map_err(|e| TorError::Configuration(format!("{e}")).into())
     }
 
     struct AbortOnDrop(tokio::task::AbortHandle);
@@ -490,7 +529,7 @@ mod with_tor {
         let client = TorClient::builder()
             .config(config)
             .create_unbootstrapped()
-            .map_err(|e| AetherError::Other(format!("tor client: {e}")))?;
+            .map_err(|e| TorError::Client(format!("{e}")))?;
 
         let started = std::time::Instant::now();
         let seen = std::sync::Arc::new(AtomicU64::new(0));
@@ -504,7 +543,7 @@ mod with_tor {
             None => client
                 .bootstrap()
                 .await
-                .map_err(|e| AetherError::Other(format!("{e}"))),
+                .map_err(|e| AetherError::from(TorError::Bootstrap(format!("{e}")))),
             Some(limit) => {
                 let handle = client.clone();
                 let running = async move { handle.bootstrap().await };
@@ -513,7 +552,8 @@ mod with_tor {
                 loop {
                     tokio::select! {
                         outcome = &mut running => {
-                            break outcome.map_err(|e| AetherError::Other(format!("{e}")));
+                            break outcome
+                                .map_err(|e| AetherError::from(TorError::Bootstrap(format!("{e}"))));
                         }
                         _ = tokio::time::sleep(STALL_CHECK) => {
                             let quiet = started
@@ -522,7 +562,7 @@ mod with_tor {
                                 .saturating_sub(seen.load(Ordering::Relaxed));
 
                             if quiet >= limit.as_secs() {
-                                break Err(AetherError::Other(format!("no headway for {quiet}s")));
+                                break Err(TorError::NoHeadway(quiet).into());
                             }
                         }
                     }
@@ -560,13 +600,18 @@ mod with_tor {
                 log::info!("[+] tor {label}: the way out is open");
                 Ok(())
             }
-            Ok(Err(e)) => Err(AetherError::Other(format!(
-                "tor came up but could not reach {host}:{port}: {e}"
-            ))),
-            Err(_) => Err(AetherError::Other(format!(
-                "tor came up but {host}:{port} stayed silent for {}s",
-                PROOF_LIMIT.as_secs()
-            ))),
+            Ok(Err(e)) => Err(TorError::Unreachable {
+                host,
+                port,
+                reason: format!("{e}"),
+            }
+            .into()),
+            Err(_) => Err(TorError::Silent {
+                host,
+                port,
+                seconds: PROOF_LIMIT.as_secs(),
+            }
+            .into()),
         }
     }
 
@@ -589,10 +634,7 @@ mod with_tor {
             let outcome = match deadline {
                 Some(limit) => match tokio::time::timeout(limit, run).await {
                     Ok(result) => result,
-                    Err(_) => Err(AetherError::Other(format!(
-                        "no answer in {}s",
-                        limit.as_secs()
-                    ))),
+                    Err(_) => Err(TorError::NoAnswer(limit.as_secs()).into()),
                 },
                 None => run.await,
             };
@@ -615,10 +657,7 @@ mod with_tor {
             let plan = crate::bridges::plan(lines.clone(), "given by hand", manual_transports());
             announce(&plan);
             if plan.is_empty() {
-                return Err(AetherError::Other(format!(
-                    "the bridges you gave need a pluggable transport that is not installed; {}",
-                    crate::bridges::install_hint()
-                )));
+                return Err(TorError::TransportMissing(crate::bridges::install_hint()).into());
             }
             return stage(
                 state,
@@ -669,11 +708,7 @@ mod with_tor {
 
         let plan = auto_plan(state, through).await;
         if plan.is_empty() {
-            return Err(AetherError::Other(format!(
-                "tor is blocked on this network and no pluggable transport is installed, so no \
-                 bridge can be used; {}",
-                crate::bridges::install_hint()
-            )));
+            return Err(TorError::BlockedWithoutTransport(crate::bridges::install_hint()).into());
         }
 
         if let Some(client) = try_each_transport(state, through, &plan).await? {
@@ -956,6 +991,28 @@ mod with_tor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tor_errors_read_as_they_did_before_they_had_a_type() {
+        let detail = |error: TorError| AetherError::from(error).detail();
+        assert_eq!(detail(TorError::NoHeadway(30)), "no headway for 30s");
+        assert_eq!(
+            detail(TorError::Silent {
+                host: "example.com".into(),
+                port: 443,
+                seconds: 45,
+            }),
+            "tor came up but example.com:443 stayed silent for 45s"
+        );
+        assert_eq!(
+            detail(TorError::Tunnel {
+                tunnel: "127.0.0.1:1819".parse().expect("an address"),
+                reason: "refused".into(),
+            }),
+            "tor cannot dial through 127.0.0.1:1819: refused"
+        );
+        assert!(detail(TorError::NotBuiltIn).starts_with("this build has no tor support"));
+    }
 
     /// The hold on the tor settings of a test: the variables are the whole process's, and the
     /// tests run side by side, so each test holds them first, or one clearing them would wipe a
