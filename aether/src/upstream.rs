@@ -671,7 +671,6 @@ async fn attach_detour_via(
         if let Err(error) = pump(shim, client, peer, relay).await {
             log::warn!("[-] the upstream udp relay for {peer} stopped: {error}");
         }
-        forget_detour(client, id);
     });
 
     Ok(DetourGuard(Some((client, id, task.abort_handle()))))
@@ -1330,6 +1329,47 @@ mod tests {
             "dropping the guard retires the detour"
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_dies_never_hands_the_socket_back_to_the_direct_path() {
+        let (proxy_address, server) = fake_socks_udp_server().await;
+        let proxy = Upstream::parse(&format!("socks5://{proxy_address}")).unwrap();
+        let peer: SocketAddr = "162.159.192.1:2408".parse().unwrap();
+
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let detour = attach_detour_via(&proxy, &socket, peer).await.unwrap();
+        let local = socket.local_addr().unwrap();
+        let target = relay_target(local, peer);
+
+        socket.send_to(b"ping", target).await.unwrap();
+        let mut buf = [0u8; 64];
+        tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut buf))
+            .await
+            .expect("the first answer comes back through the relay")
+            .unwrap();
+        server.await.unwrap();
+
+        let pump_ended = || {
+            detour
+                .0
+                .as_ref()
+                .is_some_and(|(_, _, pump)| pump.is_finished())
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !pump_ended() && tokio::time::Instant::now() < deadline {
+            let _ = socket.send_to(b"again", target).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(pump_ended(), "with the relay gone the pump stops");
+        assert_eq!(
+            relay_target(local, peer),
+            target,
+            "a dead relay leaves the socket on the shim, never on the direct path"
+        );
+
+        drop(detour);
+        assert_eq!(relay_target(local, peer), peer);
     }
 
     #[tokio::test]
