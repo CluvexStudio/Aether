@@ -13,6 +13,12 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::consts;
 use crate::error::{AetherError, Result};
+
+#[derive(Debug, thiserror::Error)]
+pub enum H2Error {
+    #[error("h2 verify timeout")]
+    VerifyTimeout,
+}
 use crate::fragment::{FragmentConfig, FragmentingStream};
 use crate::masque::{self, Capsule, CapsuleParser};
 use crate::quic::{AssignedAddr, Control, Internals};
@@ -368,7 +374,7 @@ pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Durati
     match tokio::time::timeout(timeout, attempt).await {
         Ok(Ok(())) => Ok(start.elapsed()),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(AetherError::Other("h2 verify timeout".into())),
+        Err(_) => Err(H2Error::VerifyTimeout.into()),
     }
 }
 

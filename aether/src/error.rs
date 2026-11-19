@@ -77,6 +77,9 @@ pub enum AetherError {
     #[error(transparent)]
     Bridge(#[from] crate::bridges::BridgeError),
 
+    #[error(transparent)]
+    MasqueH2(#[from] crate::masque_h2::H2Error),
+
     #[error("other: {0}")]
     Other(String),
 }
