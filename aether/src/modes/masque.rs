@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use super::{
     count_tunnel_end, exit_policy_guard, masque_tunnel_mtu, noize_config, parse_local_v4,
-    scan_settings_from_env, Listeners, TunnelExit,
+    scan_settings_from_env, Listeners, TunnelError, TunnelExit,
 };
 use crate::error::{AetherError, Result};
 use crate::modes::gool::run_gool_tunnel;
@@ -236,7 +236,9 @@ pub(crate) async fn run_masque(
                             log::info!("[+] using forced peer {peer} (probe skipped)");
                             peer
                         }
-                        Err(_) => return Err(AetherError::Other(format!("bad peer address {p}"))),
+                        Err(_) => {
+                            return Err(AetherError::from(TunnelError::BadPeer(p.to_string())))
+                        }
                     },
                     None => match hunt_masque_peer(
                         &identity,
@@ -428,19 +430,27 @@ pub(crate) async fn establish_masque(
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
             let joined = tunnel_task.await;
-            let msg = match joined {
-                Ok(Ok(())) => format!("[{label}] tunnel exited before validation"),
-                Ok(Err(e)) => format!("[{label}] tunnel failed before validation: {e}"),
-                Err(e) => format!("[{label}] tunnel task join error: {e}"),
-            };
-            return Err(AetherError::Other(msg));
+            return Err(AetherError::from(match joined {
+                Ok(Ok(())) => TunnelError::ExitedBeforeValidation {
+                    label: label.to_string(),
+                },
+                Ok(Err(e)) => TunnelError::FailedBeforeValidation {
+                    label: label.to_string(),
+                    reason: e.to_string(),
+                },
+                Err(e) => TunnelError::LabelledJoin {
+                    label: label.to_string(),
+                    reason: e.to_string(),
+                },
+            }));
         }
         Err(_) => {
             tunnel_task.abort();
             let _ = tunnel_task.await;
-            return Err(AetherError::Other(format!(
-                "[{label}] tunnel startup timed out after {startup_timeout:?}"
-            )));
+            return Err(AetherError::from(TunnelError::StartupTimeout {
+                label: label.to_string(),
+                after: startup_timeout,
+            }));
         }
     }
 
@@ -485,8 +495,8 @@ pub(crate) async fn run_masque_tunnel(
 
     match tunnel_result {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(AetherError::Other(format!("tunnel exited: {e}"))),
-        Err(e) => Err(AetherError::Other(format!("tunnel task join error: {e}"))),
+        Ok(Err(e)) => Err(AetherError::from(TunnelError::Exited(e.to_string()))),
+        Err(e) => Err(AetherError::from(TunnelError::Join(e.to_string()))),
     }
 }
 

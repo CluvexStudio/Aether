@@ -80,6 +80,9 @@ pub enum AetherError {
     #[error(transparent)]
     MasqueH2(#[from] crate::masque_h2::H2Error),
 
+    #[error(transparent)]
+    Tunnel(#[from] crate::modes::TunnelError),
+
     #[error("other: {0}")]
     Other(String),
 }

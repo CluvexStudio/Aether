@@ -9,6 +9,45 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use crate::error::{AetherError, Result};
 use crate::{aethernoize, exitloc, masque_h2, netstack, noize, prober, socks};
 
+#[derive(Debug, thiserror::Error)]
+pub enum TunnelError {
+    #[error("bad peer address {0}")]
+    BadPeer(String),
+    #[error("[{label}] tunnel exited before validation")]
+    ExitedBeforeValidation { label: String },
+    #[error("[{label}] tunnel failed before validation: {reason}")]
+    FailedBeforeValidation { label: String, reason: String },
+    #[error("[{label}] tunnel task join error: {reason}")]
+    LabelledJoin { label: String, reason: String },
+    #[error("[{label}] tunnel startup timed out after {after:?}")]
+    StartupTimeout {
+        label: String,
+        after: std::time::Duration,
+    },
+    #[error("tunnel exited: {0}")]
+    Exited(String),
+    #[error("tunnel task join error: {0}")]
+    Join(String),
+    #[error("tunnel failed validation: {0}")]
+    Validation(String),
+    #[error("wireguard tunnel exited: {0}")]
+    WireGuardExited(String),
+    #[error("[{label}] tunnel failed validation: {reason}")]
+    LabelledValidation { label: String, reason: String },
+    #[error("[{label}] {reason}")]
+    Labelled { label: String, reason: String },
+    #[error("no inner masque edge answered through the outer tunnel")]
+    NoInnerMasqueEdge,
+    #[error("no second masque edge is known for the inner hop")]
+    NoSecondMasqueEdge,
+    #[error("warp-in-warp needs two separate edges but both hops landed on {0}")]
+    SameEdge(IpAddr),
+    #[error("no wireguard endpoint to try")]
+    NoWireGuardEndpoint,
+    #[error("the {what} stopped{reason}")]
+    ServerStopped { what: &'static str, reason: String },
+}
+
 pub(crate) fn parse_local_v4(s: &str) -> Ipv4Addr {
     s.split('/')
         .next()
@@ -72,10 +111,12 @@ impl Listeners {
             stopped = socks::serve(&self.socks, stack.clone()) => ("socks5 server", stopped),
             stopped = http => ("http proxy", stopped),
         };
-        let _ = self.broken.send(AetherError::Other(match stopped {
-            Err(e) => format!("the {what} stopped: {e}"),
-            Ok(()) => format!("the {what} stopped"),
-        }));
+        let _ = self
+            .broken
+            .send(AetherError::from(TunnelError::ServerStopped {
+                what,
+                reason: stopped.err().map(|e| format!(": {e}")).unwrap_or_default(),
+            }));
         std::future::pending().await
     }
 }

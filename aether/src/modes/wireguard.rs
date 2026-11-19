@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use super::{
     aethernoize_config, count_tunnel_end, exit_policy_guard, scan_settings_from_env, Listeners,
-    TunnelExit, TUNNEL_MTU,
+    TunnelError, TunnelExit, TUNNEL_MTU,
 };
 use crate::error::{AetherError, Result};
 use crate::prompt::{select_ip_version, select_scan_mode_str, want_quick_reconnect};
@@ -352,7 +352,7 @@ pub(crate) async fn run_wireguard(
                     if let Some(ref p) = forced {
                         let peer: SocketAddr = p
                             .parse()
-                            .map_err(|_| AetherError::Other(format!("bad peer address {p}")))?;
+                            .map_err(|_| AetherError::from(TunnelError::BadPeer(p.to_string())))?;
                         log::info!("[+] using forced peer {peer} (probe skipped)");
 
                         let mut chosen = None;
@@ -472,7 +472,7 @@ pub(crate) async fn run_wireguard_tunnel(
         Some(wg_keepalive_secs()),
     )
     .await
-    .map_err(|e| AetherError::Other(format!("tunnel failed validation: {e}")))?;
+    .map_err(|e| AetherError::from(TunnelError::Validation(e.to_string())))?;
     log::info!("[+] wireguard tunnel validated (end-to-end data confirmed); serving socks5");
 
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(sysprofile::channel_capacity());
@@ -506,7 +506,9 @@ pub(crate) async fn run_wireguard_tunnel(
 
     match tunnel_result {
         Ok(()) => Ok(()),
-        Err(e) => Err(AetherError::Other(format!("wireguard tunnel exited: {e}"))),
+        Err(e) => Err(AetherError::from(TunnelError::WireGuardExited(
+            e.to_string(),
+        ))),
     }
 }
 
@@ -541,7 +543,12 @@ pub(crate) async fn establish_wg(
         Some(keepalive),
     )
     .await
-    .map_err(|e| AetherError::Other(format!("[{label}] tunnel failed validation: {e}")))?;
+    .map_err(|e| {
+        AetherError::from(TunnelError::LabelledValidation {
+            label: label.to_string(),
+            reason: e.to_string(),
+        })
+    })?;
     log::info!("[+] [{label}] wireguard tunnel validated (end-to-end data confirmed)");
 
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(sysprofile::channel_capacity());
@@ -563,7 +570,10 @@ pub(crate) async fn establish_wg(
             }
             Err(e) => {
                 log::warn!("[-] [{label}] wireguard tunnel exited: {e}");
-                Err(AetherError::Other(format!("[{label}] {e}")))
+                Err(AetherError::from(TunnelError::Labelled {
+                    label: label.to_string(),
+                    reason: e.to_string(),
+                }))
             }
         }
     });

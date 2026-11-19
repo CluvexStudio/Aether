@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use super::{
     count_tunnel_end, edge_network, exit_policy_guard, masque_tunnel_mtu, verified_scan_selected,
-    Listeners, TUNNEL_MTU,
+    Listeners, TunnelError, TUNNEL_MTU,
 };
 use crate::error::{AetherError, Result};
 use crate::modes::endpoints::mim_endpoints_from_env;
@@ -223,9 +223,7 @@ async fn run_masque_in_masque(
     }
 
     let Some((inner_peer, mut inner, _forwarder_guard)) = chosen else {
-        return Err(AetherError::Other(
-            "no inner masque edge answered through the outer tunnel".into(),
-        ));
+        return Err(AetherError::from(TunnelError::NoInnerMasqueEdge));
     };
 
     let policy = exitloc::Policy::from_env();
@@ -337,9 +335,7 @@ pub(crate) async fn run_mim(
         };
 
         if candidates.is_empty() {
-            return Err(AetherError::Other(
-                "no second masque edge is known for the inner hop".into(),
-            ));
+            return Err(AetherError::from(TunnelError::NoSecondMasqueEdge));
         }
 
         outer_peer = Some(outer);

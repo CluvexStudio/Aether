@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use super::{
     count_tunnel_end, env_value, exit_policy_guard, masque_tunnel_mtu, spread_hops,
-    verified_scan_selected, Listeners, INNER_MTU, TUNNEL_MTU,
+    verified_scan_selected, Listeners, TunnelError, INNER_MTU, TUNNEL_MTU,
 };
 use crate::error::{AetherError, Result};
 use crate::modes::endpoints::{parse_endpoint, wiw_endpoints_with_fallback, WG_EXAMPLE_PORT};
@@ -158,10 +158,7 @@ async fn run_warp_in_warp(
     listeners: &Listeners,
 ) -> Result<()> {
     if inner_peer.ip() == peer.ip() {
-        return Err(AetherError::Other(format!(
-            "warp-in-warp needs two separate edges but both hops landed on {}",
-            peer.ip()
-        )));
+        return Err(AetherError::from(TunnelError::SameEdge(peer.ip())));
     }
 
     let mut tasks = TaskGuard::new();
@@ -296,7 +293,7 @@ pub(crate) async fn run_gool_tunnel(
     let candidates = gool_inner_peers(&inner_identity)?;
 
     let mut established = None;
-    let mut last_error = AetherError::Other("no wireguard endpoint to try".into());
+    let mut last_error = AetherError::from(TunnelError::NoWireGuardEndpoint);
     'peers: for inner_peer in candidates {
         let (forwarder, forwarder_guard) = spawn_udp_forwarder(&outer.stack, inner_peer).await?;
         log::info!("[*] wireguard to {inner_peer} rides inside the masque tunnel via {forwarder}");
