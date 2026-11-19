@@ -62,19 +62,26 @@ const INNER_MTU: usize = 1200;
 
 const H2_TUNNEL_MTU: usize = 1500;
 
-fn masque_tunnel_mtu() -> usize {
-    if let Some(mtu) = crate::settings::var("AETHER_MASQUE_MTU")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|mtu| (576..=1500).contains(mtu))
-    {
-        return mtu;
-    }
+const H3_MAX_TUNNEL_MTU: usize = crate::quic::MAX_DATAGRAM_SIZE - 50;
 
-    if masque_h2::enabled() {
-        H2_TUNNEL_MTU
-    } else {
-        TUNNEL_MTU
+fn masque_tunnel_mtu() -> usize {
+    let asked = crate::settings::var("AETHER_MASQUE_MTU")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok());
+    tunnel_mtu(asked, masque_h2::enabled())
+}
+
+fn tunnel_mtu(asked: Option<usize>, h2: bool) -> usize {
+    match asked.filter(|mtu| (576..=1500).contains(mtu)) {
+        Some(mtu) if !h2 && mtu > H3_MAX_TUNNEL_MTU => {
+            log::warn!(
+                "[-] AETHER_MASQUE_MTU {mtu} is more than one http/3 datagram carries; using {H3_MAX_TUNNEL_MTU}"
+            );
+            H3_MAX_TUNNEL_MTU
+        }
+        Some(mtu) => mtu,
+        None if h2 => H2_TUNNEL_MTU,
+        None => TUNNEL_MTU,
     }
 }
 
@@ -256,6 +263,17 @@ fn scan_settings_from_env() -> (String, prober::IpScan) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_http3_tunnel_never_asks_for_more_than_one_datagram_carries() {
+        assert_eq!(tunnel_mtu(Some(1400), false), H3_MAX_TUNNEL_MTU);
+        assert_eq!(tunnel_mtu(Some(1400), true), 1400);
+        assert_eq!(tunnel_mtu(Some(1200), false), 1200);
+        assert_eq!(tunnel_mtu(None, false), TUNNEL_MTU);
+        assert_eq!(tunnel_mtu(None, true), H2_TUNNEL_MTU);
+        assert_eq!(tunnel_mtu(Some(9000), false), TUNNEL_MTU);
+        const { assert!(H3_MAX_TUNNEL_MTU >= TUNNEL_MTU) };
+    }
 
     async fn http_answers(address: SocketAddr) -> bool {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
