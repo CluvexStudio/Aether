@@ -11,6 +11,20 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{AetherError, Result};
 
+#[derive(Debug, thiserror::Error)]
+pub enum NetstackError {
+    #[error("netstack closed")]
+    Closed,
+    #[error("netstack dropped")]
+    Dropped,
+    #[error("{0}")]
+    Connection(String),
+    #[error("bad ipv4 {0}")]
+    BadIpv4(String),
+    #[error("bad ipv6 {0}")]
+    BadIpv6(String),
+}
+
 fn tcp_rx_buf() -> usize {
     crate::sysprofile::netstack_tcp_rx_buf_bytes()
 }
@@ -182,7 +196,7 @@ impl TcpConn {
         self.data_in
             .send(DataIn::Tcp(self.id, data))
             .await
-            .map_err(|_| AetherError::Other("netstack closed".into()))
+            .map_err(|_| AetherError::from(NetstackError::Closed))
     }
 
     pub async fn close(&self) {
@@ -222,7 +236,7 @@ impl TcpSender {
         self.data_in
             .send(DataIn::Tcp(self.id, data))
             .await
-            .map_err(|_| AetherError::Other("netstack closed".into()))
+            .map_err(|_| AetherError::from(NetstackError::Closed))
     }
 
     pub async fn close(&self) {
@@ -248,7 +262,7 @@ impl UdpConn {
         self.data_in
             .send(DataIn::Udp(self.id, dst, data))
             .await
-            .map_err(|_| AetherError::Other("netstack closed".into()))
+            .map_err(|_| AetherError::from(NetstackError::Closed))
     }
 
     pub async fn close(&self) {
@@ -288,7 +302,7 @@ impl UdpSender {
         self.data_in
             .send(DataIn::Udp(self.id, dst, data))
             .await
-            .map_err(|_| AetherError::Other("netstack closed".into()))
+            .map_err(|_| AetherError::from(NetstackError::Closed))
     }
 
     pub async fn close(&self) {
@@ -313,11 +327,11 @@ impl StackHandle {
         self.cmd_tx
             .send(Cmd::OpenTcp { dst, resp: resp_tx })
             .await
-            .map_err(|_| AetherError::Other("netstack closed".into()))?;
+            .map_err(|_| AetherError::from(NetstackError::Closed))?;
         resp_rx
             .await
-            .map_err(|_| AetherError::Other("netstack dropped".into()))?
-            .map_err(AetherError::Other)
+            .map_err(|_| AetherError::from(NetstackError::Dropped))?
+            .map_err(|reason| NetstackError::Connection(reason).into())
     }
 
     pub async fn open_udp(&self) -> Result<UdpConn> {
@@ -325,11 +339,11 @@ impl StackHandle {
         self.cmd_tx
             .send(Cmd::OpenUdp { resp: resp_tx })
             .await
-            .map_err(|_| AetherError::Other("netstack closed".into()))?;
+            .map_err(|_| AetherError::from(NetstackError::Closed))?;
         resp_rx
             .await
-            .map_err(|_| AetherError::Other("netstack dropped".into()))?
-            .map_err(AetherError::Other)
+            .map_err(|_| AetherError::from(NetstackError::Dropped))?
+            .map_err(|reason| NetstackError::Connection(reason).into())
     }
 
     pub async fn set_addrs(
@@ -340,7 +354,7 @@ impl StackHandle {
         self.cmd_tx
             .send(Cmd::SetAddrs { v4, v6 })
             .await
-            .map_err(|_| AetherError::Other("netstack closed".into()))
+            .map_err(|_| AetherError::from(NetstackError::Closed))
     }
 }
 
@@ -402,7 +416,7 @@ fn parse_v4(s: &str) -> Result<Option<(Ipv4Addr, u8)>> {
     }
     let ip: Ipv4Addr = strip_cidr(s)
         .parse()
-        .map_err(|_| AetherError::Other(format!("bad ipv4 {s}")))?;
+        .map_err(|_| AetherError::from(NetstackError::BadIpv4(s.to_string())))?;
     Ok(Some((ip, cidr_prefix(s).unwrap_or(32))))
 }
 
@@ -412,7 +426,7 @@ fn parse_v6(s: &str) -> Result<Option<(Ipv6Addr, u8)>> {
     }
     let ip: Ipv6Addr = strip_cidr(s)
         .parse()
-        .map_err(|_| AetherError::Other(format!("bad ipv6 {s}")))?;
+        .map_err(|_| AetherError::from(NetstackError::BadIpv6(s.to_string())))?;
     Ok(Some((ip, cidr_prefix(s).unwrap_or(128))))
 }
 

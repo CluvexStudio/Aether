@@ -41,6 +41,9 @@ pub enum AetherError {
     #[error(transparent)]
     Tor(#[from] crate::tor::TorError),
 
+    #[error(transparent)]
+    Netstack(#[from] crate::netstack::NetstackError),
+
     #[error("other: {0}")]
     Other(String),
 }
