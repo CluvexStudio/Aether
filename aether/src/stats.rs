@@ -16,14 +16,7 @@ pub struct Counters {
 }
 
 pub fn init() {
-    let on = crate::settings::var("AETHER_STATS")
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false);
+    let on = crate::settings::flag("AETHER_STATS");
 
     ENABLED.store(on, Ordering::Relaxed);
     let _ = START.set(Instant::now());

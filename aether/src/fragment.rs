@@ -30,9 +30,7 @@ impl FragmentConfig {
     }
 
     pub fn from_env() -> Self {
-        let enabled = crate::settings::var("AETHER_MASQUE_H2_FRAGMENT")
-            .map(|v| is_truthy(&v))
-            .unwrap_or(false);
+        let enabled = crate::settings::flag("AETHER_MASQUE_H2_FRAGMENT");
 
         let (size_min, size_max) = parse_range(
             &crate::settings::var("AETHER_MASQUE_H2_FRAGMENT_SIZE").unwrap_or_default(),
@@ -46,9 +44,7 @@ impl FragmentConfig {
         let size_min = size_min.max(1) as usize;
         let size_max = (size_max.max(size_min as u64)) as usize;
 
-        let sni_split = crate::settings::var("AETHER_MASQUE_H2_FRAGMENT_SNI")
-            .map(|v| is_truthy(&v))
-            .unwrap_or(false);
+        let sni_split = crate::settings::flag("AETHER_MASQUE_H2_FRAGMENT_SNI");
 
         Self {
             enabled,
@@ -81,13 +77,6 @@ impl FragmentConfig {
         };
         Duration::from_millis(ms)
     }
-}
-
-pub(crate) fn is_truthy(v: &str) -> bool {
-    matches!(
-        v.trim().to_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 fn parse_range(spec: &str, default: (u64, u64)) -> (u64, u64) {

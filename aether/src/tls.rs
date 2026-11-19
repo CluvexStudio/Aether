@@ -274,9 +274,7 @@ impl Fingerprint {
     /// (AETHER_DISABLE_SCT), --disable-session-ticket (AETHER_DISABLE_SESSION_TICKET) and
     /// --disable-extension-permutation (AETHER_DISABLE_EXTENSION_PERMUTATION).
     pub fn configured() -> Self {
-        let on = |variable: &str| {
-            crate::settings::var(variable).is_ok_and(|value| crate::fragment::is_truthy(&value))
-        };
+        let on = |variable: &str| crate::settings::flag(variable);
         Fingerprint {
             ciphers: TLS_CIPHERS.configured(),
             tls13_ciphers: listed("AETHER_TLS13_CIPHERS"),
@@ -949,10 +947,7 @@ fn verify_enabled() -> bool {
 
 fn verification_wanted(tls_verify: Option<&str>, team: Option<&str>) -> bool {
     match tls_verify {
-        Some(value) => matches!(
-            value.trim().to_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
+        Some(value) => crate::settings::is_truthy(value),
         None => team.is_some_and(|team| !team.trim().is_empty()),
     }
 }

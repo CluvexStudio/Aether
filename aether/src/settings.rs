@@ -14,6 +14,17 @@ pub fn var(key: impl AsRef<str>) -> Result<String, VarError> {
     }
 }
 
+pub fn is_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+pub fn flag(key: impl AsRef<str>) -> bool {
+    var(key).is_ok_and(|value| is_truthy(&value))
+}
+
 pub fn set(key: impl AsRef<str>, value: impl AsRef<str>) {
     SET.write()
         .unwrap_or_else(PoisonError::into_inner)
@@ -43,6 +54,22 @@ mod tests {
 
         remove(key);
         assert_eq!(var(key), Err(VarError::NotPresent));
+    }
+
+    #[test]
+    fn a_flag_is_on_for_the_spellings_of_yes_only() {
+        let key = "AETHER_SETTINGS_FLAG_TEST_ONLY";
+        assert!(!flag(key));
+        for on in ["1", "true", " Yes ", "ON"] {
+            set(key, on);
+            assert!(flag(key), "{on:?}");
+        }
+        for off in ["0", "false", "no", "off", "", "h2"] {
+            set(key, off);
+            assert!(!flag(key), "{off:?}");
+        }
+        remove(key);
+        assert!(!flag(key));
     }
 
     #[test]
