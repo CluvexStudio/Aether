@@ -149,7 +149,10 @@ async fn provision_account() -> Result<account::Identity> {
     }
 }
 
-async fn adopt_team_profile(identity: account::Identity) -> account::Identity {
+const WG_TEAM_PORT: u16 = 2408;
+const MASQUE_TEAM_PORT: u16 = 443;
+
+async fn adopt_team_profile(identity: account::Identity, port: u16) -> account::Identity {
     if team_scope().is_none() {
         return identity;
     }
@@ -168,18 +171,14 @@ async fn adopt_team_profile(identity: account::Identity) -> account::Identity {
     }
 
     if !identity.assigned_endpoint.is_empty() && crate::settings::var("AETHER_PEER").is_err() {
-        let port = if crate::settings::var("AETHER_PROTOCOL")
-            .map(|value| value == "wg" || value == "gool")
-            .unwrap_or(false)
+        if let Ok(address) = identity
+            .assigned_endpoint
+            .trim()
+            .parse::<std::net::IpAddr>()
         {
-            2408
-        } else {
-            443
-        };
-        let peer = format!("{}:{port}", identity.assigned_endpoint);
-        if peer.parse::<SocketAddr>().is_ok() {
+            let peer = SocketAddr::new(address, port);
             log::info!("[+] the organization assigned endpoint {peer}; trying it before scanning");
-            crate::settings::set("AETHER_TEAM_ENDPOINT", &peer);
+            crate::settings::set("AETHER_TEAM_ENDPOINT", peer.to_string());
         }
     }
 
@@ -231,7 +230,7 @@ fn keep_saved_identity() -> bool {
 pub(crate) async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing warp identity from {config_path}");
-        let identity = adopt_team_profile(identity).await;
+        let identity = adopt_team_profile(identity, WG_TEAM_PORT).await;
         if !identity.refused {
             config::save(config_path, &identity)?;
             return Ok(identity);
@@ -244,7 +243,7 @@ pub(crate) async fn load_or_provision_warp(config_path: &str) -> Result<account:
 
     log::info!("[+] no warp identity found; provisioning dedicated wireguard account");
     let identity = provision_account().await?;
-    let identity = adopt_team_profile(identity).await;
+    let identity = adopt_team_profile(identity, WG_TEAM_PORT).await;
     enable_warp_on(&identity).await?;
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new warp identity to {config_path}");
@@ -261,7 +260,7 @@ pub(crate) async fn load_or_provision_masque(config_path: &str) -> Result<accoun
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing masque identity from {config_path}");
         let refused = if identity.has_masque_credentials() {
-            let identity = adopt_team_profile(identity).await;
+            let identity = adopt_team_profile(identity, MASQUE_TEAM_PORT).await;
             if !identity.refused {
                 config::save(config_path, &identity)?;
                 return Ok(identity);
@@ -306,7 +305,7 @@ pub(crate) async fn load_or_provision_masque(config_path: &str) -> Result<accoun
         cert_issued_at: enrollment.issued_at,
         ..identity
     };
-    let identity = adopt_team_profile(identity).await;
+    let identity = adopt_team_profile(identity, MASQUE_TEAM_PORT).await;
     enable_warp_on(&identity).await?;
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new masque identity to {config_path}");
