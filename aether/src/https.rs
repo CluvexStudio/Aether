@@ -327,6 +327,8 @@ where
 /// interim (1xx) answers before it, then its body, which ends as RFC 9112 (6.3) has it: at
 /// the head for a 204 or a 304, at the last chunk, after Content-Length bytes, or with the
 /// connection.
+type Http1Parts = (u16, Vec<(String, String)>, Vec<u8>);
+
 #[derive(Default)]
 struct Http1Answer {
     raw: Vec<u8>,
@@ -399,7 +401,7 @@ impl Http1Answer {
     /// The status, the header fields and the body of the answer once the connection has
     /// ended, the body joined when it was chunked; an error when the connection ended before
     /// the answer did.
-    fn finish(self) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+    fn finish(self) -> Result<Http1Parts> {
         let Some(head) = self.head else {
             return Err(AetherError::Api(if self.raw.is_empty() {
                 "empty response".into()
@@ -1025,7 +1027,7 @@ mod tests {
     }
 
     /// `raw` read as an HTTP/1.1 answer that the connection ends after.
-    fn read(raw: &[u8]) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+    fn read(raw: &[u8]) -> Result<Http1Parts> {
         let mut answer = Http1Answer::default();
         answer.push(raw)?;
         answer.finish()
