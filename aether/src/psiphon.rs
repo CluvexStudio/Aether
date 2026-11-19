@@ -604,10 +604,12 @@ fn build_config(
             map.insert("DisableTactics".into(), serde_json::Value::from(true));
         }
         (false, Shape::Direct) => {
-            map.insert(
-                "LimitTunnelProtocols".into(),
-                serde_json::json!(NON_INPROXY_PROTOCOLS),
-            );
+            let unfronted: Vec<&str> = NON_INPROXY_PROTOCOLS
+                .iter()
+                .copied()
+                .filter(|name| !name.starts_with("FRONTED"))
+                .collect();
+            map.insert("LimitTunnelProtocols".into(), serde_json::json!(unfronted));
             map.insert("DisableTactics".into(), serde_json::Value::from(true));
         }
     }
@@ -1421,6 +1423,33 @@ mod tests {
 
         crate::settings::remove("AETHER_PSIPHON_CONFIG");
         let _ = std::fs::remove_file(&path);
+
+        clear();
+    }
+
+    #[test]
+    fn the_direct_shape_offers_no_fronting_without_an_upstream_either() {
+        let _held = hold();
+
+        clear();
+        crate::settings::set("AETHER_PSIPHON_MODE", "direct");
+        let text = build_config(
+            &std::env::temp_dir(),
+            "127.0.0.1:1821".parse().expect("an address"),
+            None,
+            None,
+            Placement::Dialled,
+        )
+        .expect("a config");
+        crate::settings::remove("AETHER_PSIPHON_MODE");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        let offered = parsed["LimitTunnelProtocols"]
+            .as_array()
+            .expect("a protocol list");
+        assert!(!offered.is_empty());
+        assert!(offered
+            .iter()
+            .all(|name| !name.as_str().unwrap_or("").starts_with("FRONTED")));
 
         clear();
     }
