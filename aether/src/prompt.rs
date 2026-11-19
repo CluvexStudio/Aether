@@ -260,7 +260,7 @@ pub(crate) enum Protocol {
 impl Protocol {
     pub(crate) fn parse(s: &str) -> Protocol {
         match s.trim().to_lowercase().as_str() {
-            "wg" | "wireguard" => Protocol::WireGuard,
+            "wg" | "wireguard" | "warp" => Protocol::WireGuard,
             "gool" | "wiw" | "warp-in-warp" | "warpinwarp" => Protocol::WarpInWarp,
             "mim" | "m2" | "masque-in-masque" | "masqueinmasque" => Protocol::MasqueInMasque,
             _ => Protocol::Masque,
@@ -346,6 +346,14 @@ mod tests {
             protocol_without_asking(&named, false, false),
             Some(Protocol::Masque)
         );
+    }
+
+    #[test]
+    fn warp_names_wireguard_as_the_flag_and_the_api_do() {
+        for name in ["wg", "WireGuard", " warp "] {
+            assert_eq!(Protocol::parse(name), Protocol::WireGuard, "{name}");
+        }
+        assert_eq!(Protocol::parse("masque"), Protocol::Masque);
     }
 
     #[test]

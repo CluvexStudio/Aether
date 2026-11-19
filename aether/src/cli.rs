@@ -23,6 +23,8 @@ pub enum CliError {
          http/2, or put psiphon inside the tunnel instead with --psiphon"
     )]
     UdpOverPsiphon(String),
+    #[error("--bind {0} is not an address and port aether can listen on, such as 127.0.0.1:1819")]
+    BadListen(String),
     #[error("--register takes masque, wg, gool, gool-classic, mim or all, not '{0}'")]
     UnknownRegistration(String),
     #[error("--tor-reverse and --psiphon-reverse both want to carry the registration; pick one")]

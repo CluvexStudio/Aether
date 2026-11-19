@@ -104,10 +104,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         return register_identities(wanted, &base_config).await;
     }
 
-    let listen: SocketAddr = crate::settings::var("AETHER_SOCKS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| "127.0.0.1:1819".parse().unwrap());
+    let listen: SocketAddr = match crate::settings::var("AETHER_SOCKS") {
+        Ok(value) if !value.trim().is_empty() => value
+            .trim()
+            .parse()
+            .map_err(|_| AetherError::from(crate::cli::CliError::BadListen(value.clone())))?,
+        _ => "127.0.0.1:1819".parse().unwrap(),
+    };
 
     let (core_end, core_ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
     let listeners = Listeners::bind(listen, core_end.clone()).await?;
