@@ -813,9 +813,7 @@ fn ask_server_padding(ssl: &mut SslRef, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// The ALPN list in wire format of HTTP/2 then HTTP/1.1, as `check_tls_options` checks the
-/// options with.
-const ALPN_H2_HTTP1: &[u8] = b"\x02h2\x08http/1.1";
+pub(crate) const ALPN_H2_HTTP1: &[u8] = b"\x02h2\x08http/1.1";
 
 /// Checks the TLS options as the core starts: a cipher string, a TLS 1.3 suite list, a group
 /// list, key shares, signature algorithms, certificate compression, an ALPS codepoint, trust

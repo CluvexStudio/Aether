@@ -12,10 +12,7 @@ use tokio::net::TcpStream;
 
 use crate::error::{AetherError, Result};
 use crate::fragment::{FragmentConfig, FragmentingStream};
-use crate::tls::Fingerprint;
-
-/// ALPN: HTTP/2, then HTTP/1.1, as Chrome offers them.
-const ALPN_H2_HTTP1: &[u8] = b"\x02h2\x08http/1.1";
+use crate::tls::{Fingerprint, ALPN_H2_HTTP1};
 
 /// The most of an answer that is read.
 const MAX_BODY: usize = 512 * 1024;
