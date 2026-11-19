@@ -369,9 +369,9 @@ impl RegisterSet {
                 masque_inner: true,
                 ..none
             }),
-            other => Err(AetherError::Other(format!(
-                "--register takes masque, wg, gool, gool-classic, mim or all, not '{other}'"
-            ))),
+            other => Err(AetherError::from(
+                crate::cli::CliError::UnknownRegistration(other.to_string()),
+            )),
         }
     }
 }
@@ -385,10 +385,8 @@ pub(crate) fn register_request() -> Result<Option<RegisterSet>> {
 pub(crate) async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<()> {
     let carrier = match (tor::mode(), psiphon::mode()) {
         (tor::Mode::Reverse, psiphon::Mode::Reverse) => {
-            return Err(AetherError::Other(
-                "--tor-reverse and --psiphon-reverse both want to carry the registration; \
-                 pick one"
-                    .into(),
+            return Err(AetherError::from(
+                crate::cli::CliError::TwoRegistrationCarriers,
             ));
         }
         (tor::Mode::Reverse, _) => Some((

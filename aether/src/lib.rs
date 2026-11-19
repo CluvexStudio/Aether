@@ -120,11 +120,7 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     }
 
     if tor::mode() == tor::Mode::Reverse && psiphon::mode() == psiphon::Mode::Reverse {
-        return Err(AetherError::Other(
-            "--tor-reverse and --psiphon-reverse both want to carry the tunnel; pick one, or put \
-             the other inside it with --tor or --psiphon"
-                .into(),
-        ));
+        return Err(AetherError::from(crate::cli::CliError::TwoTunnelCarriers));
     }
 
     let pinned_wiw = wiw_endpoints_from_env()?;
@@ -178,11 +174,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         }
         tor::Mode::Reverse => {
             if needs_udp_to_warp(protocol, gool_classic()) {
-                return Err(AetherError::Other(format!(
-                    "tor carries tcp only and warp's wireguard endpoints answer on udp alone, so \
-                     {} can never be reached through tor; use --masque or --gool, which this mode \
-                     runs over http/2, or put tor inside the tunnel instead with --tor",
-                    protocol.label()
+                return Err(AetherError::from(crate::cli::CliError::UdpOverTor(
+                    protocol.label().to_string(),
                 )));
             }
 
@@ -204,11 +197,8 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         }
         psiphon::Mode::Reverse => {
             if needs_udp_to_warp(protocol, gool_classic()) {
-                return Err(AetherError::Other(format!(
-                    "psiphon carries tcp only and warp's wireguard endpoints answer on udp alone, \
-                     so {} can never be reached through psiphon; use --masque or --gool, which this \
-                     mode runs over http/2, or put psiphon inside the tunnel instead with --psiphon",
-                    protocol.label()
+                return Err(AetherError::from(crate::cli::CliError::UdpOverPsiphon(
+                    protocol.label().to_string(),
                 )));
             }
 

@@ -6,6 +6,27 @@ pub enum CliError {
     MissingValue(String),
     #[error("unknown option '{0}'\n\n{usage}", usage = USAGE)]
     UnknownOption(String),
+    #[error(
+        "--tor-reverse and --psiphon-reverse both want to carry the tunnel; pick one, or put the \
+         other inside it with --tor or --psiphon"
+    )]
+    TwoTunnelCarriers,
+    #[error(
+        "tor carries tcp only and warp's wireguard endpoints answer on udp alone, so {0} can \
+         never be reached through tor; use --masque or --gool, which this mode runs over \
+         http/2, or put tor inside the tunnel instead with --tor"
+    )]
+    UdpOverTor(String),
+    #[error(
+        "psiphon carries tcp only and warp's wireguard endpoints answer on udp alone, so {0} can \
+         never be reached through psiphon; use --masque or --gool, which this mode runs over \
+         http/2, or put psiphon inside the tunnel instead with --psiphon"
+    )]
+    UdpOverPsiphon(String),
+    #[error("--register takes masque, wg, gool, gool-classic, mim or all, not '{0}'")]
+    UnknownRegistration(String),
+    #[error("--tor-reverse and --psiphon-reverse both want to carry the registration; pick one")]
+    TwoRegistrationCarriers,
 }
 
 const USAGE: &str = "\
