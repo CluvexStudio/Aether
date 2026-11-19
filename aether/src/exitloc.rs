@@ -2,6 +2,20 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::error::{AetherError, Result};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExitLocationError {
+    #[error("looking up the exit location timed out")]
+    Timeout,
+    #[error("the trace answer carried no location")]
+    NoLocation,
+    #[error("the exit location could not be read, so the policy cannot be honoured")]
+    Unreadable,
+    #[error("exit location {0} does not satisfy the requested policy")]
+    Unsatisfied(String),
+    #[error("exit location changed to {0}")]
+    Changed(String),
+}
 use crate::netstack::StackHandle;
 
 const TRACE_HOST: &str = "www.cloudflare.com";
@@ -210,16 +224,13 @@ async fn read_trace(stack: &StackHandle) -> Result<String> {
 
     match tokio::time::timeout(LOOKUP_TIMEOUT, attempt).await {
         Ok(result) => result,
-        Err(_) => Err(AetherError::Other(
-            "looking up the exit location timed out".into(),
-        )),
+        Err(_) => Err(AetherError::from(ExitLocationError::Timeout)),
     }
 }
 
 pub async fn lookup(stack: &StackHandle) -> Result<String> {
     let body = read_trace(stack).await?;
-    parse_trace(&body)
-        .ok_or_else(|| AetherError::Other("the trace answer carried no location".into()))
+    parse_trace(&body).ok_or_else(|| AetherError::from(ExitLocationError::NoLocation))
 }
 
 pub async fn settle(stack: &StackHandle, policy: &Option<Policy>, what: &str) -> Result<()> {
@@ -233,9 +244,7 @@ pub async fn settle(stack: &StackHandle, policy: &Option<Policy>, what: &str) ->
     };
 
     let Some(exit) = report(stack, what).await else {
-        return Err(AetherError::Other(
-            "the exit location could not be read, so the policy cannot be honoured".into(),
-        ));
+        return Err(AetherError::from(ExitLocationError::Unreadable));
     };
 
     let loc = exit.country.unwrap_or_default();
@@ -245,8 +254,8 @@ pub async fn settle(stack: &StackHandle, policy: &Option<Policy>, what: &str) ->
     }
 
     log::warn!("[-] exit location {loc} rejected ({})", policy.describe());
-    Err(AetherError::Other(format!(
-        "exit location {loc} does not satisfy the requested policy"
+    Err(AetherError::from(ExitLocationError::Unsatisfied(
+        loc.to_string(),
     )))
 }
 
@@ -258,7 +267,7 @@ pub async fn watch(stack: &StackHandle, policy: &Policy) -> AetherError {
             Ok(loc) if policy.accepts(&loc) => log::debug!("exit location is still {loc}"),
             Ok(loc) => {
                 log::warn!("[-] exit location changed to {loc}; reconnecting");
-                return AetherError::Other(format!("exit location changed to {loc}"));
+                return AetherError::from(ExitLocationError::Changed(loc.to_string()));
             }
             Err(e) => log::debug!("exit location check did not answer: {e}"),
         }

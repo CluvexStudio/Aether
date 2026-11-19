@@ -53,6 +53,9 @@ pub enum AetherError {
     #[error(transparent)]
     TunnelPing(#[from] crate::tunnelping::TunnelPingError),
 
+    #[error(transparent)]
+    ExitLocation(#[from] crate::exitloc::ExitLocationError),
+
     #[error("other: {0}")]
     Other(String),
 }
