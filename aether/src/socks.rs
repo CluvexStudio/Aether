@@ -2725,8 +2725,9 @@ where
 
     match &request.rewritten {
         Some(line) => {
-            let rest = text.split_once("\r\n").map(|(_, tail)| tail).unwrap_or("");
-            remote.write_all(format!("{line}{rest}").as_bytes()).await?;
+            remote
+                .write_all(forwarded_head(line, &text).as_bytes())
+                .await?;
         }
         None => {
             sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -2811,6 +2812,43 @@ pub fn parse_request_line(line: &str) -> Option<HttpRequestLine> {
         port,
         rewritten: Some(format!("{method} {path} {version}\r\n")),
     })
+}
+
+fn forwarded_head(line: &str, head: &str) -> String {
+    let rest = head.split_once("\r\n").map(|(_, tail)| tail).unwrap_or("");
+    let fields: Vec<&str> = rest
+        .split("\r\n")
+        .filter(|field| !field.is_empty())
+        .collect();
+    let field_name = |field: &str| {
+        field
+            .split_once(':')
+            .map(|(name, _)| name.trim().to_string())
+    };
+    let upgrades = fields.iter().any(|field| {
+        field.split_once(':').is_some_and(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("connection")
+                && value.to_ascii_lowercase().contains("upgrade")
+        })
+    });
+    if upgrades {
+        return format!("{line}{rest}");
+    }
+
+    let mut out = String::from(line);
+    for field in fields {
+        let hop = field_name(field).is_some_and(|name| {
+            ["connection", "proxy-connection", "keep-alive"]
+                .iter()
+                .any(|hop| name.eq_ignore_ascii_case(hop))
+        });
+        if !hop {
+            out.push_str(field);
+            out.push_str("\r\n");
+        }
+    }
+    out.push_str("Connection: close\r\n\r\n");
+    out
 }
 
 async fn read_head(sock: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -2910,13 +2948,10 @@ async fn handle_http_client(mut sock: TcpStream, stack: StackHandle) -> Result<(
 
     let (sender, from_stack, leftover) = channel;
 
-    let preamble = match &request.rewritten {
-        Some(line) => {
-            let rest = text.split_once("\r\n").map(|(_, tail)| tail).unwrap_or("");
-            Some(format!("{line}{rest}").into_bytes())
-        }
-        None => None,
-    };
+    let preamble = request
+        .rewritten
+        .as_deref()
+        .map(|line| forwarded_head(line, &text).into_bytes());
 
     if request.rewritten.is_none() {
         sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -2977,9 +3012,8 @@ async fn relay_http_direct(
     match &request.rewritten {
         Some(line) => {
             let text = String::from_utf8_lossy(head).to_string();
-            let rest = text.split_once("\r\n").map(|(_, tail)| tail).unwrap_or("");
             upstream
-                .write_all(format!("{line}{rest}").as_bytes())
+                .write_all(forwarded_head(line, &text).as_bytes())
                 .await?;
         }
         None => {
@@ -2997,7 +3031,7 @@ async fn relay_http_direct(
 
 #[cfg(test)]
 mod http_proxy_tests {
-    use super::{parse_authority, parse_request_line, read_head};
+    use super::{forwarded_head, parse_authority, parse_request_line, read_head};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
@@ -3069,6 +3103,27 @@ mod http_proxy_tests {
     fn a_connect_request_without_a_port_defaults_to_https() {
         let parsed = parse_request_line("CONNECT example.com HTTP/1.1").expect("parsed");
         assert_eq!(parsed.port, 443);
+    }
+
+    #[test]
+    fn a_forwarded_request_asks_the_origin_to_close_after_its_answer() {
+        let head = "GET http://example.com/a HTTP/1.1\r\nHost: example.com\r\n\
+                    Proxy-Connection: Keep-Alive\r\nConnection: keep-alive\r\n\
+                    Keep-Alive: timeout=5\r\nAccept: */*\r\n\r\n";
+        assert_eq!(
+            forwarded_head("GET /a HTTP/1.1\r\n", head),
+            "GET /a HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn a_forwarded_upgrade_keeps_its_connection_fields() {
+        let head = "GET http://example.com/ws HTTP/1.1\r\nHost: example.com\r\n\
+                    Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
+        assert_eq!(
+            forwarded_head("GET /ws HTTP/1.1\r\n", head),
+            "GET /ws HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+        );
     }
 
     #[test]
