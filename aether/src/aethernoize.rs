@@ -344,13 +344,11 @@ pub async fn apply_obfuscation(sock: &UdpSocket, _peer: SocketAddr, cfg: &Aether
         }
     }
 
-    for sig in [&cfg.i2, &cfg.i3, &cfg.i4, &cfg.i5].iter() {
-        if let Some(s) = sig {
-            let pkt = parse_cps(s);
-            if !pkt.is_empty() {
-                send_connected(sock, &pkt).await;
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
+    for sig in [&cfg.i2, &cfg.i3, &cfg.i4, &cfg.i5].into_iter().flatten() {
+        let pkt = parse_cps(sig);
+        if !pkt.is_empty() {
+            send_connected(sock, &pkt).await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
 

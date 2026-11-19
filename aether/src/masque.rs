@@ -181,7 +181,7 @@ impl CapsuleParser {
         self.buf.extend_from_slice(data);
     }
 
-    pub fn next(&mut self) -> Result<Option<Capsule>> {
+    pub fn next_capsule(&mut self) -> Result<Option<Capsule>> {
         let mut b = Octets::with_slice(&self.buf);
 
         let kind = match b.get_varint() {
@@ -388,7 +388,7 @@ mod tests {
         parser.push(&batch);
 
         let mut seen = Vec::new();
-        while let Ok(Some(capsule)) = parser.next() {
+        while let Ok(Some(capsule)) = parser.next_capsule() {
             if let Capsule::Datagram(payload) = capsule {
                 seen.push(strip_datagram_context(&payload).expect("an ip packet"));
             }

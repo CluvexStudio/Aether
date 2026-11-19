@@ -660,7 +660,7 @@ fn poll_h3(
 
 fn drain_capsules(capsules: &mut CapsuleParser, addr_tx: &Option<mpsc::Sender<AssignedAddr>>) {
     loop {
-        match capsules.next() {
+        match capsules.next_capsule() {
             Ok(Some(masque::Capsule::AddressAssign(addrs))) => {
                 for a in addrs {
                     if let Some(ip) = bytes_to_ip(a.ip_version, &a.address) {

@@ -1289,8 +1289,10 @@ mod tests {
 
     #[test]
     fn the_certificate_lives_far_longer_than_a_day() {
-        assert!(MASQUE_CERT_LIFETIME_DAYS >= 365);
-        assert!(MASQUE_CERT_LIFETIME_SECS > 86_400 * 300);
+        const {
+            assert!(MASQUE_CERT_LIFETIME_DAYS >= 365);
+            assert!(MASQUE_CERT_LIFETIME_SECS > 86_400 * 300);
+        }
     }
 
     #[test]

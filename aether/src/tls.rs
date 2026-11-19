@@ -2809,7 +2809,7 @@ mod tests {
         let mut contents = vec![7];
         contents.extend_from_slice(&kem.to_be_bytes());
         contents.extend_from_slice(&(key_len as u16).to_be_bytes());
-        contents.extend(std::iter::repeat(0x42).take(key_len));
+        contents.extend(std::iter::repeat_n(0x42, key_len));
         contents.extend_from_slice(&((suites.len() * 4) as u16).to_be_bytes());
         for (kdf, aead) in suites {
             contents.extend_from_slice(&kdf.to_be_bytes());

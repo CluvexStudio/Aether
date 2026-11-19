@@ -755,10 +755,7 @@ fn team_scope() -> Option<String> {
 }
 
 fn enrolled_teams(base: &str) -> Vec<String> {
-    let dir_end = base
-        .rfind(|c| c == '/' || c == '\\')
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let dir_end = base.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
     let dir = if dir_end == 0 { "." } else { &base[..dir_end] };
     let stem = match base[dir_end..].rfind('.') {
         Some(rel) => &base[dir_end..dir_end + rel],
@@ -829,7 +826,7 @@ async fn enrol_zero_trust(base: &str) {
 
     std::env::set_var("AETHER_TEAM", &team);
 
-    if known.iter().any(|enrolled| *enrolled == team) {
+    if known.contains(&team) {
         log::info!("[+] reusing the saved enrolment for team {team}; no sign-in needed");
         return;
     }
@@ -959,10 +956,7 @@ fn gool_identity_path(masque_config: &str) -> String {
 }
 
 fn derive_sibling_path(base: &str, suffix: &str) -> String {
-    let dir_end = base
-        .rfind(|c| c == '/' || c == '\\')
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let dir_end = base.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
     match base[dir_end..].rfind('.') {
         Some(rel) => {
             let dot = dir_end + rel;
@@ -1319,7 +1313,7 @@ async fn select_wg_peers(
     let probe = wg_prober::WgProbe {
         private_key: std::sync::Arc::new(private_key),
         peer_public_key: std::sync::Arc::new(peer_public),
-        client_id: identity.client_id.clone(),
+        client_id: identity.client_id,
         local_ipv4: identity
             .ipv4
             .parse()
@@ -3016,9 +3010,13 @@ fn gool_classic() -> bool {
     matches!(
         std::env::var("AETHER_GOOL_MODE").as_deref(),
         Ok("wiw") | Ok("wg") | Ok("classic")
-    ) || ["AETHER_WIW_OUTER_PEER", "AETHER_WIW_INNER_PEER", "AETHER_WIW_PEERS"]
-        .iter()
-        .any(|key| env_value(key).is_some())
+    ) || [
+        "AETHER_WIW_OUTER_PEER",
+        "AETHER_WIW_INNER_PEER",
+        "AETHER_WIW_PEERS",
+    ]
+    .iter()
+    .any(|key| env_value(key).is_some())
 }
 
 fn gool_inner_peers(identity: &account::Identity) -> Result<Vec<SocketAddr>> {
@@ -3026,8 +3024,7 @@ fn gool_inner_peers(identity: &account::Identity) -> Result<Vec<SocketAddr>> {
         return Ok(vec![parse_endpoint(&value)?]);
     }
     let mut peers: Vec<SocketAddr> = Vec::new();
-    let named = std::iter::once(identity.assigned_endpoint.trim())
-        .chain(wireguard::wg_seeds_v4());
+    let named = std::iter::once(identity.assigned_endpoint.trim()).chain(wireguard::wg_seeds_v4());
     for host in named {
         if let Ok(ip) = host.parse::<IpAddr>() {
             let peer = SocketAddr::new(ip, WG_EXAMPLE_PORT);
@@ -3173,7 +3170,10 @@ async fn run_gool_tunnel(
             ..inner_identity.clone()
         };
         if config::save(inner_path, &remembered).is_ok() {
-            log::info!("[+] gool remembers {} as its wireguard endpoint", inner_peer.ip());
+            log::info!(
+                "[+] gool remembers {} as its wireguard endpoint",
+                inner_peer.ip()
+            );
         }
     }
 

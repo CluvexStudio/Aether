@@ -179,7 +179,7 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
     // pin_endpoint=true with pins: pin-based verification (SNI can be spoofed)
     // pin_endpoint=false: SslVerifyMode::NONE (default, required for Cloudflare MASQUE edges)
     let pin_refs: Vec<&[u8]> = cfg.expected_pins.iter().map(|p| p.as_slice()).collect();
-    tls::install_verification(&mut *builder, cfg.pin_endpoint, &pin_refs)?;
+    tls::install_verification(&mut builder, cfg.pin_endpoint, &pin_refs)?;
 
     let connector = builder.build();
     let mut config = connector
@@ -338,7 +338,7 @@ pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Durati
                             let _ = recv_body.flow_control().release_capacity(chunk.len());
                             capsules.push(&chunk);
                             loop {
-                                match capsules.next() {
+                                match capsules.next_capsule() {
                                     Ok(Some(Capsule::Datagram(_))) => {
                                         probe_successes += 1;
                                         if probe_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
@@ -744,7 +744,7 @@ fn drain_capsules(
 ) -> bool {
     let mut delivered = false;
     loop {
-        match capsules.next() {
+        match capsules.next_capsule() {
             Ok(Some(Capsule::Datagram(payload))) => {
                 let pkt = match masque::strip_datagram_context(&payload) {
                     Some(inner) => inner,
