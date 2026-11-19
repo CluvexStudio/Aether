@@ -292,22 +292,41 @@ fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-static TOKEN_CACHE: tokio::sync::Mutex<Option<String>> = tokio::sync::Mutex::const_new(None);
+struct CachedToken {
+    team: Option<String>,
+    token: String,
+}
+
+static TOKEN_CACHE: tokio::sync::Mutex<Option<CachedToken>> = tokio::sync::Mutex::const_new(None);
 
 pub async fn resolve_token(settings: &TeamSettings) -> Result<String> {
     let mut cache = TOKEN_CACHE.lock().await;
 
     if let Some(cached) = cache.as_ref() {
-        if !jwt_expired(cached, crate::account::now_unix()) {
+        let other_team = cached
+            .team
+            .as_deref()
+            .is_some_and(|team| !team.eq_ignore_ascii_case(&settings.team));
+        let other_token = settings
+            .token
+            .as_deref()
+            .is_some_and(|token| token.trim() != cached.token);
+        if other_team || other_token {
+            log::debug!("[zerotrust] the cached enrolment token is not this team's; signing in");
+        } else if jwt_expired(&cached.token, crate::account::now_unix()) {
+            log::debug!("[zerotrust] the cached enrolment token expired; signing in again");
+        } else {
             log::debug!("[zerotrust] reusing the enrolment token from this session");
-            return Ok(cached.clone());
+            return Ok(cached.token.clone());
         }
-        log::debug!("[zerotrust] the cached enrolment token expired; signing in again");
         *cache = None;
     }
 
     let token = sign_in(settings).await?;
-    *cache = Some(token.clone());
+    *cache = Some(CachedToken {
+        team: Some(settings.team.clone()),
+        token: token.clone(),
+    });
     Ok(token)
 }
 
@@ -324,7 +343,10 @@ pub async fn store_token(token: &str) -> Result<()> {
             "that token has already expired; sign in again to get a fresh one".into(),
         ));
     }
-    *TOKEN_CACHE.lock().await = Some(token.to_string());
+    *TOKEN_CACHE.lock().await = Some(CachedToken {
+        team: None,
+        token: token.to_string(),
+    });
     Ok(())
 }
 
@@ -332,7 +354,8 @@ pub async fn cached_token() -> Option<String> {
     TOKEN_CACHE
         .lock()
         .await
-        .clone()
+        .as_ref()
+        .map(|cached| cached.token.clone())
         .filter(|token| !jwt_expired(token, crate::account::now_unix()))
 }
 
@@ -924,8 +947,46 @@ mod tests {
         assert!(settings.email.is_some());
     }
 
+    static TOKEN_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn a_token_cached_for_one_team_is_not_handed_to_another() {
+        let _held = TOKEN_TESTS.lock().await;
+        clear_token().await;
+        let acme = jwt("{\"exp\":9999999999,\"team\":\"acme\"}");
+        let beta = jwt("{\"exp\":9999999999,\"team\":\"beta\"}");
+        let with = |team: &str, token: &str| TeamSettings {
+            team: team.to_string(),
+            token: Some(token.to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            resolve_token(&with("acme", &acme)).await.expect("acme"),
+            acme
+        );
+        assert_eq!(
+            resolve_token(&with("beta", &beta)).await.expect("beta"),
+            beta
+        );
+        let bare = TeamSettings {
+            team: "beta".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(resolve_token(&bare).await.expect("cached"), beta);
+
+        let fresh = jwt("{\"exp\":9999999999,\"team\":\"beta\",\"n\":2}");
+        assert_eq!(
+            resolve_token(&with("beta", &fresh)).await.expect("fresh"),
+            fresh
+        );
+        clear_token().await;
+    }
+
     #[tokio::test]
     async fn a_token_supplied_up_front_is_reused_without_signing_in_again() {
+        let _held = TOKEN_TESTS.lock().await;
+        clear_token().await;
         let token = jwt("{\"exp\":9999999999}");
         let settings = TeamSettings {
             team: "acme".to_string(),
