@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 static UP: AtomicU64 = AtomicU64::new(0);
 static DOWN: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static START: OnceLock<Instant> = OnceLock::new();
+static START: Mutex<Option<Instant>> = Mutex::new(None);
 
 const DEFAULT_REPORT_SECS: u64 = 60;
 
@@ -19,7 +19,9 @@ pub fn init() {
     let on = crate::settings::flag("AETHER_STATS");
 
     ENABLED.store(on, Ordering::Relaxed);
-    let _ = START.set(Instant::now());
+    UP.store(0, Ordering::Relaxed);
+    DOWN.store(0, Ordering::Relaxed);
+    *START.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
 }
 
 pub fn enabled() -> bool {
@@ -42,7 +44,11 @@ pub fn snapshot() -> Counters {
     Counters {
         up: UP.load(Ordering::Relaxed),
         down: DOWN.load(Ordering::Relaxed),
-        uptime: START.get().map(|s| s.elapsed()).unwrap_or_default(),
+        uptime: START
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .map(|start| start.elapsed())
+            .unwrap_or_default(),
     }
 }
 
@@ -87,13 +93,13 @@ fn report_interval() -> Duration {
     Duration::from_secs(secs)
 }
 
-pub fn spawn_reporter() {
+pub fn spawn_reporter() -> Option<tokio::task::AbortHandle> {
     if !enabled() {
-        return;
+        return None;
     }
 
     let every = report_interval();
-    tokio::spawn(async move {
+    let reporter = tokio::spawn(async move {
         loop {
             tokio::time::sleep(every).await;
             let counters = snapshot();
@@ -105,6 +111,7 @@ pub fn spawn_reporter() {
             );
         }
     });
+    Some(reporter.abort_handle())
 }
 
 #[cfg(test)]

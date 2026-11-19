@@ -87,7 +87,10 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     sysprofile::raise_fd_limit();
     egress::init()?;
     stats::init();
-    stats::spawn_reporter();
+    let mut reporter = TaskGuard::new();
+    if let Some(task) = stats::spawn_reporter() {
+        reporter.push(task);
+    }
 
     install_netstack_panic_guard();
     tls::check_tls_options()?;
