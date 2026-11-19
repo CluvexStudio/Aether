@@ -42,7 +42,7 @@ impl Policy {
             return None;
         }
 
-        let negated = spec.starts_with('!');
+        let negated = spec.trim_start_matches('=').starts_with('!');
         let body = spec
             .trim_start_matches('!')
             .trim_start_matches('=')
@@ -246,17 +246,20 @@ pub async fn settle(stack: &StackHandle, policy: &Option<Policy>, what: &str) ->
     let Some(exit) = report(stack, what).await else {
         return Err(AetherError::from(ExitLocationError::Unreadable));
     };
+    verdict(policy, exit.country)
+}
 
-    let loc = exit.country.unwrap_or_default();
+fn verdict(policy: &Policy, country: Option<String>) -> Result<()> {
+    let Some(loc) = country else {
+        return Err(AetherError::from(ExitLocationError::Unreadable));
+    };
     if policy.accepts(&loc) {
         log::info!("[+] exit location {loc} accepted ({})", policy.describe());
         return Ok(());
     }
 
     log::warn!("[-] exit location {loc} rejected ({})", policy.describe());
-    Err(AetherError::from(ExitLocationError::Unsatisfied(
-        loc.to_string(),
-    )))
+    Err(AetherError::from(ExitLocationError::Unsatisfied(loc)))
 }
 
 pub async fn watch(stack: &StackHandle, policy: &Policy) -> AetherError {
@@ -277,6 +280,34 @@ pub async fn watch(stack: &StackHandle, policy: &Policy) -> AetherError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_exit_whose_country_could_not_be_read_satisfies_no_policy() {
+        for spec in ["!IR", "DE,SE"] {
+            let policy = Policy::parse(spec).expect(spec);
+            assert!(
+                matches!(
+                    verdict(&policy, None),
+                    Err(AetherError::ExitLocation(ExitLocationError::Unreadable))
+                ),
+                "{spec}"
+            );
+        }
+        let deny = Policy::parse("!IR").expect("a policy");
+        assert!(verdict(&deny, Some("DE".into())).is_ok());
+        assert!(verdict(&deny, Some("IR".into())).is_err());
+    }
+
+    #[test]
+    fn a_deny_list_may_follow_an_equals_sign() {
+        for spec in ["!IR", "=!IR", "!=IR"] {
+            let policy = Policy::parse(spec).expect(spec);
+            assert!(!policy.accepts("IR"), "{spec}");
+            assert!(policy.accepts("DE"), "{spec}");
+        }
+        let allow = Policy::parse("=DE").expect("a policy");
+        assert!(allow.accepts("DE") && !allow.accepts("IR"));
+    }
 
     #[test]
     fn a_deny_list_keeps_everything_else() {
