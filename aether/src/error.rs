@@ -65,6 +65,9 @@ pub enum AetherError {
     #[error(transparent)]
     Upstream(#[from] crate::upstream::UpstreamError),
 
+    #[error(transparent)]
+    Identity(#[from] crate::account::IdentityError),
+
     #[error("other: {0}")]
     Other(String),
 }

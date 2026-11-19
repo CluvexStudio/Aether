@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 use crate::consts;
 use crate::error::{AetherError, Result};
 
+#[derive(Debug, thiserror::Error)]
+pub enum IdentityError {
+    #[error("identity has an unusable ipv4 {0}")]
+    UnusableIpv4(String),
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct Registration {
     key: String,
@@ -1269,6 +1275,12 @@ impl Identity {
         Ok(self.wg_peer_public_key)
     }
 
+    pub fn local_ipv4(&self) -> Result<std::net::Ipv4Addr> {
+        self.ipv4
+            .parse()
+            .map_err(|_| IdentityError::UnusableIpv4(self.ipv4.clone()).into())
+    }
+
     pub fn has_masque_credentials(&self) -> bool {
         !self.cert_pem.is_empty()
             && !self.key_pem.is_empty()
@@ -1279,6 +1291,20 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_identity_gives_its_tunnel_address_or_says_why_it_cannot() {
+        let mut identity = handshake_identity();
+        assert_eq!(
+            identity.local_ipv4().expect("an address"),
+            std::net::Ipv4Addr::new(172, 16, 0, 2)
+        );
+        identity.ipv4 = "172.16.0".to_string();
+        assert_eq!(
+            identity.local_ipv4().expect_err("a short address").detail(),
+            "identity has an unusable ipv4 172.16.0"
+        );
+    }
 
     #[test]
     fn a_long_rejection_in_any_script_is_cut_without_panicking() {

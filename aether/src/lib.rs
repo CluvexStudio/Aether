@@ -1317,10 +1317,7 @@ async fn select_wg_peers(
         private_key: std::sync::Arc::new(private_key),
         peer_public_key: std::sync::Arc::new(peer_public),
         client_id: identity.client_id,
-        local_ipv4: identity
-            .ipv4
-            .parse()
-            .map_err(|_| AetherError::Other("invalid ipv4".into()))?,
+        local_ipv4: identity.local_ipv4()?,
         aethernoize: aethernoize_config(),
         ports,
         ip,
@@ -2372,10 +2369,7 @@ async fn hunt_wg_peer_with_profile(
         private_key: std::sync::Arc::new(private_key),
         peer_public_key: std::sync::Arc::new(peer_public),
         client_id: identity.client_id,
-        local_ipv4: identity
-            .ipv4
-            .parse()
-            .map_err(|_| AetherError::Other("invalid ipv4".into()))?,
+        local_ipv4: identity.local_ipv4()?,
         aethernoize: profile,
         ports: wireguard::WG_PORTS.to_vec(),
         ip,
@@ -2450,10 +2444,7 @@ async fn run_wireguard(
 
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
-    let ipv4: std::net::Ipv4Addr = identity
-        .ipv4
-        .parse()
-        .map_err(|_| AetherError::Other("invalid ipv4".into()))?;
+    let ipv4 = identity.local_ipv4()?;
 
     let mut quick: Option<(SocketAddr, aethernoize::AetherNoizeConfig, String)> = None;
 
@@ -2709,10 +2700,7 @@ async fn run_wireguard_tunnel(
 ) -> Result<()> {
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
-    let ipv4: std::net::Ipv4Addr = identity
-        .ipv4
-        .parse()
-        .map_err(|_| AetherError::Other("invalid ipv4".into()))?;
+    let ipv4 = identity.local_ipv4()?;
 
     log::info!("[*] validating WireGuard tunnel with {peer} (handshake + data-plane) before serving socks5...");
     let (_, session) = wireguard::verify_endpoint_keep_session(
@@ -2816,10 +2804,7 @@ async fn establish_wg(
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
 
-    let ipv4: std::net::Ipv4Addr = identity
-        .ipv4
-        .parse()
-        .map_err(|_| AetherError::Other("invalid ipv4".into()))?;
+    let ipv4 = identity.local_ipv4()?;
 
     let profile = if obfuscate {
         aethernoize_config()

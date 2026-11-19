@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -426,7 +426,7 @@ pub async fn scan(identity: &Identity, request: &ScanRequest, cancel: &Cancel) -
                 private_key: Arc::new(identity.private_key_bytes()?),
                 peer_public_key: Arc::new(identity.peer_public_key_bytes()?),
                 client_id: identity.client_id,
-                local_ipv4: wg_local_v4(identity)?,
+                local_ipv4: identity.local_ipv4()?,
                 aethernoize: request.aethernoize.clone(),
                 ports: request.ports.clone(),
                 ip: request.ip,
@@ -441,13 +441,6 @@ pub async fn scan(identity: &Identity, request: &ScanRequest, cancel: &Cancel) -
             })
         }
     }
-}
-
-fn wg_local_v4(identity: &Identity) -> Result<Ipv4Addr> {
-    identity
-        .ipv4
-        .parse()
-        .map_err(|_| AetherError::Other(format!("identity has an unusable ipv4 {}", identity.ipv4)))
 }
 
 #[derive(Debug, Clone)]
@@ -525,7 +518,7 @@ pub async fn verify_endpoint(
         Transport::WireGuard => {
             let private_key = identity.private_key_bytes()?;
             let peer_public = identity.peer_public_key_bytes()?;
-            let local_ipv4 = wg_local_v4(identity)?;
+            let local_ipv4 = identity.local_ipv4()?;
             let attempt = wireguard::verify_endpoint(
                 peer,
                 private_key,
