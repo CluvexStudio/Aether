@@ -43,6 +43,9 @@ impl Matcher {
         if entry.is_empty() || entry.starts_with('#') {
             return None;
         }
+        if let Some(net) = parse_net(entry) {
+            return Some(Matcher::Net(net));
+        }
 
         let (kind, value) = match entry.split_once(':') {
             Some((kind, value)) if !kind.contains('.') && !kind.contains('/') => {
@@ -299,6 +302,24 @@ fn split_sections(text: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_ipv6_network_or_address_is_a_rule() {
+        for entry in ["fd00::/8", "2a03:2880::/32", "::1", "2606:4700::1111"] {
+            assert!(
+                matches!(Matcher::parse(entry), Some(Matcher::Net(_))),
+                "{entry}"
+            );
+        }
+        assert!(matches!(
+            Matcher::parse("ip:fd00::/8"),
+            Some(Matcher::Net(_))
+        ));
+        assert!(matches!(
+            Matcher::parse("domain:example.com"),
+            Some(Matcher::DomainSuffix(_))
+        ));
+    }
 
     fn rules(block: &str, direct: &str) -> RuleSet {
         RuleSet {
