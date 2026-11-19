@@ -142,7 +142,11 @@ pub fn server_entries() -> Option<PathBuf> {
 }
 
 /// The arguments the client is started with: its config, its data root, and the entries file when there is one.
-fn client_arguments(config_path: &Path, state: &Path, entries: Option<&Path>) -> Vec<std::ffi::OsString> {
+fn client_arguments(
+    config_path: &Path,
+    state: &Path,
+    entries: Option<&Path>,
+) -> Vec<std::ffi::OsString> {
     let mut arguments: Vec<std::ffi::OsString> = vec![
         "-config".into(),
         config_path.as_os_str().to_owned(),
@@ -659,15 +663,27 @@ fn build_config(
 
     log::info!(
         "[*] psiphon shape: {chosen:?}{}",
-        if through_proxy {
-            ", dialled through a proxy so only tcp protocols are offered and its tactics are off"
-        } else {
-            ""
-        }
+        proxy_note(through_proxy, &map)
     );
 
     serde_json::to_string(&serde_json::Value::Object(map))
         .map_err(|e| AetherError::Other(format!("psiphon config could not be written: {e}")))
+}
+
+fn proxy_note(
+    through_proxy: bool,
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> &'static str {
+    let tactics_off = map.get("DisableTactics") == Some(&serde_json::Value::Bool(true));
+    match (through_proxy, tactics_off) {
+        (false, _) => "",
+        (true, true) => {
+            ", dialled through a proxy so only tcp protocols are offered and its tactics are off"
+        }
+        (true, false) => {
+            ", dialled through a proxy so only tcp protocols are offered; its tactics are on, as the psiphon config asks"
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -778,7 +794,10 @@ pub async fn start(
     log::info!("[*] starting psiphon from {}", exe.display());
     let entries = server_entries();
     if let Some(path) = &entries {
-        log::info!("[*] psiphon starts with the server entries in {}", path.display());
+        log::info!(
+            "[*] psiphon starts with the server entries in {}",
+            path.display()
+        );
     }
 
     let mut command = Command::new(&exe);
@@ -1097,21 +1116,33 @@ mod tests {
         clear();
         assert!(server_entries().is_none());
         std::env::set_var("AETHER_PSIPHON_SERVER_ENTRIES", "/nowhere/entries.txt");
-        assert!(server_entries().is_none(), "a file that is not there is no file");
+        assert!(
+            server_entries().is_none(),
+            "a file that is not there is no file"
+        );
 
-        let path = std::env::temp_dir().join(format!("aether-psi-entries-{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("aether-psi-entries-{}.txt", std::process::id()));
         std::fs::write(&path, "0 0 0 0 {}\n").expect("write");
         std::env::set_var("AETHER_PSIPHON_SERVER_ENTRIES", &path);
         assert_eq!(server_entries(), Some(path.clone()));
 
-        let with = client_arguments(std::path::Path::new("cfg.json"), std::path::Path::new("state"), Some(&path));
+        let with = client_arguments(
+            std::path::Path::new("cfg.json"),
+            std::path::Path::new("state"),
+            Some(&path),
+        );
         assert_eq!(with.len(), 6);
         assert_eq!(with[0], "-config");
         assert_eq!(with[2], "-dataRootDirectory");
         assert_eq!(with[4], "-serverList");
         assert_eq!(with[5], path.clone().into_os_string());
 
-        let without = client_arguments(std::path::Path::new("cfg.json"), std::path::Path::new("state"), None);
+        let without = client_arguments(
+            std::path::Path::new("cfg.json"),
+            std::path::Path::new("state"),
+            None,
+        );
         assert_eq!(without.len(), 4);
         assert!(!without.iter().any(|a| a == "-serverList"));
 
@@ -1247,6 +1278,21 @@ mod tests {
         assert_eq!(alone["DisableTactics"], serde_json::Value::Null);
 
         clear();
+    }
+
+    #[test]
+    fn the_log_says_tactics_are_off_only_when_the_final_config_has_them_off() {
+        let config = |tactics: Option<bool>| {
+            let mut map = serde_json::Map::new();
+            if let Some(off) = tactics {
+                map.insert("DisableTactics".into(), serde_json::Value::from(off));
+            }
+            map
+        };
+        assert!(proxy_note(true, &config(Some(true))).ends_with("its tactics are off"));
+        assert!(proxy_note(true, &config(Some(false))).contains("its tactics are on"));
+        assert!(proxy_note(true, &config(None)).contains("its tactics are on"));
+        assert_eq!(proxy_note(false, &config(Some(true))), "");
     }
 
     #[test]
