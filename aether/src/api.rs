@@ -255,16 +255,16 @@ impl IdentitySummary {
 
 pub fn identity_path(base: &str, transport: Transport, team: Option<&str>) -> String {
     match team {
-        Some(team) => crate::derive_sibling_path(base, &format!("team-{team}")),
+        Some(team) => crate::provision::derive_sibling_path(base, &format!("team-{team}")),
         None => match transport {
-            Transport::Masque => crate::derive_sibling_path(base, "masque"),
+            Transport::Masque => crate::provision::derive_sibling_path(base, "masque"),
             Transport::WireGuard => base.to_string(),
         },
     }
 }
 
 pub fn lastconn_path(identity_path: &str) -> String {
-    crate::lastconn_path(identity_path)
+    crate::provision::lastconn_path(identity_path)
 }
 
 pub fn load_identity(path: &str) -> Result<Option<Identity>> {
@@ -298,7 +298,7 @@ pub async fn provision_identity(request: &ProvisionRequest) -> Result<Identity> 
     } else {
         identity
     };
-    crate::enable_warp_on(&identity).await?;
+    crate::provision::enable_warp_on(&identity).await?;
     Ok(identity)
 }
 
@@ -411,7 +411,7 @@ pub async fn scan(identity: &Identity, request: &ScanRequest, cancel: &Cancel) -
                 noize: request.noize.clone(),
                 ports: request.ports.clone(),
                 ip: request.ip,
-                local_ipv4: crate::parse_local_v4(&identity.ipv4),
+                local_ipv4: crate::modes::parse_local_v4(&identity.ipv4),
             };
             let mode = prober::ScanMode::parse(&request.mode);
             let best = guard(cancel, prober::hunt_best_gateway(&probe, mode)).await?;
@@ -512,7 +512,9 @@ pub async fn verify_endpoint(
         Transport::Masque => {
             // The check offers the job's ECH key, as its tunnel would.
             let ech = spec.ech.clone();
-            let attempt = async { Ok(crate::quick_verify_masque_peer(identity, peer, ech).await) };
+            let attempt = async {
+                Ok(crate::modes::masque::quick_verify_masque_peer(identity, peer, ech).await)
+            };
             guard(cancel, attempt).await
         }
         Transport::WireGuard => {
@@ -555,14 +557,20 @@ pub async fn connect(
     // so the next tunnel can bind them as soon as this call returns. One that breaks ends it.
     let attempt = async {
         let (broken, mut breaks) = tokio::sync::mpsc::unbounded_channel();
-        let listeners = crate::Listeners::bind(spec.socks, broken).await?;
+        let listeners = crate::modes::Listeners::bind(spec.socks, broken).await?;
         let tunnel = async {
             match spec.transport {
                 Transport::Masque => {
-                    crate::run_masque_tunnel(identity, peer, spec.ech.clone(), &listeners).await
+                    crate::modes::masque::run_masque_tunnel(
+                        identity,
+                        peer,
+                        spec.ech.clone(),
+                        &listeners,
+                    )
+                    .await
                 }
                 Transport::WireGuard => {
-                    crate::run_wireguard_tunnel(
+                    crate::modes::wireguard::run_wireguard_tunnel(
                         identity.clone(),
                         peer,
                         spec.aethernoize.clone(),
