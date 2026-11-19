@@ -615,16 +615,25 @@ mod with_tor {
         }
     }
 
+    struct Limits {
+        attempts: usize,
+        deadline: Option<Duration>,
+        stall: Option<Duration>,
+    }
+
     async fn stage(
         state: &Path,
         through: Option<SocketAddr>,
         plan: Option<&Plan>,
         label: &'static str,
-        attempts: usize,
-        deadline: Option<Duration>,
-        stall: Option<Duration>,
+        limits: Limits,
         slot: Option<&str>,
     ) -> Result<Client> {
+        let Limits {
+            attempts,
+            deadline,
+            stall,
+        } = limits;
         let mut tried = 0usize;
         loop {
             tried += 1;
@@ -664,9 +673,11 @@ mod with_tor {
                 through,
                 Some(&plan),
                 "over your bridges",
-                rounds,
-                None,
-                None,
+                Limits {
+                    attempts: rounds,
+                    deadline: None,
+                    stall: None,
+                },
                 None,
             )
             .await;
@@ -687,9 +698,11 @@ mod with_tor {
                 through,
                 None,
                 "reaching the network",
-                attempts,
-                deadline,
-                None,
+                Limits {
+                    attempts,
+                    deadline,
+                    stall: None,
+                },
                 Some("direct"),
             );
             match tries.await {
@@ -720,9 +733,11 @@ mod with_tor {
             through,
             Some(&plan),
             "over bridges",
-            rounds,
-            None,
-            None,
+            Limits {
+                attempts: rounds,
+                deadline: None,
+                stall: None,
+            },
             Some("all"),
         )
         .await
@@ -787,9 +802,11 @@ mod with_tor {
                     through,
                     Some(&only),
                     "over bridges",
-                    1,
-                    Some(deadline),
-                    Some(stall_limit()),
+                    Limits {
+                        attempts: 1,
+                        deadline: Some(deadline),
+                        stall: Some(stall_limit()),
+                    },
                     Some(name.as_str()),
                 )
                 .await;
