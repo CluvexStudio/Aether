@@ -981,24 +981,7 @@ pub fn install_verification(
     }
 
     if pin_endpoint && !expected_pins.is_empty() {
-        let pins: Vec<Vec<u8>> = expected_pins.iter().map(|p| p.to_vec()).collect();
-        builder.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
-            let leaf_cert = ssl.peer_certificate().ok_or_else(|| {
-                log::warn!("tls pin: no peer certificate presented");
-                SslVerifyError::Invalid(boring::ssl::SslAlert::BAD_CERTIFICATE)
-            })?;
-            let hash = spki_sha256(&leaf_cert).ok_or_else(|| {
-                log::warn!("tls pin: failed to compute SPKI hash");
-                SslVerifyError::Invalid(boring::ssl::SslAlert::INTERNAL_ERROR)
-            })?;
-            if pins.iter().any(|pin| pin.as_slice() == hash.as_slice()) {
-                Ok(())
-            } else {
-                Err(SslVerifyError::Invalid(
-                    boring::ssl::SslAlert::CERTIFICATE_UNKNOWN,
-                ))
-            }
-        });
+        install_pins(builder, expected_pins);
         announce_once(format!(
             "tls verification: pin-based ({} pins loaded)",
             expected_pins.len()
@@ -1008,6 +991,30 @@ pub fn install_verification(
         announce_once("tls verification: none, this connection has no pins to check".to_string());
     }
     Ok(())
+}
+
+fn install_pins(builder: &mut SslContextBuilder, expected_pins: &[&[u8]]) {
+    let pins: Vec<Vec<u8>> = expected_pins.iter().map(|p| p.to_vec()).collect();
+    builder.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
+        if ssl.get_ech_name_override().is_some() {
+            return Ok(());
+        }
+        let leaf_cert = ssl.peer_certificate().ok_or_else(|| {
+            log::warn!("tls pin: no peer certificate presented");
+            SslVerifyError::Invalid(boring::ssl::SslAlert::BAD_CERTIFICATE)
+        })?;
+        let hash = spki_sha256(&leaf_cert).ok_or_else(|| {
+            log::warn!("tls pin: failed to compute SPKI hash");
+            SslVerifyError::Invalid(boring::ssl::SslAlert::INTERNAL_ERROR)
+        })?;
+        if pins.iter().any(|pin| pin.as_slice() == hash.as_slice()) {
+            Ok(())
+        } else {
+            Err(SslVerifyError::Invalid(
+                boring::ssl::SslAlert::CERTIFICATE_UNKNOWN,
+            ))
+        }
+    });
 }
 
 fn announce_once(message: String) {
@@ -1459,6 +1466,189 @@ mod tests {
         assert!(verification_wanted(Some("1"), None));
         assert!(verification_wanted(Some(" On "), None));
         assert!(!verification_wanted(Some("0"), None));
+    }
+
+    mod ech_rejected {
+        use super::*;
+        use boring::asn1::Asn1Time;
+        use boring::bn::BigNum;
+        use boring::ec::{EcGroup, EcKey};
+        use boring::hash::MessageDigest;
+        use boring::nid::Nid;
+        use boring::ssl::HandshakeError;
+        use boring::x509::{X509Builder, X509NameBuilder};
+        use std::net::{TcpListener, TcpStream};
+
+        extern "C" {
+            fn EVP_HPKE_KEY_new() -> *mut c_void;
+            fn EVP_HPKE_KEY_free(key: *mut c_void);
+            fn EVP_hpke_x25519_hkdf_sha256() -> *const c_void;
+            fn EVP_HPKE_KEY_generate(key: *mut c_void, kem: *const c_void) -> c_int;
+            fn SSL_marshal_ech_config(
+                out: *mut *mut u8,
+                out_len: *mut usize,
+                config_id: u8,
+                key: *const c_void,
+                public_name: *const c_char,
+                max_name_len: usize,
+            ) -> c_int;
+            fn SSL_ECH_KEYS_new() -> *mut c_void;
+            fn SSL_ECH_KEYS_free(keys: *mut c_void);
+            fn SSL_ECH_KEYS_add(
+                keys: *mut c_void,
+                is_retry_config: c_int,
+                ech_config: *const u8,
+                ech_config_len: usize,
+                key: *const c_void,
+            ) -> c_int;
+            fn SSL_CTX_set1_ech_keys(ctx: *mut c_void, keys: *mut c_void) -> c_int;
+            fn OPENSSL_free(ptr: *mut c_void);
+        }
+
+        struct EchKey {
+            key: *mut c_void,
+            config: Vec<u8>,
+        }
+
+        impl EchKey {
+            fn generate(public_name: &str, config_id: u8) -> Self {
+                let name = CString::new(public_name).unwrap();
+                unsafe {
+                    let key = EVP_HPKE_KEY_new();
+                    assert_eq!(EVP_HPKE_KEY_generate(key, EVP_hpke_x25519_hkdf_sha256()), 1);
+                    let mut out = ptr::null_mut();
+                    let mut len = 0;
+                    assert_eq!(
+                        SSL_marshal_ech_config(
+                            &mut out,
+                            &mut len,
+                            config_id,
+                            key,
+                            name.as_ptr(),
+                            0
+                        ),
+                        1
+                    );
+                    let config = std::slice::from_raw_parts(out, len).to_vec();
+                    OPENSSL_free(out.cast());
+                    Self { key, config }
+                }
+            }
+
+            fn list(&self) -> Vec<u8> {
+                let mut list = (self.config.len() as u16).to_be_bytes().to_vec();
+                list.extend_from_slice(&self.config);
+                list
+            }
+        }
+
+        impl Drop for EchKey {
+            fn drop(&mut self) {
+                unsafe { EVP_HPKE_KEY_free(self.key) }
+            }
+        }
+
+        fn certificate(name: &str) -> (X509, PKey<boring::pkey::Private>) {
+            let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+            let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+            let mut subject = X509NameBuilder::new().unwrap();
+            subject.append_entry_by_nid(Nid::COMMONNAME, name).unwrap();
+            let subject = subject.build();
+            let mut cert = X509Builder::new().unwrap();
+            cert.set_version(2).unwrap();
+            let serial = BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap();
+            cert.set_serial_number(&serial).unwrap();
+            cert.set_subject_name(&subject).unwrap();
+            cert.set_issuer_name(&subject).unwrap();
+            cert.set_pubkey(&key).unwrap();
+            cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+                .unwrap();
+            cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+                .unwrap();
+            cert.sign(&key, MessageDigest::sha256()).unwrap();
+            (cert.build(), key)
+        }
+
+        fn serve(server_key: &EchKey) -> (std::net::SocketAddr, [u8; 32]) {
+            let (cert, key) = certificate("public.example");
+            let pin = spki_sha256(&cert).unwrap();
+            let mut ctx = SslContextBuilder::new(SslMethod::tls()).unwrap();
+            ctx.set_certificate(&cert).unwrap();
+            ctx.set_private_key(&key).unwrap();
+            unsafe {
+                let keys = SSL_ECH_KEYS_new();
+                assert_eq!(
+                    SSL_ECH_KEYS_add(
+                        keys,
+                        1,
+                        server_key.config.as_ptr(),
+                        server_key.config.len(),
+                        server_key.key,
+                    ),
+                    1
+                );
+                assert_eq!(SSL_CTX_set1_ech_keys(ctx.as_ptr().cast(), keys), 1);
+                SSL_ECH_KEYS_free(keys);
+            }
+            let ctx = ctx.build();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            std::thread::spawn(move || {
+                if let Ok((stream, _)) = listener.accept() {
+                    let _ = Ssl::new(&ctx).unwrap().accept(stream);
+                }
+            });
+            (address, pin)
+        }
+
+        fn connect(
+            address: std::net::SocketAddr,
+            offered: &EchKey,
+            pins: &[&[u8]],
+        ) -> std::result::Result<(), String> {
+            let mut ctx = SslContextBuilder::new(SslMethod::tls()).unwrap();
+            install_pins(&mut ctx, pins);
+            let ctx = ctx.build();
+            let mut ssl = Ssl::new(&ctx).unwrap();
+            ssl.set_ech_config_list(&offered.list()).unwrap();
+            ssl.set_hostname("inner.example").unwrap();
+            let stream = TcpStream::connect(address).unwrap();
+            match ssl.connect(stream) {
+                Ok(_) => Ok(()),
+                Err(HandshakeError::Failure(failed)) => {
+                    let error = failed.error().to_string();
+                    let retry = error.contains("ECH_REJECTED")
+                        && failed
+                            .ssl()
+                            .get_ech_retry_configs()
+                            .is_some_and(|configs| !configs.is_empty());
+                    Err(format!("{error} retry={retry}"))
+                }
+                Err(other) => Err(other.to_string()),
+            }
+        }
+
+        #[test]
+        fn a_stale_key_ends_in_ech_rejected_with_retry_configs_under_pinning() {
+            let current = EchKey::generate("public.example", 1);
+            let stale = EchKey::generate("public.example", 2);
+            let (address, _) = serve(&current);
+            let error = connect(address, &stale, &[&[7u8; 32]]).unwrap_err();
+            assert!(error.contains("ECH_REJECTED"), "{error}");
+            assert!(error.contains("retry=true"), "{error}");
+        }
+
+        #[test]
+        fn an_accepted_handshake_is_still_held_to_the_pins() {
+            let current = EchKey::generate("public.example", 1);
+            let (address, pin) = serve(&current);
+            assert!(connect(address, &current, &[&[7u8; 32]]).is_err());
+
+            let current = EchKey::generate("public.example", 1);
+            let (address, pin_again) = serve(&current);
+            assert_ne!(pin, pin_again);
+            assert_eq!(connect(address, &current, &[&pin_again]), Ok(()));
+        }
     }
 
     /// The hold of a test on the session key, which the whole process shares: the tests that
