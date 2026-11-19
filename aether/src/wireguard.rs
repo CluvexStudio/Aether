@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::aethernoize::{self, AetherNoizeConfig};
 use crate::error::{AetherError, Result};
+use crate::relay::TaskGuard;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WireGuardError {
@@ -37,16 +38,6 @@ const VERIFY_RETRY_DELAYS: [Duration; 2] =
 
 const WG_MSG_TYPE_MIN: u8 = 1;
 const WG_MSG_TYPE_MAX: u8 = 4;
-
-struct TaskGuard(Vec<tokio::task::AbortHandle>);
-
-impl Drop for TaskGuard {
-    fn drop(&mut self) {
-        for handle in self.0.drain(..) {
-            handle.abort();
-        }
-    }
-}
 
 fn inject_client_id(pkt: &mut [u8], client_id: &[u8; 3]) {
     if pkt.len() < 4 {
