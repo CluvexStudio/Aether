@@ -83,6 +83,9 @@ pub enum AetherError {
     #[error(transparent)]
     Tunnel(#[from] crate::modes::TunnelError),
 
+    #[error(transparent)]
+    Endpoint(#[from] crate::modes::endpoints::EndpointError),
+
     #[error("other: {0}")]
     Other(String),
 }

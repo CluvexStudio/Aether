@@ -3,6 +3,24 @@ use std::net::{IpAddr, SocketAddr};
 use super::env_value;
 use crate::error::{AetherError, Result};
 
+#[derive(Debug, thiserror::Error)]
+pub enum EndpointError {
+    #[error("the two hops need separate edges, but both point at {0}")]
+    SameEdge(IpAddr),
+    #[error("{text} carries no port, and the port is required; write it out, as in {example}")]
+    NoPort { text: String, example: SocketAddr },
+    #[error(
+        "'{0}' is not an endpoint; write an address and a port together, such as \
+         162.159.192.1:{port}",
+        port = WG_EXAMPLE_PORT
+    )]
+    NotAnEndpoint(String),
+    #[error("no endpoint was given; expected one or two addresses")]
+    Empty,
+    #[error("warp-in-warp has two hops, but {0} addresses were given")]
+    TooMany(usize),
+}
+
 pub(crate) const WG_EXAMPLE_PORT: u16 = 2408;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -19,10 +37,7 @@ impl WiwEndpoints {
     fn checked(self) -> Result<Self> {
         match (self.outer, self.inner) {
             (Some(outer), Some(inner)) if outer.ip() == inner.ip() => {
-                Err(AetherError::Other(format!(
-                    "the two hops need separate edges, but both point at {}",
-                    outer.ip()
-                )))
+                Err(AetherError::from(EndpointError::SameEdge(outer.ip())))
             }
             _ => Ok(self),
         }
@@ -43,15 +58,14 @@ pub(crate) fn parse_endpoint(raw: &str) -> Result<SocketAddr> {
     });
 
     if let Some(address) = portless {
-        return Err(AetherError::Other(format!(
-            "{text} carries no port, and the port is required; write it out, as in {}",
-            SocketAddr::new(address, WG_EXAMPLE_PORT)
-        )));
+        return Err(AetherError::from(EndpointError::NoPort {
+            text: text.to_string(),
+            example: SocketAddr::new(address, WG_EXAMPLE_PORT),
+        }));
     }
 
-    Err(AetherError::Other(format!(
-        "'{text}' is not an endpoint; write an address and a port together, \
-         such as 162.159.192.1:{WG_EXAMPLE_PORT}"
+    Err(AetherError::from(EndpointError::NotAnEndpoint(
+        text.to_string(),
     )))
 }
 
@@ -66,13 +80,9 @@ fn parse_endpoint_list(raw: &str) -> Result<Vec<SocketAddr>> {
     }
 
     match peers.len() {
-        0 => Err(AetherError::Other(
-            "no endpoint was given; expected one or two addresses".to_string(),
-        )),
+        0 => Err(AetherError::from(EndpointError::Empty)),
         1 | 2 => Ok(peers),
-        found => Err(AetherError::Other(format!(
-            "warp-in-warp has two hops, but {found} addresses were given"
-        ))),
+        found => Err(AetherError::from(EndpointError::TooMany(found))),
     }
 }
 
