@@ -548,6 +548,10 @@ pub async fn verify_endpoint(
     Ok(elapsed)
 }
 
+fn data_check_enabled() -> bool {
+    crate::settings::var("AETHER_WG_NO_DATA_CHECK").is_err()
+}
+
 pub async fn verify_endpoint_keep_session(
     peer: SocketAddr,
     private_key: [u8; 32],
@@ -558,7 +562,7 @@ pub async fn verify_endpoint_keep_session(
     timeout: Duration,
     keepalive: Option<u16>,
 ) -> Result<(Duration, EstablishedSession)> {
-    let data_check = crate::settings::var("AETHER_WG_NO_DATA_CHECK").is_err();
+    let data_check = data_check_enabled();
     log::trace!(
         "[wg] verify {} obf={} data_check={}",
         peer,

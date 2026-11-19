@@ -143,8 +143,18 @@ pub(crate) fn install_netstack_panic_guard() {
     }));
 }
 
+fn team_endpoint() -> Option<SocketAddr> {
+    crate::settings::var("AETHER_TEAM_ENDPOINT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+}
+
+fn noize_profile() -> String {
+    crate::settings::var("AETHER_NOIZE").unwrap_or_else(|_| "firewall".to_string())
+}
+
 fn noize_config() -> noize::NoizeConfig {
-    let profile = crate::settings::var("AETHER_NOIZE").unwrap_or_else(|_| "firewall".to_string());
+    let profile = noize_profile();
     log::info!("[+] obfuscation profile: {profile}");
     noize::from_profile(&profile)
 }

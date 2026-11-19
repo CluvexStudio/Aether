@@ -3,8 +3,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use super::{
-    count_tunnel_end, exit_policy_guard, masque_tunnel_mtu, noize_config, parse_local_v4,
-    scan_settings_from_env, Listeners, TunnelError, TunnelExit,
+    count_tunnel_end, exit_policy_guard, masque_tunnel_mtu, noize_config, noize_profile,
+    parse_local_v4, scan_settings_from_env, team_endpoint, Listeners, TunnelError, TunnelExit,
 };
 use crate::error::{AetherError, Result};
 use crate::modes::gool::run_gool_tunnel;
@@ -141,21 +141,22 @@ pub(crate) async fn quick_verify_masque_peer(
     quic::verify_masque(&vp).await.is_ok()
 }
 
+fn pinned_peer() -> Option<String> {
+    crate::settings::var("AETHER_PEER").ok()
+}
+
 pub(crate) async fn run_masque(
     identity: account::Identity,
     listeners: Listeners,
     lastconn_path: String,
     gool_inner: Option<String>,
 ) -> Result<()> {
-    let forced = crate::settings::var("AETHER_PEER").ok();
+    let forced = pinned_peer();
 
     let mut quick_peer: Option<SocketAddr> = None;
 
     if forced.is_none() {
-        if let Some(assigned) = crate::settings::var("AETHER_TEAM_ENDPOINT")
-            .ok()
-            .and_then(|value| value.parse::<SocketAddr>().ok())
-        {
+        if let Some(assigned) = team_endpoint() {
             log::info!("[*] verifying the endpoint the organization assigned: {assigned}");
             if quick_verify_masque_peer(&identity, assigned, tls::session_ech()).await {
                 log::info!("[+] the assigned endpoint {assigned} works; skipping the scan");
@@ -264,8 +265,7 @@ pub(crate) async fn run_masque(
         log::info!("[+] using cloudflare edge {peer}");
 
         if forced.is_none() {
-            let profile =
-                crate::settings::var("AETHER_NOIZE").unwrap_or_else(|_| "firewall".to_string());
+            let profile = noize_profile();
             lastconn::save(
                 &lastconn_path,
                 &peer.to_string(),

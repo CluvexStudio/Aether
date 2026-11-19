@@ -3,8 +3,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use super::{
-    aethernoize_config, count_tunnel_end, exit_policy_guard, scan_settings_from_env, Listeners,
-    TunnelError, TunnelExit, TUNNEL_MTU,
+    aethernoize_config, count_tunnel_end, exit_policy_guard, scan_settings_from_env, team_endpoint,
+    Listeners, TunnelError, TunnelExit, TUNNEL_MTU,
 };
 use crate::error::{AetherError, Result};
 use crate::prompt::{select_ip_version, select_scan_mode_str, want_quick_reconnect};
@@ -189,6 +189,12 @@ async fn hunt_wg_peer(
     Err(AetherError::NoCleanEndpoint)
 }
 
+fn pinned_peer() -> Option<String> {
+    crate::settings::var("AETHER_WG_PEER")
+        .ok()
+        .or_else(|| crate::settings::var("AETHER_PEER").ok())
+}
+
 pub(crate) async fn run_wireguard(
     identity: account::Identity,
     listeners: Listeners,
@@ -196,9 +202,7 @@ pub(crate) async fn run_wireguard(
 ) -> Result<()> {
     let candidates = wg_profile_candidates();
 
-    let forced = crate::settings::var("AETHER_WG_PEER")
-        .ok()
-        .or_else(|| crate::settings::var("AETHER_PEER").ok());
+    let forced = pinned_peer();
 
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
@@ -207,10 +211,7 @@ pub(crate) async fn run_wireguard(
     let mut quick: Option<(SocketAddr, aethernoize::AetherNoizeConfig, String)> = None;
 
     if forced.is_none() {
-        if let Some(assigned) = crate::settings::var("AETHER_TEAM_ENDPOINT")
-            .ok()
-            .and_then(|value| value.parse::<SocketAddr>().ok())
-        {
+        if let Some(assigned) = team_endpoint() {
             log::info!("[*] verifying the endpoint the organization assigned: {assigned}");
             for (name, profile) in &candidates {
                 match wireguard::verify_endpoint(
