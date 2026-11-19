@@ -561,6 +561,14 @@ fn api_routes_of(
     routes
 }
 
+fn routes_by_address(routes: &[ApiRoute]) -> Vec<ApiRoute> {
+    routes
+        .iter()
+        .filter(|route| route.address.parse::<std::net::IpAddr>().is_ok())
+        .cloned()
+        .collect()
+}
+
 /// The ways of the calls to the WARP API, as the options and this run have them, see
 /// `api_routes_of`.
 fn api_routes() -> Result<Vec<ApiRoute>> {
@@ -654,19 +662,21 @@ async fn api_call_by(
     bearer: Option<&str>,
     jwt: Option<&str>,
 ) -> Result<AccountData> {
-    // The system resolver looks a name up outside the socket mark; through the upstream proxy,
-    // the proxy looks it up and only the marked connection to the proxy leaves.
-    if crate::egress::mark() != 0 && crate::upstream::configured().is_none() {
-        if let Some(route) = routes
-            .iter()
-            .find(|route| route.address.parse::<std::net::IpAddr>().is_err())
-        {
+    let marked;
+    let routes = if crate::egress::mark() != 0 && crate::upstream::configured().is_none() {
+        marked = routes_by_address(routes);
+        if marked.is_empty() {
+            let named = routes
+                .first()
+                .map_or(consts::API_HOST, |route| route.address.as_str());
             return Err(AetherError::Api(format!(
-                "{label}: {} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --api-address an IP address",
-                route.address
+                "{label}: {named} would be looked up outside the socket mark, so the call would loop back into the tunnel; give --api-address an IP address"
             )));
         }
-    }
+        marked.as_slice()
+    } else {
+        routes
+    };
     let Some(first) = routes.first() else {
         return Err(AetherError::Api(format!("{label}: no way to the API")));
     };
@@ -1637,6 +1647,31 @@ mod tests {
                 front: false,
             }])
         );
+    }
+
+    #[test]
+    fn a_marked_call_keeps_the_edges_and_leaves_the_names_out() {
+        let kept = routes_by_address(&api_routes_of(None, None, None, None));
+        assert_eq!(
+            kept.iter()
+                .map(|route| route.address.as_str())
+                .collect::<Vec<_>>(),
+            consts::API_FRONT_ADDRESSES.to_vec()
+        );
+        assert!(kept.iter().all(|route| route.front));
+
+        let given = Some(("162.159.137.105".to_string(), 443));
+        assert_eq!(
+            routes_by_address(&api_routes_of(None, None, given.clone(), None)),
+            api_routes_of(None, None, given, None)
+        );
+        assert!(routes_by_address(&api_routes_of(
+            Some("api.example.com".to_string()),
+            None,
+            None,
+            None
+        ))
+        .is_empty());
     }
 
     #[test]
