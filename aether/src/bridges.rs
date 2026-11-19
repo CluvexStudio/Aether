@@ -555,7 +555,7 @@ fn write_cache(state: &Path, cached: &Cached) {
 
     let path = state.join(CACHE_FILE);
     let temporary = state.join(format!("{CACHE_FILE}.new"));
-    if std::fs::write(&temporary, body).is_err() {
+    if std::fs::create_dir_all(state).is_err() || std::fs::write(&temporary, body).is_err() {
         return;
     }
 
@@ -1057,6 +1057,22 @@ pub fn plan_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bridge_cache_is_kept_before_tor_has_made_its_state_folder() {
+        let state =
+            std::env::temp_dir().join(format!("aether-bridge-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        let cached = Cached {
+            fetched: now(),
+            country: "IR".into(),
+            lines: vec!["obfs4 192.0.2.1:443 0123456789ABCDEF cert=x iat-mode=0".into()],
+        };
+        write_cache(&state, &cached);
+        let back = read_cache(&state).expect("the cache was written");
+        assert_eq!(back.lines, cached.lines);
+        let _ = std::fs::remove_dir_all(&state);
+    }
 
     #[test]
     fn a_bridge_line_names_the_transport_it_needs() {
