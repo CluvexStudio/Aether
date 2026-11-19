@@ -107,21 +107,6 @@ fn log_or_debug(quiet: bool, msg: String) {
     }
 }
 
-fn data_check_enabled() -> bool {
-    crate::settings::var("AETHER_MASQUE_NO_DATA_CHECK").is_err()
-}
-
-fn validation_timeout() -> Duration {
-    let secs = crate::settings::var("AETHER_MASQUE_VALIDATE_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&v| v > 0)
-        .map(|v| v.min(86_400))
-        .unwrap_or(10);
-    Duration::from_secs(secs)
-}
-
-const DATA_PROBE_REQUIRED_SUCCESSES: u32 = 2;
 const DATA_PROBE_RESEND: Duration = Duration::from_millis(700);
 
 fn h2_keepalive_interval() -> Duration {
@@ -280,7 +265,7 @@ async fn connect_tls(
 
 pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Duration> {
     let start = Instant::now();
-    let data_check = data_check_enabled();
+    let data_check = masque::data_check_enabled();
 
     let attempt = async {
         let tls = connect_tls(cfg, FragmentConfig::from_env()).await?;
@@ -341,7 +326,7 @@ pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Durati
                                 match capsules.next_capsule() {
                                     Ok(Some(Capsule::Datagram(_))) => {
                                         probe_successes += 1;
-                                        if probe_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
+                                        if probe_successes >= masque::DATA_PROBE_REQUIRED_SUCCESSES {
                                             return Ok(());
                                         }
                                         let framed = masque::encode_datagram_capsule(&probe);
@@ -393,7 +378,7 @@ pub async fn run(
 ) -> Result<()> {
     let (outbound_rx, inbound_tx, mut ctrl_rx) = internals.into_parts();
     let quiet = cfg.quiet;
-    let data_check = data_check_enabled();
+    let data_check = masque::data_check_enabled();
     let probe_packet = masque::build_dns_probe_packet(cfg.local_ipv4);
     let mut ready_tx = ready_tx;
     let mut ready_fired = false;
@@ -503,7 +488,7 @@ pub async fn run(
         {
             log::debug!("[h2] initial data-plane probe: the send path is gone");
         }
-        validate_deadline = Some(Instant::now() + validation_timeout());
+        validate_deadline = Some(Instant::now() + masque::validation_timeout());
         log_or_debug(
             quiet,
             "[h2] validating data-plane (end-to-end probe) before exposing socks5".to_string(),
@@ -624,9 +609,9 @@ pub async fn run(
                             validate_successes += 1;
                             log::debug!(
                                 "[h2] data-plane round-trip {}/{} confirmed",
-                                validate_successes, DATA_PROBE_REQUIRED_SUCCESSES
+                                validate_successes, masque::DATA_PROBE_REQUIRED_SUCCESSES
                             );
-                            if validate_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
+                            if validate_successes >= masque::DATA_PROBE_REQUIRED_SUCCESSES {
                                 ready_fired = true;
                                 validate_deadline = None;
                                 if let Some(tx) = ready_tx.take() {

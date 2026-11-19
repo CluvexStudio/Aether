@@ -87,22 +87,6 @@ impl TunnelConfig {
     }
 }
 
-fn validation_timeout() -> Duration {
-    let secs = crate::settings::var("AETHER_MASQUE_VALIDATE_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&v| v > 0)
-        .map(|v| v.min(86_400))
-        .unwrap_or(10);
-    Duration::from_secs(secs)
-}
-
-fn data_check_enabled() -> bool {
-    crate::settings::var("AETHER_MASQUE_NO_DATA_CHECK").is_err()
-}
-
-const DATA_PROBE_REQUIRED_SUCCESSES: u32 = 2;
-
 pub struct Channels {
     pub outbound_tx: mpsc::Sender<Vec<u8>>,
     pub inbound_rx: mpsc::Receiver<Vec<u8>>,
@@ -315,7 +299,7 @@ pub async fn run(
 ) -> Result<()> {
     let peer = cfg.peer;
     let quiet = cfg.quiet;
-    let data_check = data_check_enabled();
+    let data_check = masque::data_check_enabled();
     let probe_packet = masque::build_dns_probe_packet(cfg.local_ipv4);
     let mut ready_tx = ready_tx;
     let mut ready_fired = false;
@@ -497,7 +481,7 @@ pub async fn run(
             h3_conn = Some(h3c);
 
             if data_check {
-                validate_deadline = Some(Instant::now() + validation_timeout());
+                validate_deadline = Some(Instant::now() + masque::validation_timeout());
                 log_or_debug(
                     quiet,
                     "[*] validating masque data-plane before exposing socks5".to_string(),
@@ -521,9 +505,9 @@ pub async fn run(
             log::debug!(
                 "[*] masque data-plane round-trip {}/{} confirmed",
                 validate_successes,
-                DATA_PROBE_REQUIRED_SUCCESSES
+                masque::DATA_PROBE_REQUIRED_SUCCESSES
             );
-            if validate_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
+            if validate_successes >= masque::DATA_PROBE_REQUIRED_SUCCESSES {
                 ready_fired = true;
                 validate_deadline = None;
                 if let Some(tx) = ready_tx.take() {
@@ -888,7 +872,7 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
     let mut h3_conn: Option<h3::Connection> = None;
     let mut req_stream: Option<u64> = None;
 
-    let data_check = data_check_enabled();
+    let data_check = masque::data_check_enabled();
     let probe_packet = masque::build_dns_probe_packet(p.local_ipv4);
     let mut connect_ip_ok = false;
     let mut last_probe = Instant::now();
@@ -1006,7 +990,7 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
                         Ok(n) => {
                             if let Ok(Some(_)) = masque::decode_ip_datagram(&dgram_buf[..n], sid) {
                                 probe_successes += 1;
-                                if probe_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
+                                if probe_successes >= masque::DATA_PROBE_REQUIRED_SUCCESSES {
                                     return Ok(start.elapsed());
                                 }
                                 if let Ok(framed) = masque::encode_ip_datagram(sid, &probe_packet) {

@@ -7,6 +7,22 @@ use rand::RngExt;
 use crate::consts;
 use crate::error::{AetherError, Result};
 
+pub(crate) const DATA_PROBE_REQUIRED_SUCCESSES: u32 = 2;
+
+pub(crate) fn data_check_enabled() -> bool {
+    crate::settings::var("AETHER_MASQUE_NO_DATA_CHECK").is_err()
+}
+
+pub(crate) fn validation_timeout() -> std::time::Duration {
+    let secs = crate::settings::var("AETHER_MASQUE_VALIDATE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .map(|v| v.min(86_400))
+        .unwrap_or(10);
+    std::time::Duration::from_secs(secs)
+}
+
 pub const CAPSULE_ADDRESS_ASSIGN: u64 = 0x01;
 pub const CAPSULE_ADDRESS_REQUEST: u64 = 0x02;
 pub const CAPSULE_ROUTE_ADVERTISEMENT: u64 = 0x03;
