@@ -103,7 +103,7 @@ pub struct WgConfig {
 pub struct WgTunnel {
     tunn: Arc<Mutex<Box<Tunn>>>,
     sock: Arc<UdpSocket>,
-    detour: crate::upstream::DetourGuard,
+    _detour: crate::upstream::DetourGuard,
     peer: SocketAddr,
     inbound_tx: mpsc::Sender<Vec<u8>>,
     pub obf_sent: Arc<Mutex<bool>>,
@@ -140,7 +140,7 @@ impl WgTunnel {
         Ok(Self {
             tunn: Arc::new(Mutex::new(Box::new(tunn))),
             sock: Arc::new(sock),
-            detour,
+            _detour: detour,
             peer: cfg.peer_endpoint,
             inbound_tx,
             obf_sent: Arc::new(Mutex::new(false)),
@@ -159,7 +159,7 @@ impl WgTunnel {
         Self {
             tunn: session.tunn,
             sock: session.sock,
-            detour: session.detour,
+            _detour: session.detour,
             peer: session.peer,
             inbound_tx,
             obf_sent: Arc::new(Mutex::new(true)),

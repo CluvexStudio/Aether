@@ -165,7 +165,9 @@ fn usable(raw: &str) -> Result<()> {
 /// side by side, so each test that sets it, or that dials through the setting, holds it first.
 /// Let go, the hold clears the variable, which a test that failed half way may have left set.
 #[cfg(test)]
-pub(crate) struct SettingHeld(tokio::sync::MutexGuard<'static, ()>);
+pub(crate) struct SettingHeld {
+    _held: tokio::sync::MutexGuard<'static, ()>,
+}
 
 #[cfg(test)]
 impl Drop for SettingHeld {
@@ -183,7 +185,7 @@ pub(crate) async fn hold_setting() -> SettingHeld {
         .lock()
         .await;
     crate::settings::remove("AETHER_UPSTREAM");
-    SettingHeld(held)
+    SettingHeld { _held: held }
 }
 
 /// The proxy `raw` names, parsed once per setting: while the setting stays the same, the proxy

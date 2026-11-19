@@ -1018,7 +1018,9 @@ mod tests {
     /// tests run side by side, so each test holds them first, or one clearing them would wipe a
     /// value another had just set. They start out clear, and are cleared again as the hold is
     /// let go, also by a test that failed half way.
-    struct SettingsHeld(std::sync::MutexGuard<'static, ()>);
+    struct SettingsHeld {
+        _held: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl Drop for SettingsHeld {
         fn drop(&mut self) {
@@ -1035,7 +1037,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         clear();
-        SettingsHeld(held)
+        SettingsHeld { _held: held }
     }
 
     fn clear() {

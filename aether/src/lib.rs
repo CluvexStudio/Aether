@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 pub mod account;
 pub mod aethernoize;
 pub mod api;
@@ -500,16 +499,6 @@ fn env_value(key: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-fn wiw_scan_requested(lookup: &dyn Fn(&str) -> Option<String>) -> bool {
-    match lookup("AETHER_WIW_PEERS") {
-        Some(value) => matches!(
-            value.to_lowercase().as_str(),
-            "auto" | "scan" | "none" | "off" | "0"
-        ),
-        None => false,
-    }
 }
 
 fn scan_keyword(value: &str) -> bool {
@@ -1225,60 +1214,6 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
 
     log::info!("[+] identities ready: {}", ready.join(", "));
     Ok(())
-}
-
-async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result<SocketAddr> {
-    let force_peer = match protocol {
-        Protocol::Masque | Protocol::MasqueInMasque => crate::settings::var("AETHER_PEER").ok(),
-        Protocol::WireGuard | Protocol::WarpInWarp => crate::settings::var("AETHER_WG_PEER")
-            .ok()
-            .or_else(|| crate::settings::var("AETHER_PEER").ok()),
-    };
-
-    if let Some(p) = force_peer {
-        let peer: SocketAddr = p
-            .parse()
-            .map_err(|_| AetherError::Other(format!("bad peer address {p}")))?;
-        log::info!("[+] using forced peer {peer} (probe skipped)");
-        return Ok(peer);
-    }
-
-    log::info!("[+] selected protocol: {}", protocol.label());
-
-    let mode_str = select_scan_mode_str("").await;
-    let ip = select_ip_version().await;
-
-    match protocol {
-        Protocol::Masque | Protocol::MasqueInMasque => {
-            log::info!("[*] hunting for a working MASQUE gateway (deep connect-ip verification)");
-            let mode = prober::ScanMode::parse(&mode_str);
-            let probe = prober::MasqueProbe {
-                sni: quic::masque_sni()?,
-                authority: quic::default_authority().to_string(),
-                path: quic::default_path().to_string(),
-                cert_pem: std::sync::Arc::from(identity.cert_pem.clone()),
-                key_pem: std::sync::Arc::from(identity.key_pem.clone()),
-                ech_config_list: None,
-                noize: noize_config(),
-                ports: prober::MASQUE_PORTS.to_vec(),
-                ip,
-                local_ipv4: parse_local_v4(&identity.ipv4),
-            };
-
-            let best = prober::hunt_best_gateway(&probe, mode).await?;
-            log::info!(
-                "[+] selected MASQUE gateway {}:{} (rtt {:?})",
-                best.ip,
-                best.port,
-                best.rtt
-            );
-            Ok(SocketAddr::new(best.ip, best.port))
-        }
-        Protocol::WireGuard | Protocol::WarpInWarp => {
-            let peers = select_wg_peers(identity, &mode_str, ip, 1, &HashSet::new()).await?;
-            Ok(peers[0])
-        }
-    }
 }
 
 async fn select_wg_peers(
@@ -3235,22 +3170,6 @@ const MIM_MANUAL_TIP: &str = "\n(tip: you can skip this scan and give the two ma
 
 const WIW_MANUAL_TIP: &str = "\n(tip: you can skip this scan and give the two gool hops yourself:\n        aether --gool --wiw-outer <ip:port> --wiw-inner <ip:port>\n      the port is required, and naming just one of the two lets the scan\n      find the other)\n";
 
-async fn select_scan_mode() -> prober::ScanMode {
-    if let Ok(v) = crate::settings::var("AETHER_SCAN") {
-        return prober::ScanMode::parse(&v);
-    }
-
-    let answer = prompt_line(SCAN_MODE_PROMPT).await;
-
-    match answer.as_deref() {
-        Some("1") => prober::ScanMode::Turbo,
-        Some("3") => prober::ScanMode::Thorough,
-        Some("4") => prober::ScanMode::Verified,
-        Some("5") => prober::ScanMode::Ironclad,
-        _ => prober::ScanMode::Balanced,
-    }
-}
-
 async fn select_scan_mode_str(tip: &str) -> String {
     if let Ok(v) = crate::settings::var("AETHER_SCAN") {
         return v;
@@ -4258,7 +4177,7 @@ mod tests {
     fn asking_for_a_scan_leaves_both_hops_open() {
         for written in ["auto", "scan", "off", "none", "0"] {
             let lookup = env(&[("AETHER_WIW_PEERS", written)]);
-            assert!(wiw_scan_requested(&lookup), "{written} means scan");
+            assert!(scan_keyword(written), "{written} means scan");
             assert!(
                 wiw_endpoints_of(&lookup).expect(written).is_empty(),
                 "{written} should pin nothing"

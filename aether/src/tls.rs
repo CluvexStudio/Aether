@@ -901,7 +901,9 @@ const OPTION_VARIABLES: [&str; 18] = [
 /// handshake: they start out clear, and are cleared again as it ends. A test that holds
 /// AETHER_UPSTREAM as well takes that first.
 #[cfg(test)]
-pub(crate) struct OptionsHeld(tokio::sync::MutexGuard<'static, ()>);
+pub(crate) struct OptionsHeld {
+    _held: tokio::sync::MutexGuard<'static, ()>,
+}
 
 #[cfg(test)]
 impl Drop for OptionsHeld {
@@ -923,7 +925,7 @@ pub(crate) async fn hold_options() -> OptionsHeld {
     for variable in OPTION_VARIABLES {
         crate::settings::remove(variable);
     }
-    OptionsHeld(held)
+    OptionsHeld { _held: held }
 }
 
 pub struct TlsParams<'a> {

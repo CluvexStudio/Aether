@@ -974,6 +974,7 @@ async fn handle_connect(
     Ok(())
 }
 
+#[cfg(feature = "tor")]
 pub(crate) async fn serve_connector<F, Fut, S>(
     listener: TcpListener,
     kind: &'static str,
@@ -999,6 +1000,7 @@ where
     .await
 }
 
+#[cfg(feature = "tor")]
 async fn serve_one_through<F, Fut, S>(mut sock: TcpStream, connect: F) -> Result<()>
 where
     F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
@@ -1040,10 +1042,14 @@ where
     }
 }
 
+#[cfg(feature = "tor")]
 const DNS_PORT: u16 = 53;
+#[cfg(feature = "tor")]
 const DNS_OVER_TCP_TIMEOUT: Duration = Duration::from_secs(20);
+#[cfg(feature = "tor")]
 const DNS_MAX_IN_FLIGHT: usize = 32;
 
+#[cfg(feature = "tor")]
 async fn dns_over_stream<S>(mut stream: S, query: Vec<u8>) -> std::io::Result<Vec<u8>>
 where
     S: AsyncRead + AsyncWrite + Send + Unpin,
@@ -1065,6 +1071,7 @@ where
     Ok(answer)
 }
 
+#[cfg(feature = "tor")]
 async fn handle_udp_over_connector<F, Fut, S>(
     mut sock: TcpStream,
     connect: F,
@@ -1177,6 +1184,7 @@ where
     Ok(())
 }
 
+#[cfg(feature = "tor")]
 pub(crate) async fn relay_generic<A, B>(client: A, remote: B, linger: Duration)
 where
     A: AsyncRead + AsyncWrite + Send + Unpin,
@@ -2627,6 +2635,7 @@ pub async fn serve_http<L: Borrow<TcpListener>>(listener: L, stack: StackHandle)
     .await
 }
 
+#[cfg(feature = "tor")]
 pub(crate) async fn serve_http_connector<F, Fut, S>(
     listener: TcpListener,
     kind: &'static str,
@@ -2652,6 +2661,7 @@ where
     .await
 }
 
+#[cfg(feature = "tor")]
 async fn handle_http_through<F, Fut, S>(mut sock: TcpStream, connect: F) -> Result<()>
 where
     F: Fn(String, u16) -> Fut,
