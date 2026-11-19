@@ -49,7 +49,9 @@ use crate::modes::masque::{resolve_ech, run_masque};
 use crate::modes::mim::run_mim;
 use crate::modes::wireguard::run_wireguard;
 use crate::modes::{install_netstack_panic_guard, Listeners};
-use crate::prompt::{needs_udp_to_warp, select_masque_transport, select_protocol, Protocol};
+use crate::prompt::{
+    needs_udp_to_warp, protocol_without_asking, select_masque_transport, select_protocol, Protocol,
+};
 use crate::provision::{
     derive_sibling_path, gool_identity_path, lastconn_path, load_or_provision_masque,
     load_or_provision_warp, masque_config_path, register_identities, register_request,
@@ -126,18 +128,12 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     let pinned_wiw = wiw_endpoints_from_env()?;
     let pinned_mim = mim_endpoints_from_env()?;
 
-    let protocol = match crate::settings::var("AETHER_PROTOCOL") {
-        Ok(v) => Protocol::parse(&v),
-        Err(_) if !pinned_wiw.is_empty() => Protocol::WarpInWarp,
-        Err(_) if !pinned_mim.is_empty() => Protocol::MasqueInMasque,
-        Err(_)
-            if crate::settings::var("AETHER_PEER").is_ok()
-                || crate::settings::var("AETHER_WG_PEER").is_ok() =>
-        {
-            Protocol::Masque
-        }
-        Err(_) => select_protocol(&base_config).await,
-    };
+    let setting = |key: &str| crate::settings::var(key).ok();
+    let protocol =
+        match protocol_without_asking(&setting, !pinned_wiw.is_empty(), !pinned_mim.is_empty()) {
+            Some(protocol) => protocol,
+            None => select_protocol(&base_config).await,
+        };
 
     if tor::mode() == tor::Mode::Only {
         let state = tor::state_dir(&base_config);

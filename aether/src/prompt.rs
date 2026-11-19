@@ -229,6 +229,26 @@ async fn select_chain_carrier(what: &str) -> Protocol {
     }
 }
 
+pub(crate) fn protocol_without_asking(
+    lookup: &dyn Fn(&str) -> Option<String>,
+    pinned_wiw: bool,
+    pinned_mim: bool,
+) -> Option<Protocol> {
+    if let Some(name) = lookup("AETHER_PROTOCOL") {
+        return Some(Protocol::parse(&name));
+    }
+    if pinned_wiw {
+        return Some(Protocol::WarpInWarp);
+    }
+    if pinned_mim {
+        return Some(Protocol::MasqueInMasque);
+    }
+    if lookup("AETHER_WG_PEER").is_some() {
+        return Some(Protocol::WireGuard);
+    }
+    lookup("AETHER_PEER").map(|_| Protocol::Masque)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Protocol {
     Masque,
@@ -294,6 +314,53 @@ pub(crate) async fn select_ip_version() -> prober::IpScan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    #[test]
+    fn a_pinned_wireguard_peer_runs_wireguard_unless_a_protocol_is_named() {
+        let wg = settings(&[("AETHER_WG_PEER", "162.159.192.1:2408")]);
+        assert_eq!(
+            protocol_without_asking(&wg, false, false),
+            Some(Protocol::WireGuard)
+        );
+
+        let masque = settings(&[("AETHER_PEER", "162.159.198.1:443")]);
+        assert_eq!(
+            protocol_without_asking(&masque, false, false),
+            Some(Protocol::Masque)
+        );
+
+        let named = settings(&[
+            ("AETHER_PROTOCOL", "masque"),
+            ("AETHER_WG_PEER", "162.159.192.1:2408"),
+        ]);
+        assert_eq!(
+            protocol_without_asking(&named, false, false),
+            Some(Protocol::Masque)
+        );
+    }
+
+    #[test]
+    fn pinned_hops_pick_their_two_hop_mode_and_nothing_pinned_asks() {
+        let empty = settings(&[]);
+        assert_eq!(
+            protocol_without_asking(&empty, true, false),
+            Some(Protocol::WarpInWarp)
+        );
+        assert_eq!(
+            protocol_without_asking(&empty, false, true),
+            Some(Protocol::MasqueInMasque)
+        );
+        assert_eq!(protocol_without_asking(&empty, false, false), None);
+    }
 
     #[test]
     fn tor_and_psiphon_around_the_tunnel_refuse_only_what_needs_udp() {
