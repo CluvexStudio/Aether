@@ -66,6 +66,7 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with(args: Vec<String>) -> Result<()> {
+    let _settings = crate::settings::fresh();
     if cli::parse_args(args)? == cli::Parsed::Done {
         return Ok(());
     }

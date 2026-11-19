@@ -31,6 +31,23 @@ pub fn set(key: impl AsRef<str>, value: impl AsRef<str>) {
         .insert(key.as_ref().to_string(), Some(value.as_ref().to_string()));
 }
 
+pub(crate) struct Fresh;
+
+pub(crate) fn fresh() -> Fresh {
+    clear();
+    Fresh
+}
+
+impl Drop for Fresh {
+    fn drop(&mut self) {
+        clear();
+    }
+}
+
+fn clear() {
+    SET.write().unwrap_or_else(PoisonError::into_inner).clear();
+}
+
 pub fn remove(key: impl AsRef<str>) {
     SET.write()
         .unwrap_or_else(PoisonError::into_inner)
