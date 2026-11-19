@@ -10,6 +10,24 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::aethernoize::{self, AetherNoizeConfig};
 use crate::error::{AetherError, Result};
+
+#[derive(Debug, thiserror::Error)]
+pub enum WireGuardError {
+    #[error("wireguard tunnel stale: no valid data from peer")]
+    Stale,
+    #[error("health task panicked: {0}")]
+    HealthTask(String),
+    #[error("dataplane encap: {0}")]
+    Encapsulation(String),
+    #[error("dataplane timeout")]
+    DataPlaneTimeout,
+    #[error("handshake init failed")]
+    HandshakeInit,
+    #[error("verify timeout")]
+    VerifyTimeout,
+    #[error("wireguard timer failed: {0}")]
+    Timer(String),
+}
 use rand::RngExt;
 
 const TIMER_TICK: Duration = Duration::from_millis(250);
@@ -300,9 +318,7 @@ impl WgTunnel {
                         peer,
                         idle
                     );
-                    return Err::<(), AetherError>(AetherError::Other(
-                        "wireguard tunnel stale: no valid data from peer".into(),
-                    ));
+                    return Err::<(), AetherError>(AetherError::from(WireGuardError::Stale));
                 }
 
                 let probe = build_dataplane_probe(local_ipv4);
@@ -340,7 +356,7 @@ impl WgTunnel {
                 match r {
                     Ok(Err(e)) => Err(e),
                     Ok(Ok(())) => Ok(()),
-                    Err(e) => Err(AetherError::Other(format!("health task panicked: {e}"))),
+                    Err(e) => Err(AetherError::from(WireGuardError::HealthTask(e.to_string()))),
                 }
             }
         };
@@ -425,7 +441,9 @@ async fn send_dataplane_probe(
             sock.send(&v).await?;
         }
         TunnResult::Err(e) => {
-            return Err(AetherError::Other(format!("dataplane encap: {e:?}")));
+            return Err(AetherError::from(WireGuardError::Encapsulation(format!(
+                "{e:?}"
+            ))));
         }
         _ => {}
     }
@@ -461,7 +479,7 @@ async fn verify_dataplane(
                 successes,
                 DATAPLANE_REQUIRED_SUCCESSES
             );
-            return Err(AetherError::Other("dataplane timeout".into()));
+            return Err(AetherError::from(WireGuardError::DataPlaneTimeout));
         }
         if now >= resend_at {
             let _ = send_dataplane_probe(sock, tunn, client_id, &probe, &mut out_buf).await;
@@ -581,7 +599,7 @@ pub async fn verify_endpoint_keep_session(
         }
         other => {
             log::warn!("[wg] unexpected encap result: {:?}", other);
-            return Err(AetherError::Other("handshake init failed".into()));
+            return Err(AetherError::from(WireGuardError::HandshakeInit));
         }
     };
 
@@ -597,7 +615,7 @@ pub async fn verify_endpoint_keep_session(
     loop {
         if Instant::now() >= deadline {
             log::trace!("[wg] timeout after {} recv attempts", attempts);
-            return Err(AetherError::Other("verify timeout".into()));
+            return Err(AetherError::from(WireGuardError::VerifyTimeout));
         }
 
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -690,14 +708,14 @@ pub async fn verify_endpoint_keep_session(
                         sock.send(&pkt_vec).await?;
                     }
                     TunnResult::Err(e) => {
-                        return Err(AetherError::Other(format!("wireguard timer failed: {e:?}")));
+                        return Err(AetherError::from(WireGuardError::Timer(format!("{e:?}"))));
                     }
                     _ => {}
                 }
             }
             _ = tokio::time::sleep(remaining) => {
                 log::trace!("[wg] sleep timeout");
-                return Err(AetherError::Other("verify timeout".into()));
+                return Err(AetherError::from(WireGuardError::VerifyTimeout));
             }
         }
     }

@@ -47,6 +47,9 @@ pub enum AetherError {
     #[error(transparent)]
     Socks(#[from] crate::socks::SocksError),
 
+    #[error(transparent)]
+    WireGuard(#[from] crate::wireguard::WireGuardError),
+
     #[error("other: {0}")]
     Other(String),
 }
