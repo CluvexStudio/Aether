@@ -965,6 +965,7 @@ mod with_tor {
         init_tracing();
         let listen = listen_address();
         let listener = crate::socks::bind_listener("tor socks5", listen, "--tor-bind").await?;
+        let http = bind_http().await?;
         // Where the tunnel dials Tor: where its listener is bound, a port 0 asked for being the port
         // the system picked.
         let dialled = crate::socks::dialable(listener.local_addr().unwrap_or(listen));
@@ -978,11 +979,7 @@ mod with_tor {
         announce_exit(dialled, "tor");
 
         let serving = tokio::spawn(async move {
-            let served = match bind_http().await {
-                Ok(http) => serve(listener, http, client, "tor socks5").await,
-                Err(e) => Err(e),
-            };
-            if let Err(e) = served {
+            if let Err(e) = serve(listener, http, client, "tor socks5").await {
                 log::error!("[-] the tor proxy stopped: {e}");
             }
         });
