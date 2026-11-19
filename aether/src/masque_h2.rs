@@ -195,8 +195,8 @@ fn build_connect_request(cfg: &H2TunnelConfig) -> Result<http::Request<()>> {
 
 pub async fn dial(peer: std::net::SocketAddr) -> Result<TcpStream> {
     match crate::upstream::configured() {
-        Some(proxy) => proxy.connect(peer).await,
-        None => crate::egress::tcp_connect(peer)
+        Some(proxy) if !crate::routing::is_private(peer.ip()) => proxy.connect(peer).await,
+        _ => crate::egress::tcp_connect(peer)
             .await
             .map_err(AetherError::Io),
     }
