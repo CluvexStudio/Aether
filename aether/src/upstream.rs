@@ -6,6 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 
 use crate::error::AetherError;
+use crate::socks::{ATYP_DOMAIN, ATYP_V4, ATYP_V6, CMD_CONNECT, CMD_UDP_ASSOCIATE, REP_OK, VER};
 use crate::Result;
 
 #[derive(Debug, thiserror::Error)]
@@ -64,16 +65,9 @@ pub enum UpstreamError {
     Unresolvable(String),
 }
 
-const VER: u8 = 0x05;
 const AUTH_NONE: u8 = 0x00;
 const AUTH_USERPASS: u8 = 0x02;
 const AUTH_REJECTED: u8 = 0xff;
-const CMD_CONNECT: u8 = 0x01;
-const CMD_ASSOCIATE: u8 = 0x03;
-const ATYP_V4: u8 = 0x01;
-const ATYP_NAME: u8 = 0x03;
-const ATYP_V6: u8 = 0x04;
-const REP_OK: u8 = 0x00;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -415,7 +409,7 @@ impl Upstream {
             self.socks_greet(&mut control).await?;
 
             let unspecified = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
-            let request = encode_request(CMD_ASSOCIATE, unspecified);
+            let request = encode_request(CMD_UDP_ASSOCIATE, unspecified);
             control.write_all(&request).await?;
             let bound = read_reply(&mut control).await?;
 
@@ -835,7 +829,7 @@ pub fn encode_name_request(command: u8, name: &str, port: u16) -> Result<Vec<u8>
         .filter(|length| *length > 0)
         .ok_or_else(|| AetherError::from(UpstreamError::BadName(name.to_string())))?;
     let mut out = Vec::with_capacity(7 + name.len());
-    out.extend_from_slice(&[VER, command, 0x00, ATYP_NAME, length]);
+    out.extend_from_slice(&[VER, command, 0x00, ATYP_DOMAIN, length]);
     out.extend_from_slice(name.as_bytes());
     out.extend_from_slice(&port.to_be_bytes());
     Ok(out)
@@ -873,7 +867,7 @@ pub fn decode_udp_header(buf: &[u8]) -> Option<(SocketAddr, usize)> {
             let port = u16::from_be_bytes([buf[20], buf[21]]);
             Some((SocketAddr::new(IpAddr::V6(octets.into()), port), 22))
         }
-        ATYP_NAME => {
+        ATYP_DOMAIN => {
             let length = *buf.get(4)? as usize;
             let end = 5 + length;
             if buf.len() < end + 2 {
@@ -910,7 +904,7 @@ async fn read_reply(stream: &mut TcpStream) -> Result<SocketAddr> {
             stream.read_exact(&mut octets).await?;
             IpAddr::V6(octets.into())
         }
-        ATYP_NAME => {
+        ATYP_DOMAIN => {
             let mut length = [0u8; 1];
             stream.read_exact(&mut length).await?;
             let mut name = vec![0u8; length[0] as usize];
@@ -1253,7 +1247,7 @@ mod tests {
 
             let mut head = [0u8; 4];
             control.read_exact(&mut head).await.unwrap();
-            assert_eq!(head[1], CMD_ASSOCIATE);
+            assert_eq!(head[1], CMD_UDP_ASSOCIATE);
             let mut rest = [0u8; 6];
             control.read_exact(&mut rest).await.unwrap();
 
@@ -1405,7 +1399,7 @@ mod tests {
                 return None;
             }
             let target = match head[3] {
-                ATYP_NAME => {
+                ATYP_DOMAIN => {
                     let mut len = [0u8; 1];
                     control.read_exact(&mut len).await.ok()?;
                     let mut name = vec![0u8; len[0] as usize];
@@ -1470,7 +1464,7 @@ mod tests {
     #[test]
     fn a_name_goes_to_a_socks5_proxy_as_it_is() {
         let request = encode_name_request(CMD_CONNECT, "api.cloudflareclient.com", 443).unwrap();
-        assert_eq!(request[..5], [VER, CMD_CONNECT, 0x00, ATYP_NAME, 24]);
+        assert_eq!(request[..5], [VER, CMD_CONNECT, 0x00, ATYP_DOMAIN, 24]);
         assert_eq!(&request[5..29], b"api.cloudflareclient.com");
         assert_eq!(request[29..], 443u16.to_be_bytes());
         assert!(encode_name_request(CMD_CONNECT, "", 443).is_err());

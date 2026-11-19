@@ -67,13 +67,13 @@ pub enum SocksError {
 use crate::netstack::{StackHandle, TcpSender, UdpSender};
 use crate::routing::{Action, Host, RuleSet};
 
-const VER: u8 = 0x05;
-const CMD_CONNECT: u8 = 0x01;
-const CMD_UDP_ASSOCIATE: u8 = 0x03;
-const ATYP_V4: u8 = 0x01;
-const ATYP_DOMAIN: u8 = 0x03;
-const ATYP_V6: u8 = 0x04;
-const REP_OK: u8 = 0x00;
+pub(crate) const VER: u8 = 0x05;
+pub(crate) const CMD_CONNECT: u8 = 0x01;
+pub(crate) const CMD_UDP_ASSOCIATE: u8 = 0x03;
+pub(crate) const ATYP_V4: u8 = 0x01;
+pub(crate) const ATYP_DOMAIN: u8 = 0x03;
+pub(crate) const ATYP_V6: u8 = 0x04;
+pub(crate) const REP_OK: u8 = 0x00;
 const REP_GENERAL: u8 = 0x01;
 const REP_NOT_ALLOWED: u8 = 0x02;
 const REP_NOT_SUPPORTED: u8 = 0x07;
