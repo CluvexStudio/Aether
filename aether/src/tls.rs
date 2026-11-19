@@ -9,8 +9,8 @@ use boring::ssl::{
     SslVerifyMode, SslVersion,
 };
 use boring::x509::X509;
-use ring::digest;
 use foreign_types_shared::ForeignTypeRef;
+use ring::digest;
 
 use crate::consts;
 use crate::error::{AetherError, Result};
@@ -940,17 +940,21 @@ pub struct TlsParams<'a> {
     pub expected_pins: &'a [&'a [u8]],
 }
 
-/// Install TLS verification on an `SslContextBuilder`.
-///
 fn verify_enabled() -> bool {
-    match std::env::var("AETHER_TLS_VERIFY") {
-        Ok(value) => matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"),
-        Err(_) => team_run(),
-    }
+    verification_wanted(
+        std::env::var("AETHER_TLS_VERIFY").ok().as_deref(),
+        std::env::var("AETHER_TEAM").ok().as_deref(),
+    )
 }
 
-fn team_run() -> bool {
-    std::env::var("AETHER_TEAM").is_ok_and(|team| !team.trim().is_empty())
+fn verification_wanted(tls_verify: Option<&str>, team: Option<&str>) -> bool {
+    match tls_verify {
+        Some(value) => matches!(
+            value.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        None => team.is_some_and(|team| !team.trim().is_empty()),
+    }
 }
 
 fn spki_sha256(cert: &boring::x509::X509Ref) -> Option<[u8; 32]> {
@@ -1450,30 +1454,13 @@ mod tests {
 
     #[test]
     fn a_zero_trust_run_verifies_the_gateway_unless_told_otherwise() {
-        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _held = ENV
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let clear = || {
-            for key in ["AETHER_TEAM", "AETHER_TLS_VERIFY"] {
-                std::env::remove_var(key);
-            }
-        };
-
-        clear();
-        assert!(!verify_enabled());
-
-        std::env::set_var("AETHER_TEAM", "example");
-        assert!(verify_enabled());
-
-        std::env::set_var("AETHER_TLS_VERIFY", "false");
-        assert!(!verify_enabled());
-
-        std::env::remove_var("AETHER_TEAM");
-        std::env::set_var("AETHER_TLS_VERIFY", "1");
-        assert!(verify_enabled());
-
-        clear();
+        assert!(!verification_wanted(None, None));
+        assert!(!verification_wanted(None, Some("  ")));
+        assert!(verification_wanted(None, Some("example")));
+        assert!(!verification_wanted(Some("false"), Some("example")));
+        assert!(verification_wanted(Some("1"), None));
+        assert!(verification_wanted(Some(" On "), None));
+        assert!(!verification_wanted(Some("0"), None));
     }
 
     /// The hold of a test on the session key, which the whole process shares: the tests that
