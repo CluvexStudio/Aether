@@ -1237,7 +1237,7 @@ pub async fn ensure_masque_enrolled(identity: &Identity) -> Result<MasqueEnrollm
                 renewed: true,
             })
         }
-        Err(error) if cert_still_usable(identity) => {
+        Err(error) if keeps_the_old_cert(&error, identity) => {
             log::warn!(
                 "[!] key enrollment failed ({error}); keeping the certificate already on disk"
             );
@@ -1250,6 +1250,10 @@ pub async fn ensure_masque_enrolled(identity: &Identity) -> Result<MasqueEnrollm
         }
         Err(error) => Err(error),
     }
+}
+
+fn keeps_the_old_cert(error: &AetherError, identity: &Identity) -> bool {
+    !matches!(error, AetherError::IdentityRefused(_)) && cert_still_usable(identity)
 }
 
 pub fn cert_still_usable(identity: &Identity) -> bool {
@@ -1291,6 +1295,19 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_identity_is_not_kept_alive_on_its_old_certificate() {
+        let identity = handshake_identity();
+        assert!(keeps_the_old_cert(
+            &AetherError::Api("timed out".into()),
+            &identity
+        ));
+        assert!(!keeps_the_old_cert(
+            &AetherError::IdentityRefused("401".into()),
+            &identity
+        ));
+    }
 
     #[test]
     fn an_identity_gives_its_tunnel_address_or_says_why_it_cannot() {
